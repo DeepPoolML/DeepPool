@@ -20,11 +20,8 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
     This class is launched by ClusterCoordinator.
     """
 
-    # class RequestHandler(xmlrpc.server.SimpleXMLRPCRequestHandler):
-    #     rpc_paths = ('/Coordinator2Runtime',)
-
     def __init__(self, coordinatorAddr: str, coordinatorPort: int, myAddr: str, myPort: int, device: int):
-        super(Runtime, self).__init__((myAddr, myPort))#, requestHandler=Runtime.RequestHandler)
+        super(Runtime, self).__init__((myAddr, myPort))
         self.coordinatorAddr = coordinatorAddr
         self.coordinatorPort = coordinatorPort
         self.myAddr = myAddr
