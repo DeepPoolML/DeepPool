@@ -27,4 +27,9 @@ class Runtime:
         # 2. run a (or partial) iteration. 
 
         # Thread per job?
-    
+
+def main():
+    print("yay! Runtime runs.")
+
+if __name__ == "__main__":
+    main()

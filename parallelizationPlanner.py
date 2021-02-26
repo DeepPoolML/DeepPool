@@ -249,7 +249,7 @@ class RunnableModule(nn.Module):
         assert(len(layers) == len(configs))
 
         for i, (layer, config) in enumerate(zip(layers, configs)):
-            modules.append(layer.module)
+            self.modules.append(layer.module)
 
             # if layer.name == "conv2d":
             #     modules.append(nn.Conv2d(layer.params["in_channels"], layer.params["out_channels"], layer.params["kernel_size"], layer.params["stride"], layer.params["padding"]))

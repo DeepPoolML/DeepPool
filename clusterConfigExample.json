@@ -1,0 +1,6 @@
+{
+    "workDir": "~/DeepPoolRuntime/",
+    "serverList": [
+        {"addr": "localhost", "port": 1234, "gpuCount": 4, "userId": "ubuntu", "sshKeyPath": "~/.ssh/ulma-sjp.pem"}
+    ]
+}
