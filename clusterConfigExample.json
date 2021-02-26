@@ -1,6 +1,33 @@
 {
-    "workDir": "~/DeepPoolRuntime/",
-    "serverList": [
-        {"addr": "localhost", "port": 1234, "gpuCount": 4, "userId": "ubuntu", "sshKeyPath": "~/.ssh/ulma-sjp.pem"}
-    ]
+  "workDir": "~/DeepPoolRuntime/",
+  "serverList": [
+    {
+      "addr": "172.31.70.173",
+      "port": 1443,
+      "gpuCount": 1,
+      "userId": "ubuntu",
+      "sshKeyPath": "~/.ssh/ulma-sjp.pem"
+    },
+    {
+      "addr": "172.31.72.81",
+      "port": 1443,
+      "gpuCount": 1,
+      "userId": "ubuntu",
+      "sshKeyPath": "~/.ssh/ulma-sjp.pem"
+    },
+    {
+      "addr": "172.31.79.246",
+      "port": 1443,
+      "gpuCount": 1,
+      "userId": "ubuntu",
+      "sshKeyPath": "~/.ssh/ulma-sjp.pem"
+    },
+    {
+      "addr": "172.31.69.119",
+      "port": 1443,
+      "gpuCount": 1,
+      "userId": "ubuntu",
+      "sshKeyPath": "~/.ssh/ulma-sjp.pem"
+    }
+  ]
 }

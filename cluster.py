@@ -2,7 +2,6 @@ import time
 import signal
 import sys
 import subprocess
-import os
 import json
 import xmlrpc.server
 import xmlrpc.client
@@ -90,13 +89,20 @@ class ClusterCoordinator:
         self.workDir = workDir
         self.processes = []  # from subprocess calls used for launching runtime.
 
+    ######################################################
+    ## Runtime cluster management
+    ######################################################
     def installPackages(self):
+        """ Install required software at each runtime server """
         pipPackages = ["torch"]
         for location in self.locations:
             for pipPackage in pipPackages:
                 location.rsh("pip install %s" % pipPackage)
         
     def launchRuntimeAll(self):
+        """ Launch runtime at all remote locations. Also registers the sighandler
+            that cleanly shuts down all remote runtime servers.
+        """
         for location in self.locations:
             location.upSync(".", self.workDir)
             # pass master ip and port.
@@ -126,27 +132,29 @@ class ClusterCoordinator:
             signal.signal(signal.SIGTERM, sigkill_handler)
 
     def shutdownRuntimeAll(self):
+        """ Ask all remote runtime servers to stop. Returns after all servers ack the shutdown request. """
         for location in self.locations:
-            # print("Shutdown requested to %s:%d" % (location.address, location.port))
-            with xmlrpc.client.ServerProxy("http://%s:%d/"%(location.address, location.port)) as proxy:
-                print(proxy.shutdown())
-                print("Shutdown requested to %s:%d" % (location.address, location.port))
+            print(location.getProxy().shutdown())
 
     def waitForRuntimeAll(self):
-        # TODO: remove this later when finished coordinator server implementation.
+        """ Waits until all runtime processes terminate. Development use only. """
+        # TODO: replace this method with xmlrpc server event loop.
         for p in self.processes:
             p.wait()
-    
-    def scheduleTraining(self): #TODO: Argument for this? CostSim?
+
+    ######################################################
+    ## RPC handlers
+    ######################################################
+    def export_scheduleTraining(self): #TODO: Argument for this? CostSim?
         # TODO: how to serialize RunnableModule?
         print("NOT YET IMPLEMENTED.")
 
+    def export_addGpuNode(self):
+        print("NOT YET IMPLEMENTED.")
 
 ####################################################################################
-##  One-time launch scripts
+##  Initial launch scripts
 ####################################################################################
-node_local_rank_stdout_filename = "node_{}_local_rank_{}_stdout"
-node_local_rank_stderr_filename = "node_{}_local_rank_{}_stderr"
 
 def parse_args():
     """
@@ -160,24 +168,19 @@ def parse_args():
     # Optional arguments for the launch helper
     parser.add_argument("--addrToBind", type=str, default="localhost:12340",
                         help="IP:port to listen for requests to the cluster coordinator")
-    parser.add_argument("--nnodes", type=int, default=1,
-                        help="The number of nodes to use for distributed "
-                             "training")
-    parser.add_argument("--nproc_per_node", type=int, default=1,
-                        help="The number of processes to launch on each node, "
-                             "for GPU training, this is recommended to be set "
-                             "to the number of GPUs in your system so that "
-                             "each process can be bound to a single GPU.")
-    parser.add_argument(
-        "--logdir",
-        default=None,
-        type=str,
-        help=f"""Relative path to write subprocess logs to. Passing in a relative
-        path will create a directory if needed, and write the stdout and stderr to files
-        {node_local_rank_stdout_filename} and {node_local_rank_stderr_filename}. Note that
-        successive runs with the  same path to write logs to will overwrite existing logs,
-        so be sure to save logs as needed.""",
-    )
+    
+    # node_local_rank_stdout_filename = "node_{}_local_rank_{}_stdout"
+    # node_local_rank_stderr_filename = "node_{}_local_rank_{}_stderr"
+    # parser.add_argument(
+    #     "--logdir",
+    #     default=None,
+    #     type=str,
+    #     help=f"""Relative path to write subprocess logs to. Passing in a relative
+    #     path will create a directory if needed, and write the stdout and stderr to files
+    #     {node_local_rank_stdout_filename} and {node_local_rank_stderr_filename}. Note that
+    #     successive runs with the  same path to write logs to will overwrite existing logs,
+    #     so be sure to save logs as needed.""",
+    # )
     parser.add_argument("--pathToConfig", type=str, default="clusterConfig.json",
                         help="The full path to the cluster configuration files")
     return parser.parse_args()
