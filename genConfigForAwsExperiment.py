@@ -7,6 +7,7 @@ pkeyPath = '~/.ssh/ulma-sjp.pem'
 userId = "ubuntu"
 workDir = "~/DeepPoolRuntime/"
 gpuCount = 1
+portNum = 1443
 
 with open(PUBLIC_ADDR_FILENAME, "r") as f:
     publicIps = []
@@ -22,7 +23,7 @@ config = {}
 config["workDir"] = workDir
 config["serverList"] = []
 for privateIp in privateIps:
-    config["serverList"].append({"addr": privateIp, "port": 1234, "gpuCount": gpuCount, "userId": userId, "sshKeyPath": pkeyPath})
+    config["serverList"].append({"addr": privateIp, "port": portNum, "gpuCount": gpuCount, "userId": userId, "sshKeyPath": pkeyPath})
 with open('clusterConfig.json', 'w') as outfile:
     json.dump(config, outfile, indent=2, sort_keys=False)
 print("****** Configuration generated for AWS cluster: ")

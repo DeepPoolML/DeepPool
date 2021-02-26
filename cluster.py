@@ -4,18 +4,39 @@ import sys
 import subprocess
 import os
 import json
+import xmlrpc.server
+import xmlrpc.client
+import re
 from argparse import ArgumentParser, REMAINDER
 from typing import Optional, IO, List, Any
 
 
-
 class Location:
-    def __init__(self, address, device, userId, sshKeyPath):
+    def __init__(self, address: str, port: int, device: int, userId: str, sshKeyPath: str):
         self.address = address
+        self.port = port
         self.device = device
         self.userId = userId
         self.sshKeyPath = sshKeyPath
         self.serverId = None
+        self.proxy = None
+        
+    def getProxy(self, maxRetry = 5):
+        if self.proxy != None:
+            return self.proxy
+        retryGap = 1
+        retryCount = 0
+        while retryCount < maxRetry:
+            try:
+                self.proxy = xmlrpc.client.ServerProxy("http://%s:%d/"%(self.address, self.port))
+                self.proxy.poke()
+                return self.proxy
+            except ConnectionRefusedError:
+                print("Cannot connect to %s:%d. Will retry in %d sec." %
+                    (self.address, self.port, retryGap))
+                time.sleep(retryGap)
+                retryGap *= 2 # exponential back off.
+                retryCount += 1
 
     def downloadFile(self, remotePath: str, localPath: str):
         print("  Downloading %s to %s at %s" % (remotePath, localPath, self.address))
@@ -60,11 +81,11 @@ class Location:
         except subprocess.CalledProcessError as e:
             output = e.output
             exit(1)
-    
-    
-    
+
 class ClusterCoordinator:
-    def __init__(self, locations: List[Location], workDir: str):
+    def __init__(self, addrToBind: str, portToBind: int, locations: List[Location], workDir: str):
+        self.myAddr = addrToBind
+        self.myPort = portToBind
         self.locations = locations
         self.workDir = workDir
         self.processes = []  # from subprocess calls used for launching runtime.
@@ -78,16 +99,22 @@ class ClusterCoordinator:
     def launchRuntimeAll(self):
         for location in self.locations:
             location.upSync(".", self.workDir)
-            # location.rsh("sudo pip install torch")
-            self.processes.append(location.rshAsync("python3 " + self.workDir + "runtime.py"))
-            
+            # pass master ip and port.
+            self.processes.append(location.rshAsync(
+                "python3 " + self.workDir + "runtime.py" + \
+                    " --coordinatorAddr %s:%d --myAddr %s:%d --device %d" % \
+                        (self.myAddr, self.myPort, location.address, location.port, location.device) ))
+            print(location.getProxy().poke())
+
             sig_names = {2: "SIGINT", 15: "SIGTERM"}
             last_return_code = None
             def sigkill_handler(signum, frame):
+                self.shutdownRuntimeAll()
                 for process in self.processes:
                     print(f"Killing subprocess {process.pid}")
                     try:
-                        process.kill()
+                        process.terminate()
+                        # process.kill()
                     except Exception:
                         pass
                 if last_return_code is not None:
@@ -97,7 +124,14 @@ class ClusterCoordinator:
                 sys.exit(1)
             signal.signal(signal.SIGINT, sigkill_handler)
             signal.signal(signal.SIGTERM, sigkill_handler)
-    
+
+    def shutdownRuntimeAll(self):
+        for location in self.locations:
+            # print("Shutdown requested to %s:%d" % (location.address, location.port))
+            with xmlrpc.client.ServerProxy("http://%s:%d/"%(location.address, location.port)) as proxy:
+                print(proxy.shutdown())
+                print("Shutdown requested to %s:%d" % (location.address, location.port))
+
     def waitForRuntimeAll(self):
         # TODO: remove this later when finished coordinator server implementation.
         for p in self.processes:
@@ -119,11 +153,13 @@ def parse_args():
     Helper function parsing the command line options
     @retval ArgumentParser
     """
-    parser = ArgumentParser(description="PyTorch distributed training launch "
-                                        "helper utility that will spawn up "
+    parser = ArgumentParser(description="ClusterCoordinator initial launch "
+                                        "script that will spawn up "
                                         "multiple distributed processes")
 
     # Optional arguments for the launch helper
+    parser.add_argument("--addrToBind", type=str, default="localhost:12340",
+                        help="IP:port to listen for requests to the cluster coordinator")
     parser.add_argument("--nnodes", type=int, default=1,
                         help="The number of nodes to use for distributed "
                              "training")
@@ -153,12 +189,17 @@ def main():
     for serverConfig in clusterConfig["serverList"]:
         print("Found %s" % str(serverConfig))
         for deviceIdx in range(serverConfig["gpuCount"]):
-            locations.append(Location(serverConfig["addr"], deviceIdx, serverConfig["userId"], serverConfig["sshKeyPath"]))
+            locations.append(Location(serverConfig["addr"], serverConfig["port"], deviceIdx, serverConfig["userId"], serverConfig["sshKeyPath"]))
+    addrToBindCombo = re.split('[-:]', args.addrToBind)
+    addrToBind = addrToBindCombo[0]
+    portToBind = int(addrToBindCombo[1])
 
-    coordinator = ClusterCoordinator(locations, clusterConfig["workDir"])
+    coordinator = ClusterCoordinator(addrToBind, portToBind, locations, clusterConfig["workDir"])
     # coordinator.installPackages()
     coordinator.launchRuntimeAll()
     print("Cluster initialization completed.")
+    time.sleep(50)
+    coordinator.shutdownRuntimeAll()
     coordinator.waitForRuntimeAll()
 
     # TODO: listen port to changes on config?
