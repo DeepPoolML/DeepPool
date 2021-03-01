@@ -1,3 +1,17 @@
+# Copyright (c) 2021 MIT
+# 
+# Permission to use, copy, modify, and distribute this software for any
+# purpose with or without fee is hereby granted, provided that the above
+# copyright notice and this permission notice appear in all copies.
+#
+# THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR(S) DISCLAIM ALL WARRANTIES
+# WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+# MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL AUTHORS BE LIABLE FOR
+# ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+# WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+# ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+# OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
 import subprocess
 import json
 
@@ -7,7 +21,7 @@ pkeyPath = '~/.ssh/ulma-sjp.pem'
 userId = "ubuntu"
 workDir = "~/DeepPoolRuntime/"
 gpuCount = 1
-portNum = 1443
+portPrefix = 1510 # prefix + Device# is used for port.
 
 with open(PUBLIC_ADDR_FILENAME, "r") as f:
     publicIps = []
@@ -23,7 +37,11 @@ config = {}
 config["workDir"] = workDir
 config["serverList"] = []
 for privateIp in privateIps:
-    config["serverList"].append({"addr": privateIp, "port": portNum, "gpuCount": gpuCount, "userId": userId, "sshKeyPath": pkeyPath})
+    deviceList = []
+    for deviceIdx in range(gpuCount):
+        portNum = portPrefix + deviceIdx
+        deviceList.append({"port": portNum, "device": deviceIdx})
+    config["serverList"].append({"addr": privateIp, "deviceList": deviceList, "userId": userId, "sshKeyPath": pkeyPath})
 with open('clusterConfig.json', 'w') as outfile:
     json.dump(config, outfile, indent=2, sort_keys=False)
 print("****** Configuration generated for AWS cluster: ")

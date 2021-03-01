@@ -1,3 +1,17 @@
+# Copyright (c) 2021 MIT
+# 
+# Permission to use, copy, modify, and distribute this software for any
+# purpose with or without fee is hereby granted, provided that the above
+# copyright notice and this permission notice appear in all copies.
+#
+# THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR(S) DISCLAIM ALL WARRANTIES
+# WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+# MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL AUTHORS BE LIABLE FOR
+# ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+# WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+# ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+# OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
 import time
 import signal
 import sys
@@ -8,7 +22,6 @@ import xmlrpc.client
 import re
 from argparse import ArgumentParser, REMAINDER
 from typing import Optional, IO, List, Any
-
 
 class Location:
     def __init__(self, address: str, port: int, device: int, userId: str, sshKeyPath: str):
@@ -94,7 +107,7 @@ class ClusterCoordinator:
     ######################################################
     def installPackages(self):
         """ Install required software at each runtime server """
-        pipPackages = ["torch"]
+        pipPackages = ["torch", "jsonpickle"]
         for location in self.locations:
             for pipPackage in pipPackages:
                 location.rsh("pip install %s" % pipPackage)
@@ -191,8 +204,8 @@ def main():
     locations = []
     for serverConfig in clusterConfig["serverList"]:
         print("Found %s" % str(serverConfig))
-        for deviceIdx in range(serverConfig["gpuCount"]):
-            locations.append(Location(serverConfig["addr"], serverConfig["port"], deviceIdx, serverConfig["userId"], serverConfig["sshKeyPath"]))
+        for deviceConfig in serverConfig["deviceList"]:
+            locations.append(Location(serverConfig["addr"], deviceConfig["port"], deviceConfig["device"], serverConfig["userId"], serverConfig["sshKeyPath"]))
     addrToBindCombo = re.split('[-:]', args.addrToBind)
     addrToBind = addrToBindCombo[0]
     portToBind = int(addrToBindCombo[1])
