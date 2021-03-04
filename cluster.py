@@ -22,6 +22,7 @@ import xmlrpc.client
 import re
 from argparse import ArgumentParser, REMAINDER
 from typing import Optional, IO, List, Any
+from jobDescription import TrainingJob
 
 class Location:
     def __init__(self, address: str, port: int, device: int, userId: str, sshKeyPath: str):
@@ -94,13 +95,71 @@ class Location:
             output = e.output
             exit(1)
 
-class ClusterCoordinator:
+class ClusterClient:
+    """ A handle to submit training job to cluster. """
+
+    def __init__(self, coordinatorAddr: str, coordinatorPort: int, maxRetries = 5):
+        retryGap = 1
+        retryCount = 0
+        while retryCount < maxRetries:
+            try:
+                self.proxy = xmlrpc.client.ServerProxy("http://%s:%d/"%(coordinatorAddr, coordinatorPort))
+                self.proxy.poke()
+                return
+            except ConnectionRefusedError:
+                print("Cannot connect to %s:%d. Will retry in %d sec." %
+                    (coordinatorAddr, coordinatorPort, retryGap))
+                time.sleep(retryGap)
+                retryGap *= 2 # exponential back off.
+                retryCount += 1
+    
+    def submitTrainingJob(self, trainingJobInJSON: str):
+        self.proxy.poke()
+        self.proxy.scheduleTraining(trainingJobInJSON)
+
+
+
+class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
+    """ GPU cluster coordinator. It accepts training jobs from clients and schedule them to runtimes. """
+
     def __init__(self, addrToBind: str, portToBind: int, locations: List[Location], workDir: str):
+        super(ClusterCoordinator, self).__init__((addrToBind, portToBind))
         self.myAddr = addrToBind
         self.myPort = portToBind
         self.locations = locations
         self.workDir = workDir
         self.processes = []  # from subprocess calls used for launching runtime.
+    
+    def _dispatch(self, method, params):
+        """ Custom dispatcher for XML-RPC server. """
+        try:
+            # We are forcing the 'export_' prefix on methods that are
+            # callable through XML-RPC for security.
+            func = getattr(self, 'export_' + method)
+        except AttributeError:
+            raise Exception('method "%s" is not supported' % method)
+        else:
+            return func(*params)
+
+    ######################################################
+    ## RPC handlers
+    ######################################################
+    def export_poke(self):
+        return 'Returned from poke at %s' % self.myAddr
+
+    def export_scheduleTraining(self, trainingJobInJSON: str):
+        job = TrainingJob("test", None, None, 0, "")
+        job.loadJSON(trainingJobInJSON)
+        print("received job")
+        
+        ## For now just use all gpus.
+        for rank, location in enumerate(self.locations):
+            moduleDesc = job.dumpSingleRunnableModule(rank)
+            print(location.getProxy().scheduleTraining(moduleDesc))
+        return 'done'
+
+    def export_addGpuNode(self):
+        print("NOT YET IMPLEMENTED.")
 
     ######################################################
     ## Runtime cluster management
@@ -155,15 +214,6 @@ class ClusterCoordinator:
         for p in self.processes:
             p.wait()
 
-    ######################################################
-    ## RPC handlers
-    ######################################################
-    def export_scheduleTraining(self): #TODO: Argument for this? CostSim?
-        # TODO: how to serialize RunnableModule?
-        print("NOT YET IMPLEMENTED.")
-
-    def export_addGpuNode(self):
-        print("NOT YET IMPLEMENTED.")
 
 ####################################################################################
 ##  Initial launch scripts
@@ -214,7 +264,8 @@ def main():
     # coordinator.installPackages()
     coordinator.launchRuntimeAll()
     print("Cluster initialization completed.")
-    time.sleep(50)
+    # time.sleep(50)
+    coordinator.serve_forever()
     coordinator.shutdownRuntimeAll()
     coordinator.waitForRuntimeAll()
 

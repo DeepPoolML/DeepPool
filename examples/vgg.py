@@ -8,6 +8,8 @@ parentdir = os.path.dirname(currentdir)
 sys.path.append(parentdir)
 from parallelizationPlanner import CostSim
 from parallelizationPlanner import GpuProfiler
+from cluster import ClusterClient
+from jobDescription import TrainingJob
 
 __all__ = [
     'VGG', 'vgg11', 'vgg11_bn', 'vgg13', 'vgg13_bn', 'vgg16', 'vgg16_bn',
@@ -290,6 +292,23 @@ model = vgg11()
 # model = resnet34()
 cs.printAllLayers()
 cs.computeInputDimensions((224,224,3))
-cs.searchBestSplits(16, 16)
+job = cs.searchBestSplits(16, 16)
+
+cc = ClusterClient("172.31.70.173", 12345)
+jobInJson = job.dumpInJSON()
+job2 = TrainingJob("test", None, None, 0, "")
+job2.loadJSON(jobInJson)
+assert(jobInJson == job2.dumpInJSON())
+print("Load/Dump returned the same output? %s" % ("true" if jobInJson == job2.dumpInJSON() else "false"))
+print(jobInJson)
+
+locations = ["a", "b", "c"]
+## For now just use all gpus.
+for rank, location in enumerate(locations):
+    moduleDesc = job.dumpSingleRunnableModule(rank)
+    print("%s ==> \n %s" % (location, moduleDesc))
+
+cc.submitTrainingJob(jobInJson)
+
 profiler.saveProfile()
 

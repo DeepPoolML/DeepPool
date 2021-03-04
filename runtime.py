@@ -1,3 +1,17 @@
+# Copyright (c) 2021 MIT
+# 
+# Permission to use, copy, modify, and distribute this software for any
+# purpose with or without fee is hereby granted, provided that the above
+# copyright notice and this permission notice appear in all copies.
+#
+# THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR(S) DISCLAIM ALL WARRANTIES
+# WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+# MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL AUTHORS BE LIABLE FOR
+# ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+# WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+# ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+# OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
 import xmlrpc.server
 import torch
 import torch.nn as nn
@@ -46,12 +60,12 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
     ######################################################
     ## RPC handlers
     ######################################################
-    def export_scheduleTraining(self, job: TrainingJob):
-        self.jobs.append(job)
+    def export_scheduleTraining(self, jobInJson: str):
+        # self.jobs.append(job)
         print("Invoked scheduleTraining @ %s!"%self.myAddr)
+        return "Invoked scheduleTraining @ %s!"%self.myAddr
 
     def export_poke(self):
-        print("poked! at %s."%self.myAddr)
         return 'Returned from poke at %s' % self.myAddr
 
     def export_shutdown(self):
