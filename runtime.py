@@ -21,8 +21,10 @@ import signal
 import sys
 import time
 from argparse import ArgumentParser, REMAINDER
+from runnableModule import RunnableModule
+from runnableModule import VisionDataLoaderGenerator
 
-class TrainingJob:
+class JobContext:
     def __init__(self, module: nn.Module, name: str, dataLoader):
         self.module = module
         self.name = name
@@ -60,10 +62,14 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
     ######################################################
     ## RPC handlers
     ######################################################
-    def export_scheduleTraining(self, jobInJson: str):
-        # self.jobs.append(job)
-        print("Invoked scheduleTraining @ %s!"%self.myAddr)
-        return "Invoked scheduleTraining @ %s!"%self.myAddr
+    def export_scheduleTraining(self, name: str, jobInJson: str, dataDir: str):
+        commHandler = None # TODO: implement.
+        module = RunnableModule(jobInJson, commHandler)
+        loader = VisionDataLoaderGenerator.genDataLoader(
+            jobInJson, dataDir, syntheticDataLength=1600)
+        job = JobContext(module, name, loader)
+        self.jobs.append(job)
+        return "Scheduled a training job. @ %s!"%self.myAddr
 
     def export_poke(self):
         return 'Returned from poke at %s' % self.myAddr

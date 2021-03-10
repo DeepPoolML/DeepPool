@@ -53,104 +53,6 @@ class Layer:
         # prop["outputDim"] = {"width": self.outputDim[0], "height": self.outputDim[1], "channel": self.outputDim[2]}
         return prop
 
-class RunnableSplittedLayer(Layer):
-    def __init__(self, layerInJson, listOfLayers):
-        super(Layer, self).__init__(None,
-                layerInJson["name"], layerInJson["params"],
-                [listOfLayers[prevLayerId] for prevLayerId in layerInJson["prevLayers"]])
-        self.id = layerInJson["id"]
-        self.inputDim = layerInJson["inputDim"]
-        self.outputDim = layerInJson["outputDim"]
-        self.config = layerInJson["config"]
-        if "tensorRx" in layerInJson:
-            self.tensorRx = layerInJson["tensorRx"]
-        if "tensorRx" in layerInJson:
-            self.tensorRx = layerInJson["tensorRx"]
-        listOfLayers.append(self)
-
-
-class RunnableModule(nn.Module):
-    def __init__(self, specInJson):
-        super(RunnableModule, self).__init__()
-        self.rank = specInJson["rank"]
-        self.globalBatchSize = specInJson["globalBatchSize"]
-        self.modules = torch.nn.ModuleList()
-        self.layersInJson = specInJson["layers"]
-        self.initialBatchSize = self.layersInJson[0]["config"][0]
-
-        for ldsc in self.layersInJson:
-            name = ldsc["name"]
-            params = ldsc["params"]
-            outputDim = ldsc["outputDim"]
-            if name == "conv2d":
-                # self.modules.append(nn.Conv2d(params["in_channels"], params["out_channels"], params["kernel_size"], params["stride"], params["padding"]))
-                self.modules.append(nn.Conv2d(**params))
-            elif name == "maxPool2d":
-                self.modules.append(nn.MaxPool2d(**params))
-                # modules.append(nn.MaxPool2d(layer.params["kernel_size"], layer.params["stride"], layer.params["padding"]))
-            elif name in ["avgPool2d", "adAvgPool2d"]:
-                self.modules.append(nn.AdaptiveAvgPool2d((outputDim[0], outputDim[1])))
-            elif name == "linear":
-                self.modules.append(nn.Linear(**params))
-            elif name in ["ReLU2d", "ReLU1d", "ReLU"]:
-                self.modules.append(nn.ReLU(params["inplace"]))
-            elif name == "flatten":
-                # For VGG and Resnet, we can ignore this for now.
-                # Maybe view(-1)?
-                print("%s layer is not implemented. Safe to ignore for VGG or Resnet" % name)
-            elif name == "concat":
-                print("%s layer is not implemented." % name)
-                # Not used in for VGG and Resnet. Only inception needs this.
-
-            # print(ldsc)
-            # prevLayers = [self.layers[prevLayerId] for prevLayerId in ldsc["prevLayers"]]
-            # l = Layer(None, ldsc["name"], ldsc["params"], prevLayers)
-            # l.id = ldsc["id"]
-            # # l.nextLayers = ldsc["nextLayers"]
-            # l.inputDim = ldsc["inputDim"]
-            # l.outputDim = ldsc["outputDim"]
-            # config = ldsc["config"]
-            # if ()
-            # self.layers.append(l)
-            # self.layerConfigs.append(config)
-
-    def initializeAtLocation(self, device, commHandler, controller):
-        self.device = device
-        self.commHandler = commHandler
-        self.controller = controller
-
-    def forward(self, x):   
-        # Assumes modules and layers are topologically sorted.     
-        outputs = []
-        for i, (module, ldsc) in enumerate(zip(self.modules, self.layersInJson)):
-            if len(ldsc["prevLayers"]) == 0:
-                inputTensor = x
-            elif len(ldsc["prevLayers"]) == 1:
-                inputTensor = outputs[ldsc["prevLayers"][0]]
-            else:
-                print("[RunnableModule::forward] more than 2 previous layers is not yet supported.")
-                raise Exception("[RunnableModule::forward] more than 2 previous layers is not yet supported.")
-            
-            if "tensorRx" in ldsc: # receive parts of input.
-                inputTensorList = [inputTensor]
-                for rxItem in ldsc["tensorRx"]:
-                    additionalInput = self.commHandler.recv(rxItem["name"], rxItem["src"])
-                    inputTensorList.append(additionalInput)
-                inputTensor = torch.cat(inputTensorList, 1)
-
-            output = module(inputTensor)
-
-            if "tensorTx" in ldsc: # receive parts of input.
-                sampleSplitSections = [txItem["prop"]["xferSamples"] for txItem in ldsc["tensorTx"]]
-                remainingSamples = output.shape[0] - sum(sampleSplitSections)
-                sampleSplitSections.append(remainingSamples)
-                splittedOutputs = torch.split(output, sampleSplitSections)
-
-                for txIdx, txItem in enumerate(ldsc["tensorTx"]):
-                    self.commHandler.sendAsync(txItem["name"], txItem["dest"], splittedOutputs[txIdx])
-                output = splittedOutputs[-1]
-            outputs.append(output)
-        return outputs[-1]
 
 class TrainingJob:
     def __init__(self, name: str, layers: List[Layer], layerConfigs: List[tuple], globalBatchSize: int, datasetDir: str):
@@ -199,6 +101,7 @@ class TrainingJob:
         print("[dumpSingleRunnableModule] generating for rank: %d" % targetRank)
         allProps = []
         srcGpus = None
+        maxGpusUsed = 0
         for l, config in zip(self.layers, self.layerConfigs):
             prop = l.dumpForJSON()
             prop["config"] = config
@@ -208,6 +111,7 @@ class TrainingJob:
                 return None
             
             destGpus = self.calcGpusNeeded(l, config, self.globalBatchSize)
+            maxGpusUsed = max(maxGpusUsed, destGpus)
             if targetRank >= destGpus: # Not used for this layer.
                 configInList = list(config)
                 configInList[0] = 0
@@ -241,12 +145,12 @@ class TrainingJob:
                             xferSamples = min(samplesAvail, config[0])
                             samplesAssigned += xferSamples
                             xferBytes = xferSamples * self.bytesPerParam
-                            prop["tensorRx"].append({"name": "%d_sample_%d_%d" % (l.id, src-startSrcNode, xferSamples),
+                            prop["tensorRx"].append({"name": "%d_sample_%d" % (l.id, src-startSrcNode),
+                                                    "prop": {"xferSamples": xferSamples},
                                                     "src": src,
                                                     "bytes": xferBytes})
                             if samplesAssigned >= config[0]:
                                 break
-                            # prop["tensorTx"] = [{"name": "%d_sample_0" % l.id, "dest": 1, "bytes": 10}]
                     elif targetRank < srcGpus: 
                         # send samples after previous layer. Recv nothing for current.
                         startDestNode = int(targetRank * newGpuCount / srcGpus) + srcGpus
@@ -269,7 +173,7 @@ class TrainingJob:
                             xferBytes = xferSamples * self.bytesPerParam
                             
                             tensorIdx = targetRank - (dest - srcGpus) * srcGpus / newGpuCount
-                            allProps[-1]["tensorTx"].append({"name": "%d_sample_%d_%d" % (l.id, tensorIdx, xferSamples),
+                            allProps[-1]["tensorTx"].append({"name": "%d_sample_%d" % (l.id, tensorIdx),
                                                         "prop": {"xferSamples": xferSamples},
                                                         "dest": dest,
                                                         "bytes": xferBytes})
@@ -297,11 +201,13 @@ class TrainingJob:
                             else:
                                 samplesLeft = samplesPerDest
 
-                            xferSamples = min(samplesLeft, samplesPerDest)
+                            assert allProps[-1]["config"][0] == srcConfig[0]
+                            xferSamples = min(min(samplesLeft, samplesPerDest), srcConfig[0])
                             samplesAssigned += xferSamples
                             xferBytes = xferSamples * self.bytesPerParam
-                            tensorIdx = targetRank - (targetRank - destGpus) * destGpus / removedGpuCount
-                            allProps[-1]["tensorTx"].append({"name": "%d_sample_%d_%d" % (l.id, tensorIdx, xferSamples),
+                            startSrcNode = int(dest * removedGpuCount / destGpus) + destGpus
+                            tensorIdx = targetRank - startSrcNode
+                            allProps[-1]["tensorTx"].append({"name": "%d_sample_%d" % (l.id, tensorIdx),
                                                         "prop": {"xferSamples": xferSamples},
                                                         "dest": dest,
                                                         "bytes": xferBytes})
@@ -322,12 +228,14 @@ class TrainingJob:
                             else:
                                 samplesLeft = srcConfig[0]
                             
-                            xferSamples = min(samplesLeft, samplesPerDest)
+                            # xferSamples = min(samplesLeft, samplesPerDest)
+                            xferSamples = min(min(samplesLeft, samplesPerDest), srcConfig[0])
                             samplesAssigned += xferSamples
                             xferBytes = xferSamples * self.bytesPerParam
                             
                             tensorIdx = src - startSrcNode
-                            prop["tensorRx"].append({"name": "%d_sample_%d_%d" % (l.id, tensorIdx, xferSamples),
+                            prop["tensorRx"].append({"name": "%d_sample_%d" % (l.id, tensorIdx),
+                                                    "prop": {"xferSamples": xferSamples},
                                                     "src": src,
                                                     "bytes": xferBytes})
                             if samplesAssigned >= samplesPerDest:
@@ -337,7 +245,19 @@ class TrainingJob:
             allProps.append(prop)
             srcGpus = destGpus
             srcConfig = config
-        fullDesc = {"rank": targetRank, "globalBatchSize": self.globalBatchSize, "layers": allProps}
+        
+        # Compute dataLoaderOffset & worldSize.
+        samplesPerNode = self.layerConfigs[0][0]
+        dataLoaderOffset = samplesPerNode * targetRank
+        if dataLoaderOffset >= self.globalBatchSize: # This may happen if first layer uses smaller # of GPUs than later ones.
+            dataLoaderOffset = 0
+            assert allProps[0]["config"][0] == 0
+
+        fullDesc = {"rank": targetRank,
+                    "maxGpusUsed": maxGpusUsed,
+                    "globalBatchSize": self.globalBatchSize,
+                    "dataLoaderOffset": dataLoaderOffset,
+                    "layers": allProps}
         # dumpedStr = json.dumps(fullDesc, indent=1, sort_keys=False)
         dumpedStr = json.dumps(fullDesc, sort_keys=False)
         # print(dumpedStr)
@@ -371,3 +291,8 @@ class TrainingJob:
                 dpOnly = True
         return dpOnly
 
+def test():
+    return
+
+if __name__ == "__main__":
+    test()

@@ -1,8 +1,10 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.utils.model_zoo as model_zoo
-
+import threading
 import os, sys
+
 currentdir = os.path.dirname(os.path.realpath(__file__))
 parentdir = os.path.dirname(currentdir)
 sys.path.append(parentdir)
@@ -10,6 +12,9 @@ from parallelizationPlanner import CostSim
 from parallelizationPlanner import GpuProfiler
 from cluster import ClusterClient
 from jobDescription import TrainingJob
+from runnableModule import RunnableModule
+from runnableModule import MockCommHandler
+from runnableModule import VisionDataLoaderGenerator
 
 __all__ = [
     'VGG', 'vgg11', 'vgg11_bn', 'vgg13', 'vgg13_bn', 'vgg16', 'vgg16_bn',
@@ -292,9 +297,9 @@ model = vgg11()
 # model = resnet34()
 cs.printAllLayers()
 cs.computeInputDimensions((224,224,3))
-job = cs.searchBestSplits(16, 16)
+job = cs.searchBestSplits(4, 16)
 
-cc = ClusterClient("172.31.70.173", 12345)
+
 jobInJson = job.dumpInJSON()
 job2 = TrainingJob("test", None, None, 0, "")
 job2.loadJSON(jobInJson)
@@ -302,13 +307,53 @@ assert(jobInJson == job2.dumpInJSON())
 print("Load/Dump returned the same output? %s" % ("true" if jobInJson == job2.dumpInJSON() else "false"))
 print(jobInJson)
 
-locations = ["a", "b", "c"]
+locations = ["a", "b", "c", "d"]
+
+
+# optimizer is not yet implemented.
+def train(loader, model, optimizer = None, criterion = nn.CrossEntropyLoss(), device="cpu"):
+    model.to(device)
+    model.train()
+    for batch_idx, (data, target) in enumerate(loader):
+        data, target = data.to(device), target.to(device)
+        # optimizer.zero_grad()
+        print("forward pass is starting.. data: %s" % str(data.size()))
+        output, runCriterionAndLoss = model(data)
+        # output = torch.flatten(output, 1)
+        if runCriterionAndLoss:
+            output = F.log_softmax(output, dim=1)
+            loss = criterion(output, target)
+            print("backward pass is starting")
+            loss.backward()
+        else:
+            output.backward(output) # gradient passed is dummy.
+        # finish after 1st iteration.
+        return
+        # optimizer.step()
+
+
+comm = MockCommHandler()
+threadList = []
 ## For now just use all gpus.
 for rank, location in enumerate(locations):
     moduleDesc = job.dumpSingleRunnableModule(rank)
     print("%s ==> \n %s" % (location, moduleDesc))
+    
+    module = RunnableModule(moduleDesc, comm)
+    loader = VisionDataLoaderGenerator.genDataLoader(
+        moduleDesc, syntheticDataLength=1600)
+    train_thread = threading.Thread(name='train_rank%d'%rank, target=train, args=(loader, module,))
+    # train_thread = threading.Thread(name='train_rank%d'%rank, target=train, args=(loader, model,))
+    threadList.append(train_thread)
 
-cc.submitTrainingJob(jobInJson)
+for thread in threadList:
+    thread.start()
+for thread in threadList:
+    thread.join()
+
+
+# cc = ClusterClient("172.31.70.173", 12345)
+# cc.submitTrainingJob(jobInJson)
 
 profiler.saveProfile()
 
