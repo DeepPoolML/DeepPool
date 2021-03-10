@@ -96,7 +96,8 @@ class VisionDataLoaderGenerator:
         inputDim = jobInJson["layers"][0]["inputDim"]
         # {"globalBatchSize": 16,
         # "rank": 0,
-        # "dataLoaderOffset": 2 ########## TODO.
+        # "dataLoaderOffset": 2
+        # "dataLoaderTargetTx": [{"name": "target_0", "dest": 1, "prop": {"xferSamples": 1}, "bytes": 56}]}, # TODO: implement in dump.
         # "layers": [{"id": 0,
         #             "name": "conv2d",
         #             "params": {"in_channels": 3, "out_channels": 64, "kernel_size": 3, "stride": 1, "padding": 1},
@@ -224,6 +225,7 @@ class ReceiveSamplesFunc(torch.autograd.Function):
             inputTensorList.append(additionalInput)
         inputTensorList.append(x)
         inputTensor = torch.cat(inputTensorList, 0)
+        # print("** output from ReceiveSamplesFunc.forward: %s" % str(inputTensor.size()))
         return inputTensor
 
     @staticmethod
@@ -269,6 +271,7 @@ class RunnableModule(nn.Module):
             elif name == "flatten":
                 # For VGG and Resnet, we can ignore this for now.
                 # Maybe view(-1)?
+                module = nn.Flatten(start_dim=1)
                 print("%s layer is not implemented. Safe to ignore for VGG or Resnet" % name)
             elif name == "concat":
                 print("%s layer is not implemented." % name)

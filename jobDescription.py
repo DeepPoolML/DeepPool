@@ -245,7 +245,7 @@ class TrainingJob:
             allProps.append(prop)
             srcGpus = destGpus
             srcConfig = config
-        
+
         # Compute dataLoaderOffset & worldSize.
         samplesPerNode = self.layerConfigs[0][0]
         dataLoaderOffset = samplesPerNode * targetRank
