@@ -169,7 +169,7 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
         for rank in range(gpusUsed):
             location = self.locations[rank]
             moduleDesc = moduleDescList[rank] # job.dumpSingleRunnableModule(rank)
-            print(location.getProxy().scheduleTraining("vgg", moduleDesc, "/data/", tensorTagsInJson))
+            print(location.getProxy().scheduleTraining("vgg", moduleDesc, "SYNTHETIC", tensorTagsInJson))
         return 'done'
 
     def export_addGpuNode(self):
@@ -318,7 +318,7 @@ def main():
     time.sleep(5)
     coordinator.initCommBackendAll()
     print("Communication backends are ready at all locations.")
-    
+    print("Now, cluster is ready to accept training job.")
     coordinator.serve_forever()
     coordinator.shutdownRuntimeAll()
     coordinator.waitForRuntimeAll()

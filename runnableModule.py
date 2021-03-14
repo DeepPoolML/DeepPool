@@ -292,18 +292,18 @@ class RunnableModule(nn.Module):
                 # For VGG and Resnet, we can ignore this for now.
                 # Maybe view(-1)?
                 module = nn.Flatten(start_dim=1)
-                print("%s layer is not implemented. Safe to ignore for VGG or Resnet" % name)
+                print("[RunnableModule.__init__] %s layer is not implemented. Safe to ignore for VGG or Resnet" % name)
             elif name == "concat":
-                print("%s layer is not implemented." % name)
+                print("[RunnableModule.__init__] %s layer is not implemented." % name)
                 # Not used in for VGG and Resnet. Only inception needs this.
 
             # Handle sample transmissions.
             if ldsc["config"][0] > 0: # This rank has assigned samples for this layer.
                 if "tensorRx" in ldsc: # receive parts of input.
-                    print("recv tensor found for layer: %d" % ldsc["id"])
+                    print("[RunnableModule.__init__] recv tensor found for layer: %d" % ldsc["id"])
                     module = torch.nn.Sequential(ReceiveSamples(ldsc["tensorRx"], self.commHandler), module)
                 if "tensorTx" in ldsc: # send parts of output.
-                    print("send tensor found for layer: %d" % ldsc["id"])
+                    print("[RunnableModule.__init__] send tensor found for layer: %d" % ldsc["id"])
                     module = torch.nn.Sequential(module, SendSamples(ldsc["tensorTx"], self.commHandler))
 
             self.moduleList.append(module)
@@ -356,9 +356,9 @@ class RunnableModule(nn.Module):
 
                 #         inputTensorList.append(additionalInput)
                 #     inputTensor = torch.cat(inputTensorList, 0)
-
+                print("[RunnableModule] forward inputTensor.size(): %s"%str(inputTensor.size()))
                 outputRaw = module(inputTensor)
-                print("Layer %d ==> output from running module: %s" % (i, str(outputRaw.size())))
+                print("[RunnableModule] Layer %d ==> output from running module: %s" % (i, str(outputRaw.size())))
 
                 # if "tensorTx" in ldsc: # send parts of output.
                 #     sampleSplitSections = [txItem["prop"]["xferSamples"] for txItem in ldsc["tensorTx"]]
