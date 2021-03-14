@@ -29,7 +29,7 @@ from argparse import ArgumentParser, REMAINDER
 from runnableModule import RunnableModule
 from runnableModule import VisionDataLoaderGenerator
 from communication import CommunicationBackend
-from communication import CommunicationHandler
+from logger import Logger
 
 class JobContext:
     def __init__(self, model: nn.Module, name: str, dataLoader, epochsToTrain = 1, optimizer = None, criterion = nn.CrossEntropyLoss(), device="cpu"):
@@ -47,13 +47,13 @@ class JobContext:
         self.training_initialized = False
 
     def train_init(self):
-        print("[JobContext] <%s> train_init at device:%s"%(self.name, self.device), flush=True)
+        Logger.log("[JobContext] <%s> train_init at device:%s"%(self.name, self.device), flush=True)
         self.model.to(self.device)
         self.model.train()
         self.training_initialized = True
         
     def train_single_iter(self):
-        print("[JobContext] <%s> train_single_iter epoch:%d/%d iter:%d/%d" % 
+        Logger.log("[JobContext] <%s> train_single_iter epoch:%d/%d iter:%d/%d" % 
                 (self.name, self.epoch, self.epochsToTrain, self.iter, self.itersToTrain), flush=True)
         if not self.training_initialized:
             self.train_init()
@@ -62,8 +62,10 @@ class JobContext:
         data, target = data.to(self.device), target.to(self.device)
         # optimizer.zero_grad()
         
-        print("forward pass is starting.. data: %s" % str(data.size()))
+        Logger.log("forward pass is starting.. data: %s" % str(data.size()), level=0)
         output, runCriterionAndLoss = self.model(data)
+        Logger.log("forward pass is completed.. output: %s runCriterionAndLoss: %s" %
+                    (str(output.size()), str(runCriterionAndLoss)), level=0, flush=True)
         # output = torch.flatten(output, 1)
         if runCriterionAndLoss:
             output = F.log_softmax(output, dim=1)
@@ -74,9 +76,10 @@ class JobContext:
                 target = target.narrow(0, 0, output.size()[0])
 
             loss = self.criterion(output, target)
-            print("backward pass is starting")
+            Logger.log("backward pass is starting", level=0, flush=True)
             loss.backward()
         else:
+            Logger.log("backward pass is starting", level=0, flush=True)
             output.backward(output) # gradient passed is dummy.
 
         # optimizer.step()
@@ -100,7 +103,7 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
     """
 
     def __init__(self, coordinatorAddr: str, coordinatorPort: int, myAddr: str,
-                myPort: int, device: int, rank: int, worldSize: int):
+                myPort: int, device: int, c10dBackend: str, c10dMasterPort: int, rank: int, worldSize: int):
         super(Runtime, self).__init__((myAddr, myPort))
         self.coordinatorAddr = coordinatorAddr
         self.coordinatorPort = coordinatorPort
@@ -115,7 +118,7 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
         print('torch.distributed.nccl availability: ', dist.is_nccl_available())
         self.jobs = []
         self.pollInvokeCounter = 0
-        self.commBackend = CommunicationBackend(rank, worldSize, coordinatorAddr, coordinatorPort)
+        self.commBackend = CommunicationBackend(rank, worldSize, coordinatorAddr, c10dMasterPort, c10dBackend, self.device)
         now = datetime.now()
         date_time = now.strftime("%m/%d/%Y, %H:%M:%S")
         print("[%s] Runtime initialized with coordAddr=%s:%d, myAddr=%s:%d, device=%d" %
@@ -144,7 +147,7 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
         # self.commBackend.init_comm_group_if_not()
         worldSize = json.loads(jobInJson)["maxGpusUsed"]
         tensorTags = json.loads(tensorTagsInJson)
-        commHandler = CommunicationHandler(worldSize=worldSize, tensor_tags=tensorTags)
+        commHandler = self.commBackend.makeCommunicationHandler(worldSize, tensorTags)
         module = RunnableModule(jobInJson, commHandler)
         if dataDir == "SYNTHETIC":
             dataDir = None # Use synthetic dataset.
@@ -167,6 +170,9 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
     ######################################################
     ## Internal processing
     ######################################################
+    def getCoordinatorProxy(self):
+        return xmlrpc.client.ServerProxy("http://%s:%d/"%(self.coordinatorAddr, self.coordinatorPort))
+
     def poll(self):
         """ This method manages ongoing training tasks.
         WARNING: this method should never block.
@@ -175,6 +181,7 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
         if len(self.jobs) > 0:
             self.jobs[0].train_single_iter()
             if self.jobs[0].isCompleted():
+                self.getCoordinatorProxy().notifyTrainingFinished(self.myAddr, self.jobs[0].name, len(self.jobs) - 1)
                 self.jobs.pop(0)
 
         self.pollInvokeCounter += 1
@@ -202,6 +209,10 @@ def parse_args():
                         "coordinator will talk to this node on this address")
     parser.add_argument("--device", type=int, default=0,
                         help="cuda device for pytorch.")
+    parser.add_argument("--c10dBackend", type=str, default="nccl",
+                        help="pytorch c10d communication backend. Type either nccl or gloo")
+    parser.add_argument("--c10dMasterPort", type=int, default="55555",
+                        help="coordinator's port for c10d communication package initialization")
     parser.add_argument("--rank", type=int, default=0,
                         help="global rank for c10d.")
     parser.add_argument("--worldSize", type=int, default=1,
@@ -219,7 +230,7 @@ def main():
     myPort = int(myAddrCombined[1])
 
     runtime = Runtime(coordinatorAddr, coordinatorPort, myAddr, myPort,
-                      args.device, args.rank, args.worldSize)
+                      args.device, args.c10dBackend, args.c10dMasterPort, args.rank, args.worldSize)
     runtime.run()
 
 if __name__ == "__main__":

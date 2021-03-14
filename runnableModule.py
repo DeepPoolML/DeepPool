@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 import torchvision.transforms
 import torchvision.datasets
+from logger import Logger
 
 class SyntheticDataset(torch.utils.data.dataset.Dataset):
     def __init__(self, input_size, length, num_classes=1000):
@@ -205,8 +206,9 @@ class SendSamplesFunc(torch.autograd.Function):
         splittedOutputs = torch.split(x, sampleSplitSections)
 
         for idx, item in enumerate(sendList):
+            # commHandler.send(splittedOutputs[idx].clone(), item["name"], item["dest"])
             commHandler.sendAsync(splittedOutputs[idx], item["name"], item["dest"])
-
+        # commHandler.waitForAll()
         output = splittedOutputs[-1].clone()
         return output
     
@@ -292,18 +294,18 @@ class RunnableModule(nn.Module):
                 # For VGG and Resnet, we can ignore this for now.
                 # Maybe view(-1)?
                 module = nn.Flatten(start_dim=1)
-                print("[RunnableModule.__init__] %s layer is not implemented. Safe to ignore for VGG or Resnet" % name)
+                Logger.log("[RunnableModule.__init__] %s layer is not implemented. Safe to ignore for VGG or Resnet" % name)
             elif name == "concat":
-                print("[RunnableModule.__init__] %s layer is not implemented." % name)
+                Logger.log("[RunnableModule.__init__] %s layer is not implemented." % name, level=2)
                 # Not used in for VGG and Resnet. Only inception needs this.
 
             # Handle sample transmissions.
             if ldsc["config"][0] > 0: # This rank has assigned samples for this layer.
                 if "tensorRx" in ldsc: # receive parts of input.
-                    print("[RunnableModule.__init__] recv tensor found for layer: %d" % ldsc["id"])
+                    Logger.log("[RunnableModule.__init__] recv tensor found for layer: %d" % ldsc["id"])
                     module = torch.nn.Sequential(ReceiveSamples(ldsc["tensorRx"], self.commHandler), module)
                 if "tensorTx" in ldsc: # send parts of output.
-                    print("[RunnableModule.__init__] send tensor found for layer: %d" % ldsc["id"])
+                    Logger.log("[RunnableModule.__init__] send tensor found for layer: %d" % ldsc["id"])
                     module = torch.nn.Sequential(module, SendSamples(ldsc["tensorTx"], self.commHandler))
 
             self.moduleList.append(module)
@@ -356,9 +358,9 @@ class RunnableModule(nn.Module):
 
                 #         inputTensorList.append(additionalInput)
                 #     inputTensor = torch.cat(inputTensorList, 0)
-                print("[RunnableModule] forward inputTensor.size(): %s"%str(inputTensor.size()))
+                Logger.log("[RunnableModule] forward inputTensor.size(): %s"%str(inputTensor.size()))
                 outputRaw = module(inputTensor)
-                print("[RunnableModule] Layer %d ==> output from running module: %s" % (i, str(outputRaw.size())))
+                Logger.log("[RunnableModule] Layer %d ==> output from running module: %s" % (i, str(outputRaw.size())))
 
                 # if "tensorTx" in ldsc: # send parts of output.
                 #     sampleSplitSections = [txItem["prop"]["xferSamples"] for txItem in ldsc["tensorTx"]]

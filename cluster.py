@@ -35,7 +35,7 @@ class Location:
         self.serverId = None
         self.proxy = None
         
-    def getProxy(self, maxRetry = 5):
+    def getProxy(self, maxRetry = 8):
         if self.proxy != None:
             return self.proxy
         retryGap = 1
@@ -72,10 +72,9 @@ class Location:
     def rsh(self, command):
         kwargs = dict()
         kwargs['stderr'] = subprocess.STDOUT
-        kwargs['stdout'] = subprocess.STDOUT
         
         # sh_command = ['ssh', '-v', '-i', '~/.ssh/ulma-sjp.pem', 'ubuntu@%s' % self, '%s' % command]
-        sh_command = ['ssh', '-i', self.sshKeyPath, '%s@%s' % (self.userId, self.address), '%s' % command]
+        sh_command = ['ssh', '-i', self.sshKeyPath, '-o', 'StrictHostKeyChecking=no', '%s@%s' % (self.userId, self.address), '%s' % command]
         try:
             subprocess.check_call(sh_command, **kwargs)
         except subprocess.CalledProcessError as e:
@@ -172,6 +171,10 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
             print(location.getProxy().scheduleTraining("vgg", moduleDesc, "SYNTHETIC", tensorTagsInJson))
         return 'done'
 
+    def export_notifyTrainingFinished(self, runtimeAddress: str, name: str, remainingJobCount: int):
+        print("Training for %s is completed at %s. (%d jobs are remaining)" % (name, runtimeAddress, remainingJobCount))
+        # return 'done'
+
     def export_addGpuNode(self):
         print("NOT YET IMPLEMENTED.")
 
@@ -190,9 +193,10 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
                     for item in ldsc["tensorRx"]:
                         tensorTags[item["name"]] = tag
                         tag += 1
+                        tensorTags[item["name"] + "_back"] = tag
+                        tag += 1
         self.nextTagStartOffset = (tag + 99) % 100
         return tensorTags
-                    
 
     ######################################################
     ## Runtime cluster management
@@ -205,7 +209,7 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
             for pipPackage in pipPackages:
                 location.rsh("pip install %s" % pipPackage)
         
-    def launchRuntimeAll(self):
+    def launchRuntimeAll(self, c10dBackend: str):
         """ Launch runtime at all remote locations. Also registers the sighandler
             that cleanly shuts down all remote runtime servers.
         """
@@ -216,11 +220,9 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
             stderrFp = open("logs/runtime%d.err"%i, "w", buffering=1)
             self.processes.append(location.rshAsync(
                 "python3 " + self.workDir + "runtime.py" + \
-                " --coordinatorAddr %s:%d --myAddr %s:%d --device %d --rank %d --worldSize %d" % \
-                    (self.myAddr, self.myPort, location.address, location.port, location.device, i, len(self.locations)) #+ \
-                # " 2>> %slog.err 1> %slog.out"%(self.workDir, self.workDir)
-                 , stdout=stdoutFp, stderr=stderrFp))
-            print(location.getProxy().poke())
+                " --coordinatorAddr %s:%d --myAddr %s:%d --device %d --c10dBackend %s --rank %d --worldSize %d" % \
+                    (self.myAddr, self.myPort, location.address, location.port, location.device, c10dBackend, i, len(self.locations)) #+ \
+                , stdout=stdoutFp, stderr=stderrFp))
 
             sig_names = {2: "SIGINT", 15: "SIGTERM"}
             last_return_code = None
@@ -240,6 +242,10 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
                 sys.exit(1)
             signal.signal(signal.SIGINT, sigkill_handler)
             signal.signal(signal.SIGTERM, sigkill_handler)
+        
+        for location in self.locations:
+            print(location.getProxy().poke())
+
 
     def shutdownRuntimeAll(self):
         """ Ask all remote runtime servers to stop. Returns after all servers ack the shutdown request. """
@@ -282,7 +288,9 @@ def parse_args():
     # Optional arguments for the launch helper
     parser.add_argument("--addrToBind", type=str, default="localhost:12340",
                         help="IP:port to listen for requests to the cluster coordinator")
-    
+    parser.add_argument("--c10dBackend", type=str, default="nccl",
+                    help="pytorch c10d communication backend. Type either nccl or gloo")
+
     # node_local_rank_stdout_filename = "node_{}_local_rank_{}_stdout"
     # node_local_rank_stderr_filename = "node_{}_local_rank_{}_stderr"
     # parser.add_argument(
@@ -297,6 +305,9 @@ def parse_args():
     # )
     parser.add_argument("--pathToConfig", type=str, default="clusterConfig.json",
                         help="The full path to the cluster configuration files")
+    parser.add_argument('--install', default=False, action='store_true',
+                        help="When this option is set, it will install required pip packages to all servers")
+
     return parser.parse_args()
 
 def main():
@@ -312,8 +323,9 @@ def main():
     portToBind = int(addrToBindCombo[1])
 
     coordinator = ClusterCoordinator(addrToBind, portToBind, locations, clusterConfig["workDir"])
-    # coordinator.installPackages()
-    coordinator.launchRuntimeAll()
+    if args.install:
+        coordinator.installPackages()
+    coordinator.launchRuntimeAll(args.c10dBackend)
     print("Cluster initialization completed.")
     time.sleep(5)
     coordinator.initCommBackendAll()

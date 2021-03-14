@@ -13,12 +13,12 @@
 # OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 import json
-import torch
-import torch.nn as nn
+# import torch
+# import torch.nn as nn
 from typing import Optional, IO, List, Any
 
 class Layer:
-    def __init__(self, module: nn.Module, name: str, params: tuple, prevLayers: list):
+    def __init__(self, module, name: str, params: tuple, prevLayers: list):
         self.id = None      # Assigned later by calling printAllLayers.
         self.name = name
         self.params = params
