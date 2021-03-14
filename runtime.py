@@ -15,20 +15,77 @@
 import xmlrpc.server
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import re
 import threading
 import signal
 import sys
 import time
+import json
+import sys
+from datetime import datetime
 from argparse import ArgumentParser, REMAINDER
 from runnableModule import RunnableModule
 from runnableModule import VisionDataLoaderGenerator
+from communication import CommunicationBackend
+from communication import CommunicationHandler
 
 class JobContext:
-    def __init__(self, module: nn.Module, name: str, dataLoader):
-        self.module = module
+    def __init__(self, model: nn.Module, name: str, dataLoader, epochsToTrain = 1, optimizer = None, criterion = nn.CrossEntropyLoss(), device="cpu"):
+        self.model = model
         self.name = name
         self.dataLoader = dataLoader
+        self.optimizer = optimizer
+        self.criterion = criterion
+        self.device = device
+        self.epochsToTrain = epochsToTrain
+        self.epoch = 0
+        self.iter = 0
+        self.itersToTrain = len(dataLoader) # this may be overwritten for development.
+
+    def train_init(self):
+        self.model.to(self.device)
+        self.model.train()
+        self.training_initialized = True
+        
+    def train_single_iter(self):
+        if not self.training_initialized:
+            self.train_init()
+        
+        data, target = self.dataLoader[self.iter]
+        data, target = data.to(self.device), target.to(self.device)
+        # optimizer.zero_grad()
+        
+        print("forward pass is starting.. data: %s" % str(data.size()))
+        output, runCriterionAndLoss = self.model(data)
+        # output = torch.flatten(output, 1)
+        if runCriterionAndLoss:
+            output = F.log_softmax(output, dim=1)
+            
+            # Hack to match target's sample count with the output at this node.
+            if output.size()[0] != target.size()[0]:
+                target = torch.repeat_interleave(target, int(1 + output.size()[0] / target.size()[0]), dim=0)
+                target = target.narrow(0, 0, output.size()[0])
+
+            loss = self.criterion(output, target)
+            print("backward pass is starting")
+            loss.backward()
+        else:
+            output.backward(output) # gradient passed is dummy.
+
+        # optimizer.step()
+
+        self.iter += 1
+        if self.iter == self.itersToTrain:
+            self.iter = 0
+            self.epoch += 1
+        # TODO: check iter is over len(dataLoader), bump epoch when down with iter.
+
+    def isCompleted(self):
+        if self.epoch == self.epochsToTrain:
+            return True
+        else:
+            return False
 
 class Runtime(xmlrpc.server.SimpleXMLRPCServer):
     """A pool runtime that reside perpetually for each GPU in the cluster.
@@ -36,17 +93,22 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
     This class is launched by ClusterCoordinator.
     """
 
-    def __init__(self, coordinatorAddr: str, coordinatorPort: int, myAddr: str, myPort: int, device: int):
+    def __init__(self, coordinatorAddr: str, coordinatorPort: int, myAddr: str,
+                myPort: int, device: int, rank: int, worldSize: int):
         super(Runtime, self).__init__((myAddr, myPort))
         self.coordinatorAddr = coordinatorAddr
         self.coordinatorPort = coordinatorPort
         self.myAddr = myAddr
         self.myPort = myPort
-        self.device = device
+        self.device = ("cuda:%d" % device) if device is int else device
         self.jobs = []
         self.pollInvokeCounter = 0
-        print("Runtime initialized with coordAddr=%s:%d, myAddr=%s:%d, device=%d" %
-            (coordinatorAddr, coordinatorPort, myAddr, myPort, device) )
+        self.commBackend = CommunicationBackend(rank, worldSize, coordinatorAddr, coordinatorPort)
+        now = datetime.now()
+        date_time = now.strftime("%m/%d/%Y, %H:%M:%S")
+        print("[%s] Runtime initialized with coordAddr=%s:%d, myAddr=%s:%d, device=%d" %
+            (date_time, coordinatorAddr, coordinatorPort, myAddr, myPort, device) )
+        sys.stdout.flush()
     
     def _dispatch(self, method, params):
         """ Custom dispatcher for XML-RPC server. """
@@ -62,12 +124,21 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
     ######################################################
     ## RPC handlers
     ######################################################
-    def export_scheduleTraining(self, name: str, jobInJson: str, dataDir: str):
-        commHandler = None # TODO: implement.
+    def export_initCommBackend(self):
+        self.commBackend.init_comm_group_if_not()
+        return "commBackend initialized. @ %s!"%self.myAddr
+    
+    def export_scheduleTraining(self, name: str, jobInJson: str, dataDir: str, tensorTagsInJson: str):
+        # self.commBackend.init_comm_group_if_not()
+        worldSize = json.loads(jobInJson)["maxGpusUsed"]
+        tensorTags = json.loads(tensorTagsInJson)
+        commHandler = CommunicationHandler(worldSize=worldSize, tensor_tags=tensorTags)
         module = RunnableModule(jobInJson, commHandler)
         loader = VisionDataLoaderGenerator.genDataLoader(
             jobInJson, dataDir, syntheticDataLength=1600)
-        job = JobContext(module, name, loader)
+        job = JobContext(module, name, loader, device=self.device)
+        
+        job.itersToTrain = 1 # Run only 1 iteration for dev.
         self.jobs.append(job)
         return "Scheduled a training job. @ %s!"%self.myAddr
 
@@ -86,9 +157,13 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
         WARNING: this method should never block.
         It is invoked every BaseServer::poll_interval
         """
+        if len(self.jobs) > 0:
+            self.jobs[0].train_single_iter()
+            if self.jobs[0].isCompleted():
+                self.jobs.pop(0)
+
         self.pollInvokeCounter += 1
-        print("poll() invoked %d times at %s for device: %s" % (self.pollInvokeCounter, self.myAddr, self.device))
-        if self.pollInvokeCounter == 10:
+        if self.pollInvokeCounter == 100:
             print("poll() invoked %d times at %s for device: %s" % (self.pollInvokeCounter, self.myAddr, self.device))
 
     def run(self, poll_interval=0.5):
@@ -112,6 +187,10 @@ def parse_args():
                         "coordinator will talk to this node on this address")
     parser.add_argument("--device", type=int, default=0,
                         help="cuda device for pytorch.")
+    parser.add_argument("--rank", type=int, default=0,
+                        help="global rank for c10d.")
+    parser.add_argument("--worldSize", type=int, default=1,
+                        help="global world size for c10d.")
     parser.add_argument("--logdir", default=None, type=str)
     return parser.parse_args()
 
@@ -124,7 +203,8 @@ def main():
     myAddr = myAddrCombined[0]
     myPort = int(myAddrCombined[1])
 
-    runtime = Runtime(coordinatorAddr, coordinatorPort, myAddr, myPort, args.device)
+    runtime = Runtime(coordinatorAddr, coordinatorPort, myAddr, myPort,
+                      args.device, args.rank, args.worldSize)
     runtime.run()
 
 if __name__ == "__main__":

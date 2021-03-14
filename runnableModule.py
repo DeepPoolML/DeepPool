@@ -130,6 +130,27 @@ class VisionDataLoaderGenerator:
             dataset, batch_size=localBatch, shuffle=False,
             num_workers=workers, pin_memory=True, sampler=sampler, drop_last=True)
         return loader
+    
+    @staticmethod
+    def shuffleTargetData(jobInJsonStr, target, commHandler):
+        ####### Incomplete.
+
+        # Send my portions.
+        jobInJson = json.loads(jobInJsonStr)
+        sendList = jobInJson["dataLoaderTargetTx"]
+        sampleSplitSections = [txItem["prop"]["xferSamples"] for txItem in sendList]
+        remainingSamples = target.shape[0] - sum(sampleSplitSections)
+        sampleSplitSections.append(remainingSamples)
+        splittedOutputs = torch.split(target, sampleSplitSections)
+
+        for idx, item in enumerate(sendList):
+            commHandler.sendAsync(splittedOutputs[idx], item["name"], item["dest"])
+
+        output = splittedOutputs[-1].clone()
+
+        # Receive
+
+        return output
 
 class MockCommHandler:
     def __init__(self, conditionVariable = threading.Condition()):
@@ -143,7 +164,6 @@ class MockCommHandler:
                 self.sentTensors[tensorName] = []
             self.sentTensors[tensorName].append(tensor.clone())
             self.cv.notifyAll()
-            
 
     def sendAsync(self, tensor: torch.Tensor, tensorName: str, dest: int):
         return self.send(tensor, tensorName, dest)

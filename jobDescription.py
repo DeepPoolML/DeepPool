@@ -79,6 +79,13 @@ class TrainingJob:
             config = ldsc["config"]
             self.layers.append(l)
             self.layerConfigs.append(config)
+    
+    def getGpusUsed(self):
+        maxGpusUsed = 0
+        for l, config in zip(self.layers, self.layerConfigs):
+            destGpus = self.calcGpusNeeded(l, config, self.globalBatchSize)
+            maxGpusUsed = max(maxGpusUsed, destGpus)
+        return maxGpusUsed
 
     def dumpInJSON(self, layers: List[Layer] = None, layerConfigs: list = None):
         if layers is None:

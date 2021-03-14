@@ -21,7 +21,8 @@ pkeyPath = '~/.ssh/ulma-sjp.pem'
 userId = "ubuntu"
 workDir = "~/DeepPoolRuntime/"
 gpuCount = 1
-portPrefix = 1510 # prefix + Device# is used for port.
+portPrefix = 1110 # prefix + Device# is used for port.
+coordinatorPort = 12345
 
 with open(PUBLIC_ADDR_FILENAME, "r") as f:
     publicIps = []
@@ -61,4 +62,8 @@ for host in publicIps:
     upSync(host, ".", workDir)
     print("Uploaded code to %s"%host)
 
+
+print("*** To start coordinator, execute following commands ***")
 print("ssh -i %s %s@%s" % (pkeyPath, userId, publicIps[0]))
+print("cd %s" % workDir)
+print("python3 cluster.py --addrToBind %s:%d" % (privateIps[0], coordinatorPort) )

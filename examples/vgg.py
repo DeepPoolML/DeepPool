@@ -309,51 +309,59 @@ print(jobInJson)
 
 locations = ["a", "b", "c", "d"]
 
+def testRunOnCPU():
+    # optimizer is not yet implemented.
+    def train(loader, model, optimizer = None, criterion = nn.CrossEntropyLoss(), device="cpu"):
+        model.to(device)
+        model.train()
+        for batch_idx, (data, target) in enumerate(loader):
+            data, target = data.to(device), target.to(device)
+            # optimizer.zero_grad()
 
-# optimizer is not yet implemented.
-def train(loader, model, optimizer = None, criterion = nn.CrossEntropyLoss(), device="cpu"):
-    model.to(device)
-    model.train()
-    for batch_idx, (data, target) in enumerate(loader):
-        data, target = data.to(device), target.to(device)
-        # optimizer.zero_grad()
-        print("forward pass is starting.. data: %s" % str(data.size()))
-        output, runCriterionAndLoss = model(data)
-        # output = torch.flatten(output, 1)
-        if runCriterionAndLoss:
-            output = F.log_softmax(output, dim=1)
-            loss = criterion(output, target)
-            print("backward pass is starting")
-            loss.backward()
-        else:
-            output.backward(output) # gradient passed is dummy.
-        # finish after 1st iteration.
-        return
-        # optimizer.step()
+            print("forward pass is starting.. data: %s" % str(data.size()))
+            output, runCriterionAndLoss = model(data)
+            # output = torch.flatten(output, 1)
+            if runCriterionAndLoss:
+                output = F.log_softmax(output, dim=1)
+                
+                # Hack to match target's sample count with the output at this node.
+                if output.size()[0] != target.size()[0]:
+                    target = torch.repeat_interleave(target, int(1 + output.size()[0] / target.size()[0]), dim=0)
+                    target = target.narrow(0, 0, output.size()[0])
 
+                loss = criterion(output, target)
+                print("backward pass is starting")
+                loss.backward()
+            else:
+                output.backward(output) # gradient passed is dummy.
+            
+            # finish after 1st iteration.
+            return
+            # optimizer.step()
 
-comm = MockCommHandler()
-threadList = []
-## For now just use all gpus.
-for rank, location in enumerate(locations):
-    moduleDesc = job.dumpSingleRunnableModule(rank)
-    print("%s ==> \n %s" % (location, moduleDesc))
-    
-    module = RunnableModule(moduleDesc, comm)
-    loader = VisionDataLoaderGenerator.genDataLoader(
-        moduleDesc, syntheticDataLength=1600)
-    train_thread = threading.Thread(name='train_rank%d'%rank, target=train, args=(loader, module,))
-    # train_thread = threading.Thread(name='train_rank%d'%rank, target=train, args=(loader, model,))
-    threadList.append(train_thread)
+    comm = MockCommHandler()
+    threadList = []
+    ## For now just use all gpus.
+    for rank, location in enumerate(locations):
+        moduleDesc = job.dumpSingleRunnableModule(rank)
+        print("%s ==> \n %s" % (location, moduleDesc))
+        
+        module = RunnableModule(moduleDesc, comm)
+        loader = VisionDataLoaderGenerator.genDataLoader(
+            moduleDesc, syntheticDataLength=1600)
+        train_thread = threading.Thread(name='train_rank%d'%rank, target=train, args=(loader, module,))
+        # train_thread = threading.Thread(name='train_rank%d'%rank, target=train, args=(loader, model,))
+        threadList.append(train_thread)
 
-for thread in threadList:
-    thread.start()
-for thread in threadList:
-    thread.join()
+    for thread in threadList:
+        thread.start()
+    for thread in threadList:
+        thread.join()
 
+# testRunOnCPU()
 
-# cc = ClusterClient("172.31.70.173", 12345)
-# cc.submitTrainingJob(jobInJson)
+cc = ClusterClient("172.31.70.173", 1234)
+cc.submitTrainingJob(jobInJson)
 
 profiler.saveProfile()
 

@@ -20,6 +20,7 @@ import json
 import xmlrpc.server
 import xmlrpc.client
 import re
+import threading
 from argparse import ArgumentParser, REMAINDER
 from typing import Optional, IO, List, Any
 from jobDescription import TrainingJob
@@ -71,6 +72,8 @@ class Location:
     def rsh(self, command):
         kwargs = dict()
         kwargs['stderr'] = subprocess.STDOUT
+        kwargs['stdout'] = subprocess.STDOUT
+        
         # sh_command = ['ssh', '-v', '-i', '~/.ssh/ulma-sjp.pem', 'ubuntu@%s' % self, '%s' % command]
         sh_command = ['ssh', '-i', self.sshKeyPath, '%s@%s' % (self.userId, self.address), '%s' % command]
         try:
@@ -81,6 +84,7 @@ class Location:
         return
     
     def rshAsync(self, command, **kwargs):
+        print("Sending cmd: %s" % command)
         sh_command = ['ssh', '-i', self.sshKeyPath, '%s@%s' % (self.userId, self.address),
                     '%s' % command]
         p = subprocess.Popen(sh_command, **kwargs)
@@ -129,6 +133,7 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
         self.locations = locations
         self.workDir = workDir
         self.processes = []  # from subprocess calls used for launching runtime.
+        self.nextTagStartOffset = 1
     
     def _dispatch(self, method, params):
         """ Custom dispatcher for XML-RPC server. """
@@ -152,21 +157,50 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
         job.loadJSON(trainingJobInJSON)
         print("received job")
         
-        ## For now just use all gpus.
-        for rank, location in enumerate(self.locations):
-            moduleDesc = job.dumpSingleRunnableModule(rank)
-            print(location.getProxy().scheduleTraining(moduleDesc))
+        gpusUsed = job.getGpusUsed()
+        moduleDescList = [job.dumpSingleRunnableModule(rank) for rank in range(gpusUsed)]
+        tensorTags = self.buildCommTensorTags(moduleDescList)
+        tensorTagsInJson = json.dumps(tensorTags)
+
+        # TODO: should pick locations that doesn't have other priority job scheduled.
+        if len(self.locations) < gpusUsed:
+            return "Not enough servers available. %d gpus available while %d needed" % (len(self.locations), gpusUsed)
+        
+        for rank in range(gpusUsed):
+            location = self.locations[rank]
+            moduleDesc = moduleDescList[rank] # job.dumpSingleRunnableModule(rank)
+            print(location.getProxy().scheduleTraining("vgg", moduleDesc, "/data/", tensorTagsInJson))
         return 'done'
 
     def export_addGpuNode(self):
         print("NOT YET IMPLEMENTED.")
 
     ######################################################
+    ## Internal helper methods
+    ######################################################
+    def buildCommTensorTags(self, moduleDescList):
+        # TODO: need tag allocator that can recycle tags.
+        tag = self.nextTagStartOffset
+        tensorTags = {}
+        for moduleDesc in moduleDescList:
+            spec = json.loads(moduleDesc)
+            
+            for ldsc in spec["layers"]:
+                if "tensorRx" in ldsc: # either sender or receiver need to assign tag.
+                    for item in ldsc["tensorRx"]:
+                        tensorTags[item["name"]] = tag
+                        tag += 1
+        self.nextTagStartOffset = (tag + 99) % 100
+        return tensorTags
+                    
+
+    ######################################################
     ## Runtime cluster management
     ######################################################
     def installPackages(self):
         """ Install required software at each runtime server """
-        pipPackages = ["torch", "jsonpickle"]
+        pipPackages = ["torch", "jsonpickle", "torchvision"]
+            # "pip install torch==1.8.0+cu111 torchvision==0.9.0+cu111 torchaudio==0.8.0 -f https://download.pytorch.org/whl/torch_stable.html"]
         for location in self.locations:
             for pipPackage in pipPackages:
                 location.rsh("pip install %s" % pipPackage)
@@ -175,13 +209,17 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
         """ Launch runtime at all remote locations. Also registers the sighandler
             that cleanly shuts down all remote runtime servers.
         """
-        for location in self.locations:
+        for i, location in enumerate(self.locations):
             location.upSync(".", self.workDir)
             # pass master ip and port.
+            stdoutFp = open("logs/runtime%d.out"%i, "w", buffering=1)
+            stderrFp = open("logs/runtime%d.err"%i, "w", buffering=1)
             self.processes.append(location.rshAsync(
                 "python3 " + self.workDir + "runtime.py" + \
-                    " --coordinatorAddr %s:%d --myAddr %s:%d --device %d" % \
-                        (self.myAddr, self.myPort, location.address, location.port, location.device) ))
+                " --coordinatorAddr %s:%d --myAddr %s:%d --device %d --rank %d --worldSize %d" % \
+                    (self.myAddr, self.myPort, location.address, location.port, location.device, i, len(self.locations)) #+ \
+                # " 2>> %slog.err 1> %slog.out"%(self.workDir, self.workDir)
+                 , stdout=stdoutFp, stderr=stderrFp))
             print(location.getProxy().poke())
 
             sig_names = {2: "SIGINT", 15: "SIGTERM"}
@@ -207,6 +245,19 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
         """ Ask all remote runtime servers to stop. Returns after all servers ack the shutdown request. """
         for location in self.locations:
             print(location.getProxy().shutdown())
+
+    def initCommBackendAll(self):
+        threadList = []
+        def requestInitCommBackend(proxy):
+            print(proxy.initCommBackend())
+        for i, location in enumerate(self.locations):
+            thread = threading.Thread(name='init_comm%d'%i, target=requestInitCommBackend, args=(location.getProxy(),))
+            threadList.append(thread)
+        for thread in threadList:
+            thread.start()
+            time.sleep(1)
+        for thread in threadList:
+            thread.join()
 
     def waitForRuntimeAll(self):
         """ Waits until all runtime processes terminate. Development use only. """
@@ -264,7 +315,10 @@ def main():
     # coordinator.installPackages()
     coordinator.launchRuntimeAll()
     print("Cluster initialization completed.")
-    # time.sleep(50)
+    time.sleep(5)
+    coordinator.initCommBackendAll()
+    print("Communication backends are ready at all locations.")
+    
     coordinator.serve_forever()
     coordinator.shutdownRuntimeAll()
     coordinator.waitForRuntimeAll()
