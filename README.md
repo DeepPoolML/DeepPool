@@ -2,23 +2,23 @@
 
 ## Instructions on how to run the VGG example
 
-1. Prepare cluster configuration file
+**1. Prepare cluster configuration file**
   - `clusterConfig.json` file should be ready to start servers. An example is in `clusterConfigExample.json`.
   - Upload this configuration file to the server that will serve as the cluster coordinator.
   - If you use `genConfigForAwsExperiment.py`, this configuration file will be generated & uploaded automatically to all EC2 servers.
 
-2. Start cluster via cluster.py
+**2. Start cluster via cluster.py**
   - Single line command
     - `python3 cluster.py --addrToBind <this_server's_addr>:<port_to_listen> --c10dBackend nccl`
-      - Cluster coordinator will listen on <this_server's_addr>:<port_to_listen>. Cluster clients will contact to this address and port for subnitting training jobs.
+      - Cluster coordinator will listen on <this_server's_addr>:<port_to_listen>. Cluster clients will contact to this address and port for subnitting training jobs. On AWS, make sure that this is a private ip, not a public ip.
     - If you use `genConfigForAwsExperiment.py`, you may copy and paste the last line of stdout.
     
-3. How to check system logs
+**3. How to check system logs**
   - ssh to the machine that ran cluster.py
   - logs are in `~/DeepPoolRuntime/logs/`
   - I typically use `grep "" logs/*.out` and `grep "" logs/*.err` to check how things are going.
 
-4. Submit VGG12 training job to the cluster coordinator
+**4. Submit VGG12 training job to the cluster coordinator**
   - ssh to any machine that reach the cluster coordinator.
   - Run `python3 ~/DeepPoolRuntime/examples/vgg.py`
   - Right now, runtimes will only run 1 iteration.
