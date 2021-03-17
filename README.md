@@ -9,7 +9,7 @@
 
 **2. Start cluster via cluster.py**
   - Single line command
-    - `python3 cluster.py --addrToBind <this_server's_addr>:<port_to_listen> --c10dBackend gloo`
+    - `python3 cluster.py --addrToBind <this_server's_addr>:<port_to_listen> --c10dBackend nccl`
       - Cluster coordinator will listen on <this_server's_addr>:<port_to_listen>. Cluster clients will contact to this address and port for subnitting training jobs. On AWS, make sure that this is a private ip, not a public ip.
     - If you use `genConfigForAwsExperiment.py`, you may copy and paste the last line of stdout.
     
