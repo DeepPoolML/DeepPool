@@ -85,8 +85,8 @@ def main():
     uploadCode()
     print("*** To start coordinator, execute following commands ***")
     print("ssh -i %s %s@%s" % (pkeyPath, userId, publicIps[0]))
-    print("cd %s" % workDir, end=" && ")
-    print("python3 cluster.py --addrToBind %s:%d" % (privateIps[0], coordinatorPort) )
+    print("cd %s" % workDir)
+    print("python3 cluster.py --addrToBind %s:%d --c10dBackend gloo" % (privateIps[0], coordinatorPort) )
 
 if __name__ == "__main__":
     if len(sys.argv) == 1:

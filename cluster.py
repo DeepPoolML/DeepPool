@@ -51,6 +51,7 @@ class Location:
                 time.sleep(retryGap)
                 retryGap *= 2 # exponential back off.
                 retryCount += 1
+        return None
 
     def downloadFile(self, remotePath: str, localPath: str):
         print("  Downloading %s to %s at %s" % (remotePath, localPath, self.address))
@@ -173,7 +174,7 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
 
     def export_notifyTrainingFinished(self, runtimeAddress: str, name: str, remainingJobCount: int):
         print("Training for %s is completed at %s. (%d jobs are remaining)" % (name, runtimeAddress, remainingJobCount))
-        # return 'done'
+        return 'done'
 
     def export_addGpuNode(self):
         print("NOT YET IMPLEMENTED.")
@@ -227,7 +228,9 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
             sig_names = {2: "SIGINT", 15: "SIGTERM"}
             last_return_code = None
             def sigkill_handler(signum, frame):
+                print("signum:%d Trying to shutdown all runtime." % signum)
                 self.shutdownRuntimeAll()
+                # self.waitForRuntimeAll()
                 for process in self.processes:
                     print(f"Killing subprocess {process.pid}")
                     try:
@@ -241,8 +244,9 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
                     print(f"Main process received {sig_names[signum]}, exiting")
                 sys.exit(1)
             signal.signal(signal.SIGINT, sigkill_handler)
-            signal.signal(signal.SIGTERM, sigkill_handler)
+            # signal.signal(signal.SIGTERM, sigkill_handler)
         
+        time.sleep(5)
         for location in self.locations:
             print(location.getProxy().poke())
 
@@ -250,7 +254,13 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
     def shutdownRuntimeAll(self):
         """ Ask all remote runtime servers to stop. Returns after all servers ack the shutdown request. """
         for location in self.locations:
-            print(location.getProxy().shutdown())
+            try:
+                proxy = location.getProxy(maxRetry=1)
+                if proxy != None:
+                    print(proxy.shutdown())
+                # print(location.getProxy(maxRetry=1).shutdown())
+            except xmlrpc.client.Fault:
+                print("pipe broken while shuting down %s" % location.address)
 
     def initCommBackendAll(self):
         threadList = []
@@ -268,6 +278,7 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
     def waitForRuntimeAll(self):
         """ Waits until all runtime processes terminate. Development use only. """
         # TODO: replace this method with xmlrpc server event loop.
+        print("Waiting for ssh process to terminate.")
         for p in self.processes:
             p.wait()
 
@@ -325,15 +336,21 @@ def main():
     coordinator = ClusterCoordinator(addrToBind, portToBind, locations, clusterConfig["workDir"])
     if args.install:
         coordinator.installPackages()
+    # Just make sure there's no previously left runtimes.
+    print("Cleaning up potentially leftover runtime servers from previous experiment.")
+    coordinator.shutdownRuntimeAll()
+    time.sleep(5)
+    
     coordinator.launchRuntimeAll(args.c10dBackend)
-    print("Cluster initialization completed.")
+    print("All runtime nodes are up and running. Now, initializing communication backend..")
     time.sleep(5)
     coordinator.initCommBackendAll()
     print("Communication backends are ready at all locations.")
     print("Now, cluster is ready to accept training job.")
     coordinator.serve_forever()
-    coordinator.shutdownRuntimeAll()
-    coordinator.waitForRuntimeAll()
+    # time.sleep(10)
+    # coordinator.shutdownRuntimeAll()
+    # coordinator.waitForRuntimeAll()
 
     # TODO: listen port to changes on config?
 

@@ -215,14 +215,14 @@ class SendSamplesFunc(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         sendList = ctx.sendList
-        print("SendSamplesFunc backward grad_in: %s" % str(grad_output.size()))
+        # print("SendSamplesFunc backward grad_in: %s" % str(grad_output.size()))
         inputTensorList = []
         for item in sendList:
             additionalInput = ctx.commHandler.recv(item["name"]+"_back", item["dest"])
             inputTensorList.append(additionalInput)
         inputTensorList.append(grad_output)
         inputTensor = torch.cat(inputTensorList, 0)
-        print("                           grad_out: %s" % str(inputTensor.size()))
+        # print("                           grad_out: %s" % str(inputTensor.size()))
         return inputTensor, None, None
 
 class ReceiveSamples(nn.Module):
@@ -331,7 +331,7 @@ class RunnableModule(nn.Module):
             elif len(ldsc["prevLayers"]) == 1:
                 inputTensor = self.outputs[ldsc["prevLayers"][0]]
             else:
-                print("[RunnableModule::forward] more than 2 previous layers is not yet supported.")
+                Logger.log("[RunnableModule::forward] more than 2 previous layers is not yet supported.", level=2, flush=True)
                 raise Exception("[RunnableModule::forward] more than 2 previous layers is not yet supported.")
             
             if ldsc["config"][0] > 0: # This rank has assigned samples for this layer.
@@ -358,9 +358,9 @@ class RunnableModule(nn.Module):
 
                 #         inputTensorList.append(additionalInput)
                 #     inputTensor = torch.cat(inputTensorList, 0)
-                Logger.log("[RunnableModule] forward inputTensor.size(): %s"%str(inputTensor.size()))
+                # Logger.log("[RunnableModule] forward inputTensor.size(): %s"%str(inputTensor.size()), level=0)
                 outputRaw = module(inputTensor)
-                Logger.log("[RunnableModule] Layer %d ==> output from running module: %s" % (i, str(outputRaw.size())))
+                # Logger.log("[RunnableModule] Layer %d ==> output from running module: %s" % (i, str(outputRaw.size())), level=0)
 
                 # if "tensorTx" in ldsc: # send parts of output.
                 #     sampleSplitSections = [txItem["prop"]["xferSamples"] for txItem in ldsc["tensorTx"]]
@@ -401,7 +401,7 @@ class RunnableModule(nn.Module):
                 outputDim = [0] + ldsc["outputDim"] if ldsc["outputDim"] is list else [ldsc["outputDim"]]
                 output = torch.empty(outputDim)
                 runCriterionAndLoss = False
-            print("        ==> final output after sending out samples: %s" % (str(output.size())))
+            # Logger.log("        ==> final output after sending out samples: %s" % (str(output.size())), level=0)
 
             # output.register_hook(hook_wrapper(str(ldsc["id"]) + " " + ldsc["name"] + str(output.size()) ))
             self.outputs.append(output)

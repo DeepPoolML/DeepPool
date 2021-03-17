@@ -97,11 +97,11 @@ class CommunicationHandler:
         if self.shouldSendSizes:
             tensor_shape = torch.tensor(tensor.shape, dtype=torch.int)
             tensor_shape_len = torch.tensor(len(tensor.shape), dtype=torch.int)
-            Logger.log("dist.send(%s)"%str({"tensor": tensor_shape_len, "dst": dstRank, "tag": tag}), level=0, flush=True)
+            Logger.log("dist.send(%s)"%str({"tensor": tensor_shape_len.size(), "dst": dstRank, "tag": tag}), level=0, flush=True)
             dist.send(tensor=tensor_shape_len, dst=dstRank, tag=tag)
-            Logger.log("dist.send(%s)"%str({"tensor": tensor_shape, "dst": dstRank, "tag": tag}), level=0, flush=True)
+            Logger.log("dist.send(%s)"%str({"tensor": tensor_shape.size(), "dst": dstRank, "tag": tag}), level=0, flush=True)
             dist.send(tensor=tensor_shape, dst=dstRank, tag=tag)
-        Logger.log("dist.isend(%s)"%str({"tensor": tensor, "dst": dstRank, "tag": tag}), level=0, flush=True)
+        Logger.log("dist.isend(%s)"%str({"tensor": tensor.size(), "dst": dstRank, "tag": tag}), level=0, flush=True)
         # dist.send(tensor=tensor, dst=dstRank, tag=tag)
         tensorReq = dist.isend(tensor=tensor, dst=dstRank, tag=tag)
         self.asyncReqs.append(tensorReq)
@@ -124,12 +124,12 @@ class CommunicationHandler:
         tag = self.tensor_tags[tensorName]
         if self.shouldSendSizes:
             tensor_shape_len = torch.zeros(1, dtype=torch.int)
-            Logger.log("dist.recv(%s)"%str({"tensor": tensor_shape_len, "src": src_rank, "tag": tag}), level=0, flush=True)
+            Logger.log("dist.recv(%s)"%str({"tensor": tensor_shape_len.size(), "src": src_rank, "tag": tag}), level=0, flush=True)
             dist.recv(tensor=tensor_shape_len, src=src_rank, tag=tag)
             tensor_shape_len = list(map(lambda x: int(x), tensor_shape_len))
             
             tensor_shape = torch.zeros(tensor_shape_len, dtype=torch.int)
-            Logger.log("dist.recv(%s)"%str({"tensor": tensor_shape, "src": src_rank, "tag": tag}), level=0, flush=True)
+            Logger.log("dist.recv(%s)"%str({"tensor": tensor_shape.size(), "src": src_rank, "tag": tag}), level=0, flush=True)
             dist.recv(tensor=tensor_shape, src=src_rank, tag=tag)
             tensor_shape = list(map(lambda x: int(x), tensor_shape))
 
@@ -138,7 +138,7 @@ class CommunicationHandler:
             tensor_shape = self.tensorSizes[tensorName]
         # Receive tensor.
         tensor = torch.zeros(tensor_shape, dtype=dtype)
-        Logger.log("dist.irecv(%s)"%str({"tensor": tensor, "src": src_rank, "tag": tag}), level=0, flush=True)
+        Logger.log("dist.irecv(%s)"%str({"tensor": tensor.size(), "src": src_rank, "tag": tag}), level=0, flush=True)
         # dist.recv(tensor=tensor, src=src_rank, tag=tag)
         asyncReq = dist.irecv(tensor=tensor, src=src_rank, tag=tag)
         self.asyncReqs.append(asyncReq)

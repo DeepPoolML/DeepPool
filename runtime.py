@@ -44,17 +44,22 @@ class JobContext:
         self.epoch = 0
         self.iter = 0
         self.itersToTrain = len(dataLoader) # this may be overwritten for development.
+        self.itersPerPoll = 30
         self.training_initialized = False
+        
 
     def train_init(self):
         Logger.log("[JobContext] <%s> train_init at device:%s"%(self.name, self.device), flush=True)
         self.model.to(self.device)
         self.model.train()
         self.training_initialized = True
+    
+    def limit_iters_to_train(self, iterationCount):
+        self.itersToTrain = min(iterationCount, len(self.dataLoader))
         
     def train_single_iter(self):
         Logger.log("[JobContext] <%s> train_single_iter epoch:%d/%d iter:%d/%d" % 
-                (self.name, self.epoch, self.epochsToTrain, self.iter, self.itersToTrain), flush=True)
+                (self.name, self.epoch, self.epochsToTrain, self.iter, self.itersToTrain), level=0)
         if not self.training_initialized:
             self.train_init()
         
@@ -83,7 +88,6 @@ class JobContext:
             output.backward(output) # gradient passed is dummy.
 
         # optimizer.step()
-
         self.iter += 1
         if self.iter == self.itersToTrain:
             self.iter = 0
@@ -118,6 +122,7 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
         print('torch.distributed.nccl availability: ', dist.is_nccl_available())
         self.jobs = []
         self.pollInvokeCounter = 0
+        self.shutdownRequested = False
         self.commBackend = CommunicationBackend(rank, worldSize, coordinatorAddr, c10dMasterPort, c10dBackend, self.device)
         now = datetime.now()
         date_time = now.strftime("%m/%d/%Y, %H:%M:%S")
@@ -152,12 +157,12 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
         if dataDir == "SYNTHETIC":
             dataDir = None # Use synthetic dataset.
         loader = VisionDataLoaderGenerator.genDataLoader(
-            jobInJson, dataDir, syntheticDataLength=1600)
+            jobInJson, dataDir, syntheticDataLength=16000)
         job = JobContext(module, name, loader, device=self.device)
         
-        job.itersToTrain = 1 # Run only 1 iteration for dev.
+        job.limit_iters_to_train(500)
         self.jobs.append(job)
-        print("Scheduled a training job (%s). Total jobs on queue: %d" % (name, len(self.jobs)))
+        Logger.log("Scheduled a training job (%s). Total jobs on queue: %d" % (name, len(self.jobs)))
         return "Scheduled a training job. @ %s!"%self.myAddr
 
     def export_poke(self):
@@ -165,6 +170,9 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
 
     def export_shutdown(self):
         self.shutdownRequested = True
+        Logger.log("Shutdown requested.", flush=True)
+        # shutdown_thread.join()
+        # self.__shutdown_request = True # TODO: testing
         return 'Returned from remote_shutdown at %s:%d' % (self.myAddr, self.myPort)
 
     ######################################################
@@ -178,22 +186,47 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
         WARNING: this method should never block.
         It is invoked every BaseServer::poll_interval
         """
+        hadWork = False
         if len(self.jobs) > 0:
-            self.jobs[0].train_single_iter()
-            if self.jobs[0].isCompleted():
-                self.getCoordinatorProxy().notifyTrainingFinished(self.myAddr, self.jobs[0].name, len(self.jobs) - 1)
-                self.jobs.pop(0)
+            hadWork = True
+            startTime = time.time()
+            job = self.jobs[0]
+            for itersRan in range(job.itersPerPoll):
+                job.train_single_iter()
+                if job.isCompleted():
+                    self.getCoordinatorProxy().notifyTrainingFinished(self.myAddr, job.name, len(self.jobs) - 1)
+                    Logger.log("Training job <%s> is finished." % job.name, flush=True)
+                    self.jobs.pop(0)
+                    break
+            elapsed = time.time() - startTime
+            Logger.log("[poll] <%s> epoch:%d/%d iter:%d/%d  %d ms per iter." % 
+                (job.name, job.epoch, job.epochsToTrain, job.iter, job.itersToTrain, (1000*elapsed)/ job.itersPerPoll))
 
-        self.pollInvokeCounter += 1
-        if self.pollInvokeCounter == 100:
-            print("poll() invoked %d times at %s for device: %s" % (self.pollInvokeCounter, self.myAddr, self.device))
+        # self.pollInvokeCounter += 1
+        # if self.pollInvokeCounter % 1 == 0:
+        #     print("poll() invoked %d times at %s for device: %s" % (self.pollInvokeCounter, self.myAddr, self.device))
+        return hadWork
 
-    def run(self, poll_interval=0.5):
+    def service_actions(self):
+        self.poll()
+        if self.shutdownRequested:
+            def invoke_shutdown():
+                Logger.log("Shutting down from shutdown thread.", flush=True)
+                self.shutdown()
+            shutdown_thread = threading.Thread(name='invoke_shutdown', target=invoke_shutdown)
+            Logger.log("Shutting down in 1 sec.", flush=True)
+            time.sleep(1)
+            shutdown_thread.start()
+
+    def run(self, poll_interval=1):
+        # TODO: remove... This method blocks! Switched to overwriting service_actions().
         self.shutdownRequested = False
         while not self.shutdownRequested:
             self.handle_request()
-            self.poll()
-            time.sleep(poll_interval)
+            hadWork = self.poll()
+            if not hadWork:
+                time.sleep(poll_interval)
+        Logger.log("Shutdown is requested.", flush=True)
 
 def parse_args():
     """
@@ -231,7 +264,8 @@ def main():
 
     runtime = Runtime(coordinatorAddr, coordinatorPort, myAddr, myPort,
                       args.device, args.c10dBackend, args.c10dMasterPort, args.rank, args.worldSize)
-    runtime.run()
+    # runtime.run()
+    runtime.serve_forever(poll_interval=0)
 
 if __name__ == "__main__":
     main()
