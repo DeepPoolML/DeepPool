@@ -292,11 +292,12 @@ def vgg19_bn(pretrained=False, **kwargs):
 profiler = GpuProfiler("cuda")
 profiler.loadProfile()
 cs = CostSim(profiler, verbose=True)
-# model = vgg16(pretrained=False)
-model = vgg11()
+model = vgg16(pretrained=False)
+# model = vgg11()
 # model = resnet34()
 cs.printAllLayers()
 cs.computeInputDimensions((224,224,3))
+# job = cs.searchBestSplits(4, 16, dataParallelBaseline=True)
 job = cs.searchBestSplits(4, 16)
 
 
@@ -360,7 +361,8 @@ def testRunOnCPU():
 
 # testRunOnCPU()
 
-cc = ClusterClient("172.31.64.125", 12345)
+# cc = ClusterClient("172.31.64.125", 12345)
+cc = ClusterClient("172.31.73.183", 12345)
 cc.submitTrainingJob(jobInJson)
 
 profiler.saveProfile()

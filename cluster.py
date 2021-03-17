@@ -301,7 +301,8 @@ def parse_args():
                         help="IP:port to listen for requests to the cluster coordinator")
     parser.add_argument("--c10dBackend", type=str, default="nccl",
                     help="pytorch c10d communication backend. Type either nccl or gloo")
-
+    parser.add_argument("--logLevel", type=int, default=1,
+                    help="Logging level. 0: verbose, 1: Info, 2: Error") # NOT YET IMPLEMENTED.
     # node_local_rank_stdout_filename = "node_{}_local_rank_{}_stdout"
     # node_local_rank_stderr_filename = "node_{}_local_rank_{}_stderr"
     # parser.add_argument(
@@ -339,14 +340,14 @@ def main():
     # Just make sure there's no previously left runtimes.
     print("Cleaning up potentially leftover runtime servers from previous experiment.")
     coordinator.shutdownRuntimeAll()
-    time.sleep(5)
-    
+    time.sleep(10)
+
     coordinator.launchRuntimeAll(args.c10dBackend)
     print("All runtime nodes are up and running. Now, initializing communication backend..")
     time.sleep(5)
     coordinator.initCommBackendAll()
     print("Communication backends are ready at all locations.")
-    print("Now, cluster is ready to accept training job.")
+    print("Now, cluster is ready to accept training jobs.")
     coordinator.serve_forever()
     # time.sleep(10)
     # coordinator.shutdownRuntimeAll()

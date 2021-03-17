@@ -1117,7 +1117,7 @@ class CostSim:
             (branch, idx, config, endTime) = schedule[i]
             print("%sLayer(%d, %2d) config: %15s done at %d" % (" "*55*branch, branch, idx, config, endTime))
             
-    def searchBestSplits(self, totalGpus: int, globalBatch: int = 16, efficiencyLimit: float = 0.2):
+    def searchBestSplits(self, totalGpus: int, globalBatch: int = 16, efficiencyLimit: float = 0.2, dataParallelBaseline = False):
         t = [[] for i in range(len(self.layers))] # [layer] = list of (config, cumulativeTime, prevConfigIndex)
 
         initialConfigs = []
@@ -1142,23 +1142,26 @@ class CostSim:
             sampleSplit=True
             spatialSplit=False
             filterSplit=False
+            sampleSplitOptions = range(totalSplits + 1) if sampleSplit else [0]
+            if dataParallelBaseline:
+                sampleSplitOptions = [totalSplits]
             if layer.name in ["conv2d"]:
                 configCandidates = [(int(initCfg[0] / 2**bs), math.ceil(initCfg[1] / 2**int(whs/2)), math.ceil(initCfg[1] / 2**int(whs/2+0.5)), initCfg[3], math.ceil(initCfg[4] / 2**fs) )
-                                    for bs in (range(totalSplits + 1) if sampleSplit else [0]) \
+                                    for bs in sampleSplitOptions \
                                         for whs in (range(totalSplits - bs + 1) if spatialSplit else [0]) \
                                             for fs in (range(totalSplits - bs - whs + 1) if filterSplit else [0]) ]
                 dpConfigCandidates = [(int(initCfg[0] / 2**bs), int(initCfg[1] / 2**int(whs/2)), int(initCfg[1] / 2**int(whs/2+0.5)), initCfg[3], int(initCfg[4] / 2**fs) )
                                     for bs in range(totalSplits + 1) for whs in [0] for fs in [0]]
             elif layer.name in ["linear", "ReLU1d"]:
                 configCandidates = [(int(initCfg[0] / 2**bs), int(initCfg[1] / 2**ins), int(initCfg[2] / 2**outs) )
-                                for bs in (range(totalSplits + 1) if sampleSplit else [0]) \
+                                for bs in sampleSplitOptions \
                                     for ins in (range(totalSplits - bs + 1) if filterSplit else [0]) \
                                         for outs in (range(totalSplits - bs - ins + 1) if filterSplit else [0]) ]
                 dpConfigCandidates = [(int(initCfg[0] / 2**bs), int(initCfg[1] / 2**ins), int(initCfg[2] / 2**outs) )
                                     for bs in range(totalSplits + 1) for ins in [0] for outs in [0] ]
             elif layer.name in ["flatten", "maxPool2d", "avgPool2d", "adAvgPool2d", "ReLU2d", "concat"]:
                 configCandidates = [(int(initCfg[0] / 2**bs), math.ceil(initCfg[1] / 2**int(whs/2)), math.ceil(initCfg[1] / 2**int(whs/2+0.5)), initCfg[3] )
-                                    for bs in (range(totalSplits + 1) if sampleSplit else [0]) \
+                                    for bs in sampleSplitOptions \
                                         for whs in (range(totalSplits - bs + 1) if spatialSplit else [0]) ]
                 dpConfigCandidates = [(int(initCfg[0] / 2**bs), int(initCfg[1] / 2**int(whs/2)), int(initCfg[1] / 2**int(whs/2+0.5)), initCfg[3] )
                                     for bs in range(totalSplits + 1) for whs in [0] ]

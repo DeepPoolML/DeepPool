@@ -89,6 +89,8 @@ class JobContext:
 
         # optimizer.step()
         self.iter += 1
+        if self.iter == 1:
+            self.model.commHandler.stopSendingSizes()
         if self.iter == self.itersToTrain:
             self.iter = 0
             self.epoch += 1
@@ -157,11 +159,12 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
         if dataDir == "SYNTHETIC":
             dataDir = None # Use synthetic dataset.
         loader = VisionDataLoaderGenerator.genDataLoader(
-            jobInJson, dataDir, syntheticDataLength=16000)
+            jobInJson, dataDir, syntheticDataLength=1600)
         job = JobContext(module, name, loader, device=self.device)
         
         job.limit_iters_to_train(500)
         self.jobs.append(job)
+        
         Logger.log("Scheduled a training job (%s). Total jobs on queue: %d" % (name, len(self.jobs)))
         return "Scheduled a training job. @ %s!"%self.myAddr
 
@@ -199,8 +202,8 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
                     self.jobs.pop(0)
                     break
             elapsed = time.time() - startTime
-            Logger.log("[poll] <%s> epoch:%d/%d iter:%d/%d  %d ms per iter." % 
-                (job.name, job.epoch, job.epochsToTrain, job.iter, job.itersToTrain, (1000*elapsed)/ job.itersPerPoll))
+            Logger.log("[poll] <%s> epoch:%d/%d iter:%d/%d  %3.1f ms per iter." % 
+                (job.name, job.epoch, job.epochsToTrain, job.iter, job.itersToTrain, (1000.0*elapsed)/ job.itersPerPoll))
 
         # self.pollInvokeCounter += 1
         # if self.pollInvokeCounter % 1 == 0:
