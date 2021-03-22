@@ -263,11 +263,20 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
                 print("pipe broken while shuting down %s" % location.address)
 
     def initCommBackendAll(self):
+        # hard-coded comm group list for testing all-gather operations
+        test_comm_grp_list = []
+        test_comm_grp_list.append([0,1,2,3])
+        test_comm_grp_list.append([0,1])
+        test_comm_grp_list.append([2,3])
+        test_comm_grp_list.append([0,1,2])
+        test_comm_grp_list.append([1,2,3])
+        print('Cluster Coordinator test_comm_grp_list: ', test_comm_grp_list)
+
         threadList = []
-        def requestInitCommBackend(proxy):
-            print(proxy.initCommBackend())
+        def requestInitCommBackend(proxy, comm_grp_list):
+            print(proxy.initCommBackend(comm_grp_list))
         for i, location in enumerate(self.locations):
-            thread = threading.Thread(name='init_comm%d'%i, target=requestInitCommBackend, args=(location.getProxy(),))
+            thread = threading.Thread(name='init_comm%d'%i, target=requestInitCommBackend, args=(location.getProxy(),test_comm_grp_list))
             threadList.append(thread)
         for thread in threadList:
             thread.start()

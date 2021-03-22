@@ -67,7 +67,18 @@ class CommunicationBackend:
         deviceForComm = 'cpu' if self.backend == 'gloo' else self.device
         Logger.log("[CommunicationBackend] makeCommunicationHandler sendFromCpu(%s)"%str(sendFromCpu), level=0)
         return CommunicationHandler(worldSize, tensor_tags, sendFromCpu, deviceForComm, shouldSendSizes=True)
-        
+
+    def add_comm_group(self, comm_group):
+        return dist.new_group(comm_group)
+
+    def add_comm_group_list(self, comm_group_list):
+        group_handler_list = []
+        for group_idx in range(len(comm_group_list)):
+            comm_group = comm_group_list[group_idx]
+            group_handler = self.add_comm_group(comm_group)
+            group_handler_list.append(group_handler)
+        return group_handler_list
+
 class CommunicationHandler:
     # Features.
     # - mapping from a rank for a training job to global runtime rank.
@@ -145,3 +156,6 @@ class CommunicationHandler:
         asyncReq = dist.irecv(tensor=tensor, src=src_rank, tag=tag)
         self.asyncReqs.append(asyncReq)
         return tensor
+
+    def allGather(self, tensor_list, tensor, group):
+        dist.all_gather(tensor_list, tensor, group)

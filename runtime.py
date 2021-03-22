@@ -123,6 +123,7 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
         print('torch.distributed availability: ', dist.is_available())
         print('torch.distributed.nccl availability: ', dist.is_nccl_available())
         self.jobs = []
+        self.rank = rank
         self.pollInvokeCounter = 0
         self.shutdownRequested = False
         self.commBackend = CommunicationBackend(rank, worldSize, coordinatorAddr, c10dMasterPort, c10dBackend, self.device)
@@ -146,8 +147,24 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
     ######################################################
     ## RPC handlers
     ######################################################
-    def export_initCommBackend(self):
+    def export_initCommBackend(self, comm_grp_list):
         self.commBackend.init_comm_group_if_not()
+
+        # test: use CommunicationBackend & CommunicationHandler objects
+        Logger.log("Testing partial group collective comm using CommunicationBackend & CommunicationHandler objects")
+        grp_handler_list = self.commBackend.add_comm_group_list(comm_grp_list)
+        comm_handler = self.commBackend.makeCommunicationHandler(len(comm_grp_list[0]), 'dummy')
+        tsr = torch.zeros(2, dtype=torch.int, device='cuda:0') + 10 + self.rank
+        Logger.log("my tensor: %s" % str(tsr), flush=True)
+        for grp_idx in range(len(comm_grp_list)):
+            comm_grp = comm_grp_list[grp_idx]
+            Logger.log("grp_idx: %d comm_grp: %s" % (grp_idx, str(comm_grp)), flush=True)
+            if self.rank in comm_grp:
+                tsr_list = [torch.zeros(2, dtype=torch.int, device='cuda:0') for _ in range(len(comm_grp))]
+                Logger.log("BEFORE tensor_list: %s" % str(tsr_list), flush=True)
+                comm_handler.allGather(tsr_list, tsr, grp_handler_list[grp_idx])
+                Logger.log(" AFTER tensor_list: %s" % str(tsr_list), flush=True)
+
         return "commBackend initialized. @ %s!"%self.myAddr
     
     def export_scheduleTraining(self, name: str, jobInJson: str, dataDir: str, tensorTagsInJson: str):
@@ -164,7 +181,6 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
         
         job.limit_iters_to_train(500)
         self.jobs.append(job)
-        
         Logger.log("Scheduled a training job (%s). Total jobs on queue: %d" % (name, len(self.jobs)))
         return "Scheduled a training job. @ %s!"%self.myAddr
 
