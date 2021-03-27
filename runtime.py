@@ -146,38 +146,35 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
     ######################################################
     ## RPC handlers
     ######################################################
-    def export_initCommBackend(self, commGrpDict):
+    def export_initCommBackend(self):
         self.commBackend.init_comm_group_if_not()
-
-        # test: use CommunicationBackend & CommunicationHandler objects
-        Logger.log("Testing partial group collective comm using CommunicationBackend & CommunicationHandler objects")
-        # comm_grp_handler_dict = self.commBackend.add_comm_group_list(commGrpDict)
-        # print(commGrpDict)
-        comm_handler = self.commBackend.makeCommunicationHandler(len(commGrpDict['all']), commGrpDict, 'dummy')
-        comm_handler.addCommGroupDict(commGrpDict)
-        print(comm_handler.commGrpDict)
-        print(comm_handler.commGrpHandlerDict)
-        tsr = torch.zeros(2, dtype=torch.int, device=self.device) + 10 + self.commBackend.rank
-        Logger.log("my tensor: %s" % str(tsr), flush=True)
-        for grp_name in commGrpDict:
-            grp_ranks = commGrpDict[grp_name]
-            Logger.log("grp_name: %s grp_ranks: %s" % (grp_name, str(grp_ranks)), flush=True)
-            if self.commBackend.rank in grp_ranks:
-                tsr_list = [torch.zeros(2, dtype=torch.int, device=self.device) for _ in range(len(grp_ranks))]
-                Logger.log("BEFORE all_gather tensor_list: %s" % str(tsr_list), flush=True)
-                comm_handler.allGather(tsr_list, tsr, grp_name)
-                Logger.log(" AFTER all_gather tensor_list: %s" % str(tsr_list), flush=True)
-                Logger.log("BEFORE all_reduce tensor: %s" % str(tsr), flush=True)
-                comm_handler.allReduce(tsr, 0, grp_name)
-                Logger.log(" AFTER all_reduce tensor: %s" % str(tsr), flush=True)
-
         return "commBackend initialized. @ %s!"%self.myAddr
     
     def export_scheduleTraining(self, name: str, jobInJson: str, dataDir: str, tensorTagsInJson: str):
         # self.commBackend.init_comm_group_if_not()
         worldSize = json.loads(jobInJson)["maxGpusUsed"]
         tensorTags = json.loads(tensorTagsInJson)
-        commHandler = self.commBackend.makeCommunicationHandler(worldSize, {}, tensorTags)
+
+        # all_gather and all_reduce testing code inserted
+        test_comm_grp_dict = {'all': [0,1,2,3], 'partial': [1,0]}
+        commHandler = self.commBackend.makeCommunicationHandler(worldSize, test_comm_grp_dict, tensorTags)
+        commHandler.addCommGroupDict(test_comm_grp_dict)
+        tsr = torch.zeros(2, dtype=torch.int, device=self.device) + 10 + self.commBackend.rank
+        Logger.log("my tensor: %s" % str(tsr), flush=True)
+        for grp_name in test_comm_grp_dict:
+            grp_ranks = test_comm_grp_dict[grp_name]
+            Logger.log("grp_name: %s grp_ranks: %s" % (grp_name, str(grp_ranks)), flush=True)
+            if self.commBackend.rank in grp_ranks:
+                tsr_list = [torch.zeros(2, dtype=torch.int, device=self.device) for _ in range(len(grp_ranks))]
+                Logger.log("BEFORE all_gather tensor_list: %s" % str(tsr_list), flush=True)
+                commHandler.allGather(tsr_list, tsr, grp_name)
+                Logger.log(" AFTER all_gather tensor_list: %s" % str(tsr_list), flush=True)
+                Logger.log("BEFORE all_reduce tensor: %s" % str(tsr), flush=True)
+                commHandler.allReduce(tsr, 0, grp_name)
+                Logger.log(" AFTER all_reduce tensor: %s" % str(tsr), flush=True)
+        # testing code end
+
+        # commHandler = self.commBackend.makeCommunicationHandler(worldSize, {}, tensorTags)
         module = RunnableModule(jobInJson, commHandler)
         if dataDir == "SYNTHETIC":
             dataDir = None # Use synthetic dataset.

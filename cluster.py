@@ -165,11 +165,25 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
         # TODO: should pick locations that doesn't have other priority job scheduled.
         if len(self.locations) < gpusUsed:
             return "Not enough servers available. %d gpus available while %d needed" % (len(self.locations), gpusUsed)
-        
+
+        threadList = []
+        def requestScheduleTraining(proxy, name, jobInJson, dataDir, tensorTagsInJson):
+            print(proxy.scheduleTraining(name, jobInJson, dataDir, tensorTagsInJson))
         for rank in range(gpusUsed):
             location = self.locations[rank]
-            moduleDesc = moduleDescList[rank] # job.dumpSingleRunnableModule(rank)
-            print(location.getProxy().scheduleTraining("vgg", moduleDesc, "SYNTHETIC", tensorTagsInJson))
+            moduleDesc = moduleDescList[rank]
+            thread = threading.Thread(name='init_comm%d'%rank, target=requestScheduleTraining, args=(location.getProxy(), "vgg", moduleDesc, "SYNTHETIC", tensorTagsInJson))
+            threadList.append(thread)
+        for thread in threadList:
+            thread.start()
+            time.sleep(1)
+        for thread in threadList:
+            thread.join()
+
+        # for rank in range(gpusUsed):
+        #     location = self.locations[rank]
+        #     moduleDesc = moduleDescList[rank] # job.dumpSingleRunnableModule(rank)
+        #     print(location.getProxy().scheduleTraining("vgg", moduleDesc, "SYNTHETIC", tensorTagsInJson))
         return 'done'
 
     def export_notifyTrainingFinished(self, runtimeAddress: str, name: str, remainingJobCount: int):
@@ -263,15 +277,11 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
                 print("pipe broken while shuting down %s" % location.address)
 
     def initCommBackendAll(self):
-        # hard-coded comm group dict for testing all-gather operations
-        test_comm_grp_dict = {'all': [0,1,2,3], 'partial': [1,0]}
-        print('Cluster Coordinator test_comm_grp_dict: ', test_comm_grp_dict)
-
         threadList = []
-        def requestInitCommBackend(proxy, commGrpDict):
-            print(proxy.initCommBackend(commGrpDict))
+        def requestInitCommBackend(proxy):
+            print(proxy.initCommBackend())
         for i, location in enumerate(self.locations):
-            thread = threading.Thread(name='init_comm%d'%i, target=requestInitCommBackend, args=(location.getProxy(), test_comm_grp_dict))
+            thread = threading.Thread(name='init_comm%d'%i, target=requestInitCommBackend, args=(location.getProxy(),))
             threadList.append(thread)
         for thread in threadList:
             thread.start()
