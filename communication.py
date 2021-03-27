@@ -62,28 +62,17 @@ class CommunicationBackend:
         recvReq.wait()
         Logger.log("[CommunicationBackend] testRing completed. received %s"%str(tensor2recv), level=0, flush=True)
     
-    def makeCommunicationHandler(self, worldSize, tensor_tags):
+    def makeCommunicationHandler(self, worldSize, commGrpDict, tensor_tags):
         sendFromCpu = (self.backend == 'gloo')
         deviceForComm = 'cpu' if self.backend == 'gloo' else self.device
         Logger.log("[CommunicationBackend] makeCommunicationHandler sendFromCpu(%s)"%str(sendFromCpu), level=0)
-        return CommunicationHandler(worldSize, tensor_tags, sendFromCpu, deviceForComm, shouldSendSizes=True)
-
-    def add_comm_group(self, comm_group):
-        return dist.new_group(comm_group)
-
-    def add_comm_group_list(self, comm_group_list):
-        group_handler_list = []
-        for group_idx in range(len(comm_group_list)):
-            comm_group = comm_group_list[group_idx]
-            group_handler = self.add_comm_group(comm_group)
-            group_handler_list.append(group_handler)
-        return group_handler_list
+        return CommunicationHandler(worldSize, commGrpDict, tensor_tags, sendFromCpu, deviceForComm, shouldSendSizes=True)
 
 class CommunicationHandler:
     # Features.
     # - mapping from a rank for a training job to global runtime rank.
     # - keeps tensor dimension information for recv operation. (c10d recv needs a tensor with correct size)
-    def __init__(self, worldSize, tensor_tags, sendFromCpu, deviceForComm, shouldSendSizes: bool = True):
+    def __init__(self, worldSize, commGrpDict, tensor_tags, sendFromCpu, deviceForComm, shouldSendSizes: bool = True):
         self.tensorSizes = {}
         self.tensor_tags = tensor_tags
         self.shouldSendSizes = shouldSendSizes
@@ -91,7 +80,21 @@ class CommunicationHandler:
         self.deviceForComm = deviceForComm
         self.jobRankToGlobalRank = list(range(worldSize))
         self.asyncReqs = []
-    
+        self.commGrpDict = commGrpDict
+        self.commGrpHandlerDict = {}
+
+    def addCommGroup(self, grpName, grpRanks):
+        globalGrpRanks = []
+        for rank in grpRanks:
+            globalGrpRanks.append(self.jobRankToGlobalRank[rank])
+        grpHandler = dist.new_group(globalGrpRanks)
+        self.commGrpHandlerDict.update({grpName: grpHandler})
+
+    def addCommGroupDict(self, grpDict):
+        for grpName in grpDict:
+            grpRanks = grpDict[grpName]
+            self.addCommGroup(grpName, grpRanks)
+
     def stopSendingSizes(self):
         """ Should be called after 1st iteration for performance """
         self.shouldSendSizes = False
@@ -157,5 +160,11 @@ class CommunicationHandler:
         self.asyncReqs.append(asyncReq)
         return tensor
 
-    def allGather(self, tensor_list, tensor, group):
-        dist.all_gather(tensor_list, tensor, group)
+    def allGather(self, tensorList, tensor, grpName):
+        commGrpHandler = self.commGrpHandlerDict[grpName]
+        dist.all_gather(tensorList, tensor, commGrpHandler)
+
+    def allReduce(self, tensor, operation, grpName):
+        commGrpHandler = self.commGrpHandlerDict[grpName]
+        enum = dist.ReduceOp.SUM # operation argument should specify, now default to SUM
+        dist.all_reduce(tensor, enum, commGrpHandler)
