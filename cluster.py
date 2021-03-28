@@ -117,11 +117,9 @@ class ClusterClient:
                 retryGap *= 2 # exponential back off.
                 retryCount += 1
     
-    def submitTrainingJob(self, trainingJobInJSON: str):
+    def submitTrainingJob(self, jobName: str, trainingJobInJSON: str):
         self.proxy.poke()
-        self.proxy.scheduleTraining(trainingJobInJSON)
-
-
+        self.proxy.scheduleTraining(jobName, trainingJobInJSON)
 
 class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
     """ GPU cluster coordinator. It accepts training jobs from clients and schedule them to runtimes. """
@@ -152,7 +150,7 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
     def export_poke(self):
         return 'Returned from poke at %s' % self.myAddr
 
-    def export_scheduleTraining(self, trainingJobInJSON: str):
+    def export_scheduleTraining(self, jobName: str, trainingJobInJSON: str):
         job = TrainingJob("test", None, None, 0, "")
         job.loadJSON(trainingJobInJSON)
         print("received job")
@@ -161,18 +159,24 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
         moduleDescList = [job.dumpSingleRunnableModule(rank) for rank in range(gpusUsed)]
         tensorTags = self.buildCommTensorTags(moduleDescList)
         tensorTagsInJson = json.dumps(tensorTags)
+        jobRankToGlobalRank = list(range(gpusUsed))
+        jobRankToGlobalRankInJson = json.dumps(jobRankToGlobalRank)
 
         # TODO: should pick locations that doesn't have other priority job scheduled.
         if len(self.locations) < gpusUsed:
             return "Not enough servers available. %d gpus available while %d needed" % (len(self.locations), gpusUsed)
 
+        # convert local ranks to global rank & invoke make groups.
+        commGroups = {'all': list(range(gpusUsed)), 'partial': [1,0]} # TODO: replace this hardcoded one with something like self.buildCommTensorTags(moduleDescList).
+        self.initCommGroupsAll(jobName, commGroups, jobRankToGlobalRank)
+
         threadList = []
-        def requestScheduleTraining(proxy, name, jobInJson, dataDir, tensorTagsInJson):
-            print(proxy.scheduleTraining(name, jobInJson, dataDir, tensorTagsInJson))
+        def requestScheduleTraining(proxy, name, jobInJson, dataDir, tensorTagsInJson, jobRankToGlobalRankInJson):
+            print(proxy.scheduleTraining(name, jobInJson, dataDir, tensorTagsInJson, jobRankToGlobalRankInJson))
         for rank in range(gpusUsed):
             location = self.locations[rank]
             moduleDesc = moduleDescList[rank]
-            thread = threading.Thread(name='init_comm%d'%rank, target=requestScheduleTraining, args=(location.getProxy(), "vgg", moduleDesc, "SYNTHETIC", tensorTagsInJson))
+            thread = threading.Thread(name='init_comm%d'%rank, target=requestScheduleTraining, args=(location.getProxy(), jobName, moduleDesc, "SYNTHETIC", tensorTagsInJson, jobRankToGlobalRankInJson))
             threadList.append(thread)
         for thread in threadList:
             thread.start()
@@ -183,7 +187,7 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
         # for rank in range(gpusUsed):
         #     location = self.locations[rank]
         #     moduleDesc = moduleDescList[rank] # job.dumpSingleRunnableModule(rank)
-        #     print(location.getProxy().scheduleTraining("vgg", moduleDesc, "SYNTHETIC", tensorTagsInJson))
+        #     print(location.getProxy().scheduleTraining(jobName, moduleDesc, "SYNTHETIC", tensorTagsInJson, jobRankToGlobalRankInJson))
         return 'done'
 
     def export_notifyTrainingFinished(self, runtimeAddress: str, name: str, remainingJobCount: int):
@@ -288,6 +292,28 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
             time.sleep(1)
         for thread in threadList:
             thread.join()
+
+    def initCommGroupsAll(self, jobName: str, commGrpDict: dict, jobRankToGlobalRank: list):
+        commGrpDictWithGlobalRanks = {}
+        for grpName in commGrpDict:
+            grpRanks = commGrpDict[grpName]
+            globalGrpRanks = [jobRankToGlobalRank[rank] for rank in grpRanks]
+            commGrpDictWithGlobalRanks[grpName] = globalGrpRanks
+        commGrpDictWithGlobalRanksInJson = json.dumps(commGrpDictWithGlobalRanks)
+
+        threadList = []
+        def requestInitCommGroups(proxy, jobName, commGroupsInJson):
+            print(proxy.initCommGroups(jobName, commGroupsInJson))
+        for i, location in enumerate(self.locations):
+            thread = threading.Thread(name='init_commGroups%d'%i, target=requestInitCommGroups,
+                                      args=(location.getProxy(), jobName, commGrpDictWithGlobalRanksInJson,))
+            threadList.append(thread)
+        for thread in threadList:
+            thread.start()
+            time.sleep(1)
+        for thread in threadList:
+            thread.join()
+            
 
     def waitForRuntimeAll(self):
         """ Waits until all runtime processes terminate. Development use only. """

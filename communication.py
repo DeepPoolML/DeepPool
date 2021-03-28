@@ -25,6 +25,7 @@ class CommunicationBackend:
         self.backend = backend
         self.device = device
         self.initialized = False
+        self.commGrpHandlerDicts = {} # maps from <jobName> to <commGrpHandlerDict>
         return
     
     def init_comm_group_if_not(self):
@@ -62,38 +63,45 @@ class CommunicationBackend:
         recvReq.wait()
         Logger.log("[CommunicationBackend] testRing completed. received %s"%str(tensor2recv), level=0, flush=True)
     
-    def makeCommunicationHandler(self, worldSize, commGrpDict, tensor_tags):
+    def initCommGroups(self, jobName: str, commGrpDict: dict):
+        commGrpHandlerDict = {}
+        for grpName in commGrpDict:
+            globalGrpRanks = commGrpDict[grpName]
+            grpHandler = dist.new_group(globalGrpRanks)
+            commGrpHandlerDict[grpName] = grpHandler
+        self.commGrpHandlerDicts[jobName] = commGrpHandlerDict
+
+    def makeCommunicationHandler(self, jobName, worldSize, tensor_tags, jobRankToGlobalRank):
         sendFromCpu = (self.backend == 'gloo')
         deviceForComm = 'cpu' if self.backend == 'gloo' else self.device
         Logger.log("[CommunicationBackend] makeCommunicationHandler sendFromCpu(%s)"%str(sendFromCpu), level=0)
-        return CommunicationHandler(worldSize, commGrpDict, tensor_tags, sendFromCpu, deviceForComm, shouldSendSizes=True)
+        if jobName not in self.commGrpHandlerDicts:
+            Logger.log("Error in makeCommunicationHandler. commGroupHandlers are not previously initialized for %s." % jobName, level=2, flush=True)
+        commGrpHandlerDict = self.commGrpHandlerDicts[jobName]
+        return CommunicationHandler(worldSize, tensor_tags, jobRankToGlobalRank, sendFromCpu, deviceForComm, commGrpHandlerDict, shouldSendSizes=True)
 
 class CommunicationHandler:
     # Features.
     # - mapping from a rank for a training job to global runtime rank.
     # - keeps tensor dimension information for recv operation. (c10d recv needs a tensor with correct size)
-    def __init__(self, worldSize, commGrpDict, tensor_tags, sendFromCpu, deviceForComm, shouldSendSizes: bool = True):
+    def __init__(self, worldSize, tensor_tags, jobRankToGlobalRank, sendFromCpu, deviceForComm, commGrpHandlerDict, shouldSendSizes: bool = True):
         self.tensorSizes = {}
         self.tensor_tags = tensor_tags
+        self.jobRankToGlobalRank = jobRankToGlobalRank #list(range(worldSize))
         self.shouldSendSizes = shouldSendSizes
         self.sendFromCpu = sendFromCpu
         self.deviceForComm = deviceForComm
-        self.jobRankToGlobalRank = list(range(worldSize))
         self.asyncReqs = []
-        self.commGrpDict = commGrpDict
-        self.commGrpHandlerDict = {}
+        # self.commGrpDict = commGrpDict
+        self.commGrpHandlerDict = commGrpHandlerDict
+        # self.addCommGroups(commGrpDict)
 
-    def addCommGroup(self, grpName, grpRanks):
-        globalGrpRanks = []
-        for rank in grpRanks:
-            globalGrpRanks.append(self.jobRankToGlobalRank[rank])
-        grpHandler = dist.new_group(globalGrpRanks)
-        self.commGrpHandlerDict.update({grpName: grpHandler})
-
-    def addCommGroupDict(self, grpDict):
-        for grpName in grpDict:
-            grpRanks = grpDict[grpName]
-            self.addCommGroup(grpName, grpRanks)
+    # def initCommGroups(self, commGrpDict):
+    #     for grpName in commGrpDict:
+    #         grpRanks = commGrpDict[grpName]
+    #         globalGrpRanks = [self.jobRankToGlobalRank[rank] for rank in grpRanks]
+    #         grpHandler = dist.new_group(globalGrpRanks)
+    #         self.commGrpHandlerDict[grpName] = grpHandler
 
     def stopSendingSizes(self):
         """ Should be called after 1st iteration for performance """

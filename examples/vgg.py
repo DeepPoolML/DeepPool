@@ -362,8 +362,9 @@ def testRunOnCPU():
 # testRunOnCPU()
 
 # cc = ClusterClient("172.31.64.125", 12345)
-cc = ClusterClient("172.31.73.183", 12345)
-cc.submitTrainingJob(jobInJson)
+# cc = ClusterClient("172.31.73.183", 12345)
+cc = ClusterClient("172.31.78.3", 12345)
+cc.submitTrainingJob("vgg16", jobInJson)
 
 profiler.saveProfile()
 
