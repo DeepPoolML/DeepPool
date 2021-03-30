@@ -32,10 +32,10 @@ class CommunicationBackend:
         if not self.initialized:
             init_method = 'tcp://%s:%d'%(self.master_addr, self.master_port)
             args = {"backend": self.backend, "init_method": init_method, "rank": self.rank, "world_size": self.world_size}
-            Logger.log("comm group initialization started. args: %s" % str(args), flush=True)
+            Logger.log("default comm group initialization started. args: %s" % str(args), flush=True)
             dist.init_process_group(self.backend, init_method=init_method, rank=self.rank, world_size=self.world_size)
             assert dist.get_world_size() == self.world_size
-            Logger.log("comm group initialized.", flush=True)
+            Logger.log("default comm group initialized.", flush=True)
             self.initialized = True
             Logger.log("Testing c10d backend..", flush=True)
             self.testRing()
@@ -70,6 +70,19 @@ class CommunicationBackend:
             grpHandler = dist.new_group(globalGrpRanks)
             commGrpHandlerDict[grpName] = grpHandler
         self.commGrpHandlerDicts[jobName] = commGrpHandlerDict
+        assert 'all' in self.commGrpHandlerDicts[jobName]
+        Logger.log("Testing default collective comm all-reduce for %s among %d ranks." % (jobName, len(commGrpDict['all'])), flush=True)
+        self.testAllGroupComm(jobName)
+
+    def testAllGroupComm(self, jobName: str):
+        commGrpHandlerDict = self.commGrpHandlerDicts[jobName]
+        commGrpHandler = commGrpHandlerDict['all']
+        tsr = torch.ones(2, dtype=torch.int)
+        if self.backend == 'nccl':
+            tsr = tsr.to(self.device)
+        Logger.log("[CommunicationBackend] testAllGroupComm started for %s. Exchange %s" % (jobName, str(tsr)), flush=True)
+        dist.all_reduce(tsr, dist.ReduceOp.SUM, commGrpHandler)
+        Logger.log("[CommunicationBackend] testAllGroupComm completed for %s. Receive %s" % (jobName, str(tsr)), flush=True)
 
     def makeCommunicationHandler(self, jobName, worldSize, tensor_tags, jobRankToGlobalRank):
         sendFromCpu = (self.backend == 'gloo')
