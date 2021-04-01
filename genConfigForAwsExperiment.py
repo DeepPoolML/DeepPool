@@ -22,7 +22,7 @@ pkeyPath = '~/.ssh/ulma-sjp.pem'
 userId = "ubuntu"
 workDir = "~/DeepPoolRuntime/"
 # gpuCount = 1
-gpuCount = 4 # TODO remove.
+gpuCount = 8 # TODO remove.
 portPrefix = 1140 # prefix + Device# is used for port.
 coordinatorPort = 12345
 
@@ -56,7 +56,7 @@ def uploadCode():
     def upSync(host, localPath, remotePath):
         try:
             subprocess.check_call(['rsync', '-e', 'ssh -i %s -o StrictHostKeyChecking=no' % pkeyPath,
-                '-rh', "--exclude=*__pycache__", localPath, "%s@%s:%s" % (userId, host, remotePath)],
+                '-rh', "--exclude=*__pycache__", "--exclude=results", localPath, "%s@%s:%s" % (userId, host, remotePath)],
                 stderr=subprocess.STDOUT)
         except subprocess.CalledProcessError as e:
             output = e.output
@@ -81,13 +81,25 @@ def executeCommand(command):
         rsh(host, command)
         print("Sent \"%s\" to %s"%(command, host))
 
+def downloadResults():
+    def downloadFile(address, remotePath: str, localPath: str):
+        print("  Downloading %s to %s at %s" % (remotePath, localPath, address))
+        sh_command = ['scp', '-i', pkeyPath, '%s@%s:%s' % (userId, address, remotePath), localPath]
+        subprocess.check_call(sh_command, stderr=subprocess.STDOUT)
+
+    for host in publicIps:
+        for remotePath in ["~/net*.qdrep", "~/DeepPoolRuntime/logs/*.out"]: #["~/net*.qdrep", "~/net*.sqlite", "~/DeepPoolRuntime/logs/*.out"]:
+            downloadFile(host, remotePath, "results/")
+            print("Downloaded \"%s\" from %s"%(remotePath, host))
+
 def main():
+    downloadResults()
     generateConfigFile()
     uploadCode()
     print("*** To start coordinator, execute following commands ***")
     print("ssh -i %s %s@%s" % (pkeyPath, userId, publicIps[0]))
     print("cd %s" % workDir)
-    print("python3 cluster.py --addrToBind %s:%d --c10dBackend gloo" % (privateIps[0], coordinatorPort) )
+    print("python3 cluster.py --addrToBind %s:%d --c10dBackend nccl" % (privateIps[0], coordinatorPort) )
 
 if __name__ == "__main__":
     if len(sys.argv) == 1:

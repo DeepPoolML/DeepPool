@@ -289,82 +289,101 @@ def vgg19_bn(pretrained=False, **kwargs):
         model.load_state_dict(model_zoo.load_url(model_urls['vgg19_bn']))
     return model
 
-profiler = GpuProfiler("cuda")
-profiler.loadProfile()
-cs = CostSim(profiler, verbose=True)
-model = vgg16(pretrained=False)
-# model = vgg11()
-# model = resnet34()
-cs.printAllLayers()
-cs.computeInputDimensions((224,224,3))
-# job = cs.searchBestSplits(4, 16, dataParallelBaseline=True)
-job = cs.searchBestSplits(4, 16)
+def main(gpuCount, globalBatch, amplificationLimit=2.0):
+    profiler = GpuProfiler("cuda")
+    profiler.loadProfile()
+    global cs
+    cs = CostSim(profiler, netBw=1.25E5, verbose=True)
+    model = vgg16(pretrained=False)
+    # model = vgg11()
+    # model = resnet34()
+    cs.printAllLayers()
+    cs.computeInputDimensions((224,224,3))
+    # job = cs.searchBestSplits(4, 16, dataParallelBaseline=True)
+    # job = cs.searchBestSplits(4, 16)
+    # job = cs.searchBestSplits(gpuCount, globalBatch, dataParallelBaseline=True)
+    job = cs.searchBestSplits(gpuCount, globalBatch, amplificationLimit=amplificationLimit)
+    jobInJson = job.dumpInJSON()
 
+    # for rank in range(4):
+    #     print("GPU rank: %d"%rank)
+    #     print(job.dumpSingleRunnableModule(rank))
 
-jobInJson = job.dumpInJSON()
-job2 = TrainingJob("test", None, None, 0, "")
-job2.loadJSON(jobInJson)
-assert(jobInJson == job2.dumpInJSON())
-print("Load/Dump returned the same output? %s" % ("true" if jobInJson == job2.dumpInJSON() else "false"))
-print(jobInJson)
+    job2 = TrainingJob("test", None, None, 0, "")
+    job2.loadJSON(jobInJson)
+    assert(jobInJson == job2.dumpInJSON())
+    print("Load/Dump returned the same output? %s" % ("true" if jobInJson == job2.dumpInJSON() else "false"))
+    # print(jobInJson)
 
-locations = ["a", "b", "c", "d"]
+    locations = ["a", "b", "c", "d"]
 
-def testRunOnCPU():
-    # optimizer is not yet implemented.
-    def train(loader, model, optimizer = None, criterion = nn.CrossEntropyLoss(), device="cpu"):
-        model.to(device)
-        model.train()
-        for batch_idx, (data, target) in enumerate(loader):
-            data, target = data.to(device), target.to(device)
-            # optimizer.zero_grad()
+    def testRunOnCPU():
+        # optimizer is not yet implemented.
+        def train(loader, model, optimizer = None, criterion = nn.CrossEntropyLoss(), device="cpu"):
+            model.to(device)
+            model.train()
+            for batch_idx, (data, target) in enumerate(loader):
+                data, target = data.to(device), target.to(device)
+                # optimizer.zero_grad()
 
-            print("forward pass is starting.. data: %s" % str(data.size()))
-            output, runCriterionAndLoss = model(data)
-            # output = torch.flatten(output, 1)
-            if runCriterionAndLoss:
-                output = F.log_softmax(output, dim=1)
+                print("forward pass is starting.. data: %s" % str(data.size()))
+                output, runCriterionAndLoss = model(data)
+                # output = torch.flatten(output, 1)
+                if runCriterionAndLoss:
+                    output = F.log_softmax(output, dim=1)
+                    
+                    # Hack to match target's sample count with the output at this node.
+                    if output.size()[0] != target.size()[0]:
+                        target = torch.repeat_interleave(target, int(1 + output.size()[0] / target.size()[0]), dim=0)
+                        target = target.narrow(0, 0, output.size()[0])
+
+                    loss = criterion(output, target)
+                    print("backward pass is starting")
+                    loss.backward()
+                else:
+                    output.backward(output) # gradient passed is dummy.
                 
-                # Hack to match target's sample count with the output at this node.
-                if output.size()[0] != target.size()[0]:
-                    target = torch.repeat_interleave(target, int(1 + output.size()[0] / target.size()[0]), dim=0)
-                    target = target.narrow(0, 0, output.size()[0])
+                # finish after 1st iteration.
+                return
+                # optimizer.step()
 
-                loss = criterion(output, target)
-                print("backward pass is starting")
-                loss.backward()
-            else:
-                output.backward(output) # gradient passed is dummy.
+        comm = MockCommHandler()
+        threadList = []
+        ## For now just use all gpus.
+        for rank, location in enumerate(locations):
+            moduleDesc = job.dumpSingleRunnableModule(rank)
+            print("%s ==> \n %s" % (location, moduleDesc))
             
-            # finish after 1st iteration.
-            return
-            # optimizer.step()
+            module = RunnableModule(moduleDesc, comm)
+            loader = VisionDataLoaderGenerator.genDataLoader(
+                moduleDesc, syntheticDataLength=1600)
+            train_thread = threading.Thread(name='train_rank%d'%rank, target=train, args=(loader, module,))
+            # train_thread = threading.Thread(name='train_rank%d'%rank, target=train, args=(loader, model,))
+            threadList.append(train_thread)
 
-    comm = MockCommHandler()
-    threadList = []
-    ## For now just use all gpus.
-    for rank, location in enumerate(locations):
-        moduleDesc = job.dumpSingleRunnableModule(rank)
-        print("%s ==> \n %s" % (location, moduleDesc))
-        
-        module = RunnableModule(moduleDesc, comm)
-        loader = VisionDataLoaderGenerator.genDataLoader(
-            moduleDesc, syntheticDataLength=1600)
-        train_thread = threading.Thread(name='train_rank%d'%rank, target=train, args=(loader, module,))
-        # train_thread = threading.Thread(name='train_rank%d'%rank, target=train, args=(loader, model,))
-        threadList.append(train_thread)
+        for thread in threadList:
+            thread.start()
+        for thread in threadList:
+            thread.join()
 
-    for thread in threadList:
-        thread.start()
-    for thread in threadList:
-        thread.join()
+    # testRunOnCPU()
 
-# testRunOnCPU()
+    # cc = ClusterClient("172.31.64.125", 12345)
+    cc = ClusterClient("172.31.73.183", 12345)      # bench-small
+    # cc = ClusterClient("172.31.78.3", 12345)      # bench-large
+    cc.submitTrainingJob("vgg16", jobInJson)
 
-# cc = ClusterClient("172.31.64.125", 12345)
-# cc = ClusterClient("172.31.73.183", 12345)
-cc = ClusterClient("172.31.78.3", 12345)
-cc.submitTrainingJob("vgg16", jobInJson)
+    profiler.saveProfile()
 
-profiler.saveProfile()
+
+
+if __name__ == "__main__":
+    print(len(sys.argv))
+    if len(sys.argv) == 3:
+        main(int(sys.argv[1]), int(sys.argv[2]))
+    elif len(sys.argv) == 4:
+        main(int(sys.argv[1]), int(sys.argv[2]), float(sys.argv[3]))
+    else:
+        print("Wrong number of arguments.\nUsage: ")
+
 

@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 import torchvision.transforms
 import torchvision.datasets
+from typing import Optional, List, Any
 from logger import Logger
 
 class SyntheticDataset(torch.utils.data.dataset.Dataset):
@@ -127,31 +128,80 @@ class VisionDataLoaderGenerator:
         if globalBatchSize > localBatch:
             sampler = UnevenDistributedSampler(dataset, globalBatchSize, localBatch,
                                                 sampleOffset, shuffle=False, drop_last=True)
-        loader = torch.utils.data.DataLoader(
-            dataset, batch_size=localBatch, shuffle=False,
-            num_workers=workers, pin_memory=True, sampler=sampler, drop_last=True)
-        return loader
+        if localBatch > 0:
+            loader = torch.utils.data.DataLoader(
+                dataset, batch_size=localBatch, shuffle=False,
+                num_workers=workers, pin_memory=True, sampler=sampler, drop_last=True)
+        else:
+            loader = None
+
+        # sampleIndices = list(range(sampleOffset, sampleOffset+localBatch))
+        return loader #, sampleIndices, inputSize
     
-    @staticmethod
-    def shuffleTargetData(jobInJsonStr, target, commHandler):
-        ####### Incomplete.
+    # @staticmethod
+    # def shuffleTargetData(jobInJsonStr, target, commHandler):
+    #     ####### Incomplete.
 
-        # Send my portions.
-        jobInJson = json.loads(jobInJsonStr)
-        sendList = jobInJson["dataLoaderTargetTx"]
-        sampleSplitSections = [txItem["prop"]["xferSamples"] for txItem in sendList]
-        remainingSamples = target.shape[0] - sum(sampleSplitSections)
-        sampleSplitSections.append(remainingSamples)
-        splittedOutputs = torch.split(target, sampleSplitSections)
+    #     # Send my portions.
+    #     jobInJson = json.loads(jobInJsonStr)
+    #     sendList = jobInJson["dataLoaderTargetTx"]
+    #     sampleSplitSections = [txItem["prop"]["xferSamples"] for txItem in sendList]
+    #     remainingSamples = target.shape[0] - sum(sampleSplitSections)
+    #     sampleSplitSections.append(remainingSamples)
+    #     splittedOutputs = torch.split(target, sampleSplitSections)
 
-        for idx, item in enumerate(sendList):
-            commHandler.sendAsync(splittedOutputs[idx], item["name"], item["dest"])
+    #     for idx, item in enumerate(sendList):
+    #         commHandler.sendAsync(splittedOutputs[idx], item["name"], item["dest"])
 
-        output = splittedOutputs[-1].clone()
+    #     output = splittedOutputs[-1].clone()
 
-        # Receive
+    #     # Receive
 
-        return output
+    #     return output
+
+class TargetShuffler:
+    def __init__(self, commHandler, rank: int, initialBatchSizes: List[int],
+            finalSampleIndices: List[int], device: str):
+        self.commHandler = commHandler
+        self.rank = rank
+        self.initialBatchSizes = initialBatchSizes
+        self.finalSampleIndices = finalSampleIndices
+        self.device = device
+    
+    def shuffle(self, targetsFromLoader):
+        if targetsFromLoader == None:
+            targetsFromLoader = torch.zeros(0, device=self.device)
+        paddedTarget = []
+        for i, initBatchSize in enumerate(self.initialBatchSizes):
+            if i == self.rank:
+                assert targetsFromLoader.size()[0] == initBatchSize
+                paddedTarget.extend(targetsFromLoader.tolist())
+            else:
+                paddedTarget.extend([0] * initBatchSize)
+        tsr = torch.tensor(paddedTarget, dtype=torch.long, device=torch.device(self.device))
+        self.commHandler.allReduce(tsr, torch.distributed.ReduceOp, "all")
+        allTargetList = torch.chunk(tsr, chunks=tsr.size()[0], dim=0)
+        # Logger.log("allTargetList: %s" % str(allTargetList), flush=True)
+        myTargetList = [allTargetList[idx] for idx in self.finalSampleIndices]
+        # Logger.log("myTargetList: %s" % str(myTargetList), flush=True)
+        if len(myTargetList) > 0:
+            return torch.cat(myTargetList, dim=0)
+        else:
+            return None
+
+#### all-gather method. doesn't work with the current NCCL implementation.
+        # # tsrSizes = [[initBatchSize] for initBatchSize in self.initialBatchSizes]
+        # # tsrList = [torch.zeros(*tsrSize, dtype=torch.LongTensor, device=self.device) for tsrSize in tsrSizes]
+        # tsrList = [torch.zeros(initBatchSize, dtype=torch.int, device=torch.device(self.device)) for initBatchSize in self.initialBatchSizes]
+        # Logger.log("TargetShuffler.shuffle is about to call allGather. tsrList: %s targetsFromLoader: %s" \
+        #         % (str(tsrList), str(targetsFromLoader)), flush=True)
+        # self.commHandler.allGather(tsrList, targetsFromLoader, 'all')
+        # Logger.log("TargetShuffler.shuffle returned from allGather.", flush=True)
+        # allTargets = torch.cat(tsrList, dim=0)
+        # allTargetList = torch.chunk(allTargets, chunks=allTargets.size()[0], dim=0)
+        # myTargetList = [allTargetList[idx] for idx in self.finalSampleIndices]
+        # return torch.cat(myTargetList, dim=0)
+
 
 class MockCommHandler:
     def __init__(self, conditionVariable = threading.Condition()):
@@ -245,9 +295,16 @@ class ReceiveSamplesFunc(torch.autograd.Function):
         for rxItem in recvList:
             additionalInput = commHandler.recv(rxItem["name"], rxItem["src"])
             inputTensorList.append(additionalInput)
-        inputTensorList.append(x)
+            print("[ReceiveSamplesFunc] ** additionalInput: %s, requires_grad? %s leaf? %s" % \
+                (str(additionalInput.size()), str(additionalInput.requires_grad), str(additionalInput.is_leaf) ))
+        
+            # additionalInput.retain_grad()
+        if x != None:
+            inputTensorList.append(x)
         inputTensor = torch.cat(inputTensorList, 0)
-        # print("** output from ReceiveSamplesFunc.forward: %s" % str(inputTensor.size()))
+        # inputTensor.retain_grad()
+        print("[ReceiveSamplesFunc] ** output from ReceiveSamplesFunc.forward: %s, requires_grad? %s leaf? %s  x: %s %s" % \
+                (str(inputTensor.size()), str(inputTensor.requires_grad), str(inputTensor.is_leaf), str(x.size() if x != None else None), str(x.requires_grad if x != None else None) ))
         return inputTensor
 
     @staticmethod
@@ -265,7 +322,7 @@ class ReceiveSamplesFunc(torch.autograd.Function):
         return output, None, None
 
 class RunnableModule(nn.Module):
-    def __init__(self, specInJson, commHandler):
+    def __init__(self, specInJson, commHandler, device):
         super(RunnableModule, self).__init__()
         spec = json.loads(specInJson)
         self.rank = spec["rank"]
@@ -274,6 +331,8 @@ class RunnableModule(nn.Module):
         self.layersInJson = spec["layers"]
         self.initialBatchSize = self.layersInJson[0]["config"][0]
         self.commHandler = commHandler
+        self.device = device
+        self.leavesForBackward = []
 
         for ldsc in self.layersInJson:
             name = ldsc["name"]
@@ -309,20 +368,17 @@ class RunnableModule(nn.Module):
                     module = torch.nn.Sequential(module, SendSamples(ldsc["tensorTx"], self.commHandler))
 
             self.moduleList.append(module)
-            
-    def initializeAtLocation(self, device, controller):
-        self.device = device
-        self.controller = controller
 
     def forward(self, x):   
         # Assumes modules and layers are topologically sorted.
 
-        # def hook_wrapper(name):
-        #     def hook(grad):
-        #         print("hook_wrapper invoked! %s ; grad: %s" % (name, str(grad.size())) )
-        #     return hook
+        def hook_wrapper(name):
+            def hook(grad):
+                print("hook_wrapper invoked! %s ; grad: %s" % (name, str(grad.size())) )
+            return hook
         # x.requires_grad = True
         # x.register_hook(hook_wrapper("initial input's hook " + str(x.size()) ))
+        tensorToReturn = None
 
         self.outputs = []
         for i, (module, ldsc) in enumerate(zip(self.moduleList, self.layersInJson)):
@@ -335,135 +391,45 @@ class RunnableModule(nn.Module):
                 raise Exception("[RunnableModule::forward] more than 2 previous layers is not yet supported.")
             
             if ldsc["config"][0] > 0: # This rank has assigned samples for this layer.
-                # if "tensorRx" in ldsc: # receive parts of input.
-                #     inputTensorList = [inputTensor]
-                #     for rxItem in ldsc["tensorRx"]:
-                #         additionalInput = self.commHandler.recv(rxItem["name"], rxItem["src"])
-                        
-                #         ## For backprop
-                #         def rx_hook_wrapper(tensorRxList):
-                #             def hook(grad):
-                #                 print("hook_wrapper invoked!")
-                #                 sampleSplitSections = [item["prop"]["xferSamples"] for item in tensorRxList]
-                #                 remainingSamples = grad.shape[0] - sum(sampleSplitSections)
-                #                 sampleSplitSections.append(remainingSamples)
-                #                 splittedOutputs = torch.split(grad, sampleSplitSections)
-                #                 for idx, item in enumerate(tensorRxList):
-                #                     self.commHandler.sendAsync(splittedOutputs[idx], item["name"]+"_back", item["src"])
-                #                 output = splittedOutputs[-1].clone()
-                #                 return output
-                #             return hook
-                #         additionalInput.register_hook(rx_hook_wrapper(ldsc["tensorRx"]))
-                #         ## End of for backprop
-
-                #         inputTensorList.append(additionalInput)
-                #     inputTensor = torch.cat(inputTensorList, 0)
-                # Logger.log("[RunnableModule] forward inputTensor.size(): %s"%str(inputTensor.size()), level=0)
-                outputRaw = module(inputTensor)
-                # Logger.log("[RunnableModule] Layer %d ==> output from running module: %s" % (i, str(outputRaw.size())), level=0)
-
-                # if "tensorTx" in ldsc: # send parts of output.
-                #     sampleSplitSections = [txItem["prop"]["xferSamples"] for txItem in ldsc["tensorTx"]]
-                #     remainingSamples = outputRaw.shape[0] - sum(sampleSplitSections)
-                #     sampleSplitSections.append(remainingSamples)
-                #     splittedOutputs = torch.split(outputRaw, sampleSplitSections)
-
-                #     # output.register_hook(hook_wrapper_cat_recv)
-
-                #     for txIdx, txItem in enumerate(ldsc["tensorTx"]):
-                #         self.commHandler.sendAsync(splittedOutputs[txIdx], txItem["name"], txItem["dest"])
-                #     output = splittedOutputs[-1].clone()
-
-                #     ## For backprop
-                #     def hook_wrapper_recv(tensorTxList):
-                #         def hook(grad):
-                #             print("hook_wrapper_recv invoked! grad_in: %s" % str(grad.size()))
-                #             inputTensorList = []
-                #             for item in tensorTxList:
-                #                 additionalInput = self.commHandler.recv(item["name"]+"_back", item["dest"])
-                #                 inputTensorList.append(additionalInput)
-                #             inputTensorList.append(grad)
-                #             inputTensor = torch.cat(inputTensorList, 0)
-                #             print("                           grad_out: %s" % str(inputTensor.size()))
-                #             return inputTensor
-
-                #         return hook
-                #     output.register_hook(hook_wrapper_recv(ldsc["tensorTx"]) )
-                #     print("hook registerd")
-                #     ## End of for backprop
-                # else:
-                #     output = outputRaw
-                output = outputRaw
+                Logger.log("[RunnableModule] forward inputTensor.size(): %s"%str(inputTensor.size() if inputTensor != None else None), level=0)
+                if inputTensor == None:    
+                    inputTensor = torch.empty(0, device=torch.device(self.device))
+                
+                output = module(inputTensor)
+                Logger.log("[RunnableModule] Layer %d ==> output from running module: %s. requireGrad? %s" % (i, str(output.size()), str(output.requires_grad)), level=0)
                 tensorToReturn = output
                 runCriterionAndLoss = True
-
             else: # This rank doesn't participate for this layer.
-                outputDim = [0] + ldsc["outputDim"] if ldsc["outputDim"] is list else [ldsc["outputDim"]]
-                output = torch.empty(outputDim)
+                # outputDim = [0] + ldsc["outputDim"] if ldsc["outputDim"] is list else [ldsc["outputDim"]]
+                # output = torch.empty(*tuple(outputDim), device=torch.device(self.device))
+                # Logger.log("[RunnableModule] Layer %d ==> output from running module: %s" % (i, str(output.size())), level=0)
+                ######### TODO: stash the current tensorToReturn. So that their backward can be invoked later.
+                # - create a method remainingBackward(). which calls backward for all stashed tensors.
+                if tensorToReturn != None:
+                    self.leavesForBackward.append(tensorToReturn)
+
+                output = None
                 runCriterionAndLoss = False
+                tensorToReturn = None
             # Logger.log("        ==> final output after sending out samples: %s" % (str(output.size())), level=0)
 
-            # output.register_hook(hook_wrapper(str(ldsc["id"]) + " " + ldsc["name"] + str(output.size()) ))
+            if output != None:
+                output.register_hook(hook_wrapper(str(ldsc["id"]) + " " + ldsc["name"] + str(output.size()) ))
             self.outputs.append(output)
         return tensorToReturn, runCriterionAndLoss
 
-    # def backward(self, grad):
-    #     # Assumes modules and layers are topologically sorted.
-    #     self.gradients = [None for i in range(len(self.moduleList))]
-    #     for module, ldsc in zip(reversed(self.moduleList), reversed(self.layersInJson)):
-    #         if len(ldsc["nextLayers"]) == 0:
-    #             gradIn = grad
-    #         elif len(ldsc["prevLayers"]) == 1:
-    #             gradIn = self.gradients[ldsc["nextLayers"][0]]
-    #         else:
-    #             print("[RunnableModule::backward] more than 2 previous layers is not yet supported.")
-    #             raise Exception("[RunnableModule::backward] more than 2 previous layers is not yet supported.")
-            
-    #         if ldsc["config"][0] > 0: # This rank has assigned samples for this layer.
-    #             if "tensorTx" in ldsc: # receive parts of input.
-    #                 sampleSplitSections = [txItem["prop"]["xferSamples"] for txItem in ldsc["tensorTx"]]
-    #                 remainingSamples = outputRaw.shape[0] - sum(sampleSplitSections)
-    #                 sampleSplitSections.append(remainingSamples)
-    #                 splittedOutputs = torch.split(outputRaw, sampleSplitSections)
+    def backwardRemainder(self):
+        """ Run backward or any obsolete ramainders. """
 
-    #                 # output.register_hook(hook_wrapper_cat_recv)
-
-    #                 for txIdx, txItem in enumerate(ldsc["tensorTx"]):
-    #                     self.commHandler.sendAsync(splittedOutputs[txIdx], txItem["name"], txItem["dest"])
-    #                 # output = splittedOutputs[-1].clone()
-    #                 output = splittedOutputs[-1]
-
-    #             outputRaw = module.backward(gradIn)
-    #             print("Layer %d ==> output from backprop module: %s" % (ldsc["id"], str(outputRaw.size())))
-
-    #             if "tensorRx" in ldsc: # previously receive parts of input.
-    #                 sampleSplitSections = [txItem["prop"]["xferSamples"] for txItem in ldsc["tensorRx"]]
-    #                 remainingSamples = outputRaw.shape[0] - sum(sampleSplitSections)
-    #                 sampleSplitSections.append(remainingSamples)
-    #                 splittedOutputs = torch.split(outputRaw, sampleSplitSections)
-
-    #                 inputTensorList = [inputTensor]
-    #                 for rxIdx, rxItem in enumerate(ldsc["tensorRx"]):
-    #                     self.commHandler.sendAsync(splittedOutputs[rxIdx], rxItem["name"]+"_back", rxItem["src"])
-
-    #                 output = splittedOutputs[-1]
-    #                 inputTensor = torch.cat(inputTensorList, 1)
-    #             else:
-    #                 output = outputRaw
-
-    #         else: # This rank doesn't participate for this layer.
-    #             outputDim = [0] + ldsc["outputDim"]
-    #             output = torch.empty(outputDim)
-    #         print("        ==> final output after sending out samples: %s" % (str(output.size())))
-    #         output.register_hook(lambda grad: print(grad))
-    #         def backwardHook(module, grad_input, grad_output):
-    #             print("hoooked!!!!!!!!!!!!!!!!!!!!!")
-    #             return
-    #         module.register_backward_hook(backwardHook)
-    #         print("hook registerd")
-    #         self.outputs.append(output)
-    #     self.outputs[-1].register_hook(lambda grad: print(grad))
-    #     return self.outputs[-1]
+        Logger.log("backwardRemainder starting. total leaves: %d" % len(self.leavesForBackward), level=0, flush=True)
+        while len(self.leavesForBackward) > 0:
+            leaf = self.leavesForBackward.pop()
+            Logger.log("backwardRemainder: found a leaf (%s). %s" % (str(leaf), str(leaf.requires_grad)), level=0, flush=True)
+            # assert leaf.size()[0] == 0
+            if leaf.size()[0] != 0:
+                Logger.log("leaf.size()[0] == 0 failed. leaf.size(): %s" % str(leaf.size()))
+            leaf.backward(leaf) # gradient passed is dummy with 0 sample.
+        
 
 def test():
     # testExpandingGpuUsed()

@@ -62,6 +62,8 @@ class TrainingJob:
         self.globalBatchSize = globalBatchSize
         self.datasetDir = datasetDir
         self.bytesPerParam = 4
+        self.initialBatchSizes = None
+        self.sampleIndicesList = None
     
     def loadJSON(self, jobInJson: str):
         job = json.loads(jobInJson)
@@ -69,7 +71,7 @@ class TrainingJob:
         self.layers = []
         self.layerConfigs = []
         for ldsc in job["layers"]:
-            print(ldsc)
+            # print(ldsc)
             prevLayers = [self.layers[prevLayerId] for prevLayerId in ldsc["prevLayers"]]
             l = Layer(None, ldsc["name"], ldsc["params"], prevLayers)
             l.id = ldsc["id"]
@@ -104,7 +106,42 @@ class TrainingJob:
         # return json.dumps(fullDesc, indent=1, sort_keys=False)
         return json.dumps(fullDesc, sort_keys=False)
 
+    def computeSampleIndicesList(self):
+        gpusUsed = self.getGpusUsed()
+        specList = [self.dumpSingleRunnableModuleHelper(rank) for rank in range(gpusUsed)]
+        sampleIndicesList = []
+        for spec in specList:
+            sampleOffset = spec["dataLoaderOffset"]
+            localBatch = spec["layers"][0]["config"][0] # initialBatchSize or localBatch
+            sampleIndices = list(range(sampleOffset, sampleOffset+localBatch))
+            sampleIndicesList.append(sampleIndices)
+        print("[computeTargetDestList] initial targets: %s" % str(sampleIndicesList))
+        
+        for lid in range(len(specList[0]["layers"])): # all ranks have the same # of layers.
+            for srcRank, spec in enumerate(specList):
+                ldsc = spec["layers"][lid]
+                if ldsc["config"][0] > 0: # This rank has assigned samples for this layer.
+                    if "tensorTx" in ldsc: # send parts of output.
+                        ######## Stopped here. replace below code with manipulation on sampleIndicesList.
+                        for txItem in ldsc["tensorTx"]:
+                            moveCount = txItem["prop"]["xferSamples"]
+                            indicesToMove = sampleIndicesList[srcRank][:moveCount]
+                            sampleIndicesList[txItem["dest"]].extend(indicesToMove)
+                            sampleIndicesList[srcRank] = sampleIndicesList[srcRank][moveCount:]
+        print("[computeTargetDestList] final targets: %s" % str(sampleIndicesList))
+        initialBatchSizes = [spec["layers"][0]["config"][0] for spec in specList]
+        return initialBatchSizes, sampleIndicesList
+
     def dumpSingleRunnableModule(self, targetRank: int) -> str: # Only supports DP now.
+        if self.initialBatchSizes == None:
+            self.initialBatchSizes, self.sampleIndicesList = self.computeSampleIndicesList()
+        fullDesc = self.dumpSingleRunnableModuleHelper(targetRank)
+        fullDesc["initialBatchSizes"] = self.initialBatchSizes
+        fullDesc["sampleIndices"] = self.sampleIndicesList[targetRank]
+        dumpedStr = json.dumps(fullDesc, sort_keys=False)
+        return dumpedStr
+
+    def dumpSingleRunnableModuleHelper(self, targetRank: int) -> str: # Only supports DP now.
         print("[dumpSingleRunnableModule] generating for rank: %d" % targetRank)
         allProps = []
         srcGpus = None
@@ -192,7 +229,7 @@ class TrainingJob:
                     if samplesPerDest < 0:
                         print("Error! negative number: %d. destGpus: %d srcGpus: %d" % (samplesPerDest, destGpus, srcGpus))
                         print("Shrinking srcConfig: %s  destConfig: %s" % (str(srcConfig), str(config) ))
-                    if targetRank >= destGpus: # Removed nodes.
+                    if targetRank >= destGpus and targetRank < srcGpus: # Removed nodes.
                         removedGpuRank = targetRank - destGpus
                         startDestNode = int(removedGpuRank * destGpus / removedGpuCount)
                         endDestNode = int((removedGpuRank + 1) * destGpus / removedGpuCount)
@@ -208,7 +245,12 @@ class TrainingJob:
                             else:
                                 samplesLeft = samplesPerDest
 
-                            assert allProps[-1]["config"][0] == srcConfig[0]
+                            # assert allProps[-1]["config"][0] == srcConfig[0]
+                            if allProps[-1]["config"][0] != srcConfig[0]:
+                                print("layer:%s, allProps[-1]['config']: %s, srcConfig: %s" % \
+                                        (prop["name"], str(allProps[-1]["config"]), str(srcConfig)))
+                                raise Exception("allProps[-1]['config'][0] == srcConfig[0] failed. %d %d"% (allProps[-1]['config'][0], srcConfig[0]))
+
                             xferSamples = min(min(samplesLeft, samplesPerDest), srcConfig[0])
                             samplesAssigned += xferSamples
                             xferBytes = xferSamples * self.bytesPerParam
@@ -258,7 +300,10 @@ class TrainingJob:
         dataLoaderOffset = samplesPerNode * targetRank
         if dataLoaderOffset >= self.globalBatchSize: # This may happen if first layer uses smaller # of GPUs than later ones.
             dataLoaderOffset = 0
-            assert allProps[0]["config"][0] == 0
+            # assert allProps[0]["config"][0] == 0
+            if allProps[0]["config"][0] != 0:
+                raise Exception('allProps[0]["config"][0] != 0')
+            
 
         fullDesc = {"rank": targetRank,
                     "maxGpusUsed": maxGpusUsed,
@@ -266,9 +311,10 @@ class TrainingJob:
                     "dataLoaderOffset": dataLoaderOffset,
                     "layers": allProps}
         # dumpedStr = json.dumps(fullDesc, indent=1, sort_keys=False)
-        dumpedStr = json.dumps(fullDesc, sort_keys=False)
-        # print(dumpedStr)
-        return dumpedStr
+        return fullDesc
+        # dumpedStr = json.dumps(fullDesc, sort_keys=False)
+        # # print(dumpedStr)
+        # return dumpedStr
     
     # Functions to move:
     # - config to gpu count.

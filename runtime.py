@@ -24,29 +24,39 @@ import sys
 import time
 import json
 import sys
+from typing import Optional, List, Any
 from datetime import datetime
 from argparse import ArgumentParser, REMAINDER
 from runnableModule import RunnableModule
 from runnableModule import VisionDataLoaderGenerator
+from runnableModule import TargetShuffler
 from communication import CommunicationBackend
 from logger import Logger
 
+import torch.cuda.profiler as profiler
+import pyprof
+pyprof.init()
+
 class JobContext:
-    def __init__(self, model: nn.Module, name: str, dataLoader, epochsToTrain = 1, optimizer = None, criterion = nn.CrossEntropyLoss(), device="cpu"):
+    def __init__(self, model: nn.Module, name: str, dataLoader, commHandler, targetShuffler,
+            epochsToTrain = 1, optimizer = None, criterion = nn.CrossEntropyLoss(), device="cpu"):
         self.model = model
         self.name = name
         self.dataLoader = dataLoader
-        self.dataLoaderIt = iter(self.dataLoader)
+        self.dataLoaderIt = iter(self.dataLoader) if dataLoader != None else None
+        self.commHandler = commHandler
+        self.targetShuffler = targetShuffler
         self.optimizer = optimizer
         self.criterion = criterion
         self.device = device
         self.epochsToTrain = epochsToTrain
         self.epoch = 0
         self.iter = 0
-        self.itersToTrain = len(dataLoader) # this may be overwritten for development.
+        self.itersToTrain = len(dataLoader) if dataLoader != None else None #TODO: this is a temporary hack..
         self.itersPerPoll = 30
         self.training_initialized = False
-        
+        self.iterToCapture = 100
+        self.iterTimeDuringLastRun = 0
 
     def train_init(self):
         Logger.log("[JobContext] <%s> train_init at device:%s"%(self.name, self.device), flush=True)
@@ -55,38 +65,57 @@ class JobContext:
         self.training_initialized = True
     
     def limit_iters_to_train(self, iterationCount):
-        self.itersToTrain = min(iterationCount, len(self.dataLoader))
-        
+        if self.dataLoader == None:
+            self.itersToTrain = iterationCount
+        else:
+            self.itersToTrain = min(iterationCount, len(self.dataLoader))
+
     def train_single_iter(self):
         Logger.log("[JobContext] <%s> train_single_iter epoch:%d/%d iter:%d/%d" % 
                 (self.name, self.epoch, self.epochsToTrain, self.iter, self.itersToTrain), level=0)
         if not self.training_initialized:
             self.train_init()
         
-        data, target = next(self.dataLoaderIt) # self.dataLoader[self.iter]
-        data, target = data.to(self.device), target.to(self.device)
+        if self.dataLoaderIt != None:
+            data, target = next(self.dataLoaderIt)
+            data, target = data.to(self.device), target.to(self.device)
+            Logger.log("train_single_iter target's size: %s"%str(target.size()), flush=True)
+        else:
+            data = None
+            target = None
         # optimizer.zero_grad()
+
+        if self.iter == self.iterToCapture:
+            profiler.start()
         
-        Logger.log("forward pass is starting.. data: %s" % str(data.size()), level=0)
+        target = self.targetShuffler.shuffle(target)
+
+        Logger.log("forward pass is starting.. data: %s" % str(data.size() if data != None else "none"), level=0)
         output, runCriterionAndLoss = self.model(data)
         Logger.log("forward pass is completed.. output: %s runCriterionAndLoss: %s" %
-                    (str(output.size()), str(runCriterionAndLoss)), level=0, flush=True)
+                    (str(output.size() if output != None else None), str(runCriterionAndLoss)), level=0, flush=True)
         # output = torch.flatten(output, 1)
         if runCriterionAndLoss:
             output = F.log_softmax(output, dim=1)
             
             # Hack to match target's sample count with the output at this node.
             if output.size()[0] != target.size()[0]:
-                target = torch.repeat_interleave(target, int(1 + output.size()[0] / target.size()[0]), dim=0)
-                target = target.narrow(0, 0, output.size()[0])
+                Logger.log("error! target size doesn't match even after shuffling.", flush=True, level=2)
+                # target = torch.repeat_interleave(target, int(1 + output.size()[0] / target.size()[0]), dim=0)
+                # target = target.narrow(0, 0, output.size()[0])
 
             loss = self.criterion(output, target)
             Logger.log("backward pass is starting", level=0, flush=True)
             loss.backward()
-        else:
-            Logger.log("backward pass is starting", level=0, flush=True)
-            output.backward(output) # gradient passed is dummy.
+        # else:
+        #     Logger.log("backward pass is starting", level=0, flush=True)
+        #     output.backward(output) # gradient passed is dummy.
+        Logger.log("backward remainder is starting", level=0, flush=True)
+        self.model.backwardRemainder()
 
+        if self.iter == self.iterToCapture:
+            profiler.stop()
+        
         # optimizer.step()
         self.iter += 1
         if self.iter == 1:
@@ -158,8 +187,8 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
         
     def export_scheduleTraining(self, name: str, jobInJson: str, dataDir: str, tensorTagsInJson: str, jobRankToGlobalRankInJson: str):
         """ Schedules a training task to this runtime. """
-
-        worldSize = json.loads(jobInJson)["maxGpusUsed"]
+        jobSpec = json.loads(jobInJson)
+        worldSize = jobSpec["maxGpusUsed"]
         tensorTags = json.loads(tensorTagsInJson)
         jobRankToGlobalRank = json.loads(jobRankToGlobalRankInJson)
 
@@ -182,15 +211,16 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
         #         Logger.log(" AFTER all_reduce tensor: %s" % str(tsr), flush=True)
         # # testing code end
 
-        # commHandler = self.commBackend.makeCommunicationHandler(worldSize, {}, tensorTags)
-        module = RunnableModule(jobInJson, commHandler)
+        module = RunnableModule(jobInJson, commHandler, self.device)
         if dataDir == "SYNTHETIC":
             dataDir = None # Use synthetic dataset.
-        loader = VisionDataLoaderGenerator.genDataLoader(
-            jobInJson, dataDir, syntheticDataLength=1600)
-        job = JobContext(module, name, loader, device=self.device)
+        loader = VisionDataLoaderGenerator.genDataLoader(jobInJson, dataDir, syntheticDataLength=3200)
+        targetShuffler = TargetShuffler(commHandler, jobSpec["rank"], jobSpec["initialBatchSizes"],
+                                        jobSpec["sampleIndices"], device=self.device)
+        job = JobContext(module, name, loader, commHandler, targetShuffler, device=self.device)
         
-        job.limit_iters_to_train(500)
+        # job.limit_iters_to_train(500)
+        job.limit_iters_to_train(1)
         self.jobs.append(job)
         Logger.log("Scheduled a training job (%s). Total jobs on queue: %d" % (name, len(self.jobs)))
         return "Scheduled a training job. @ %s!"%self.myAddr
@@ -221,14 +251,16 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
             hadWork = True
             startTime = time.time()
             job = self.jobs[0]
-            for itersRan in range(job.itersPerPoll):
-                job.train_single_iter()
-                if job.isCompleted():
-                    self.getCoordinatorProxy().notifyTrainingFinished(self.myAddr, job.name, len(self.jobs) - 1)
-                    Logger.log("Training job <%s> is finished." % job.name, flush=True)
-                    self.jobs.pop(0)
-                    break
+            with torch.autograd.profiler.emit_nvtx():
+                for itersRan in range(job.itersPerPoll):
+                    job.train_single_iter()
+                    if job.isCompleted():
+                        self.getCoordinatorProxy().notifyTrainingFinished(self.myAddr, job.name, len(self.jobs) - 1, job.iterTimeDuringLastRun)
+                        Logger.log("Training job <%s> is finished." % job.name, flush=True)
+                        self.jobs.pop(0)
+                        break
             elapsed = time.time() - startTime
+            job.iterTimeDuringLastRun = (1000.0*elapsed)/ job.itersPerPoll
             Logger.log("[poll] <%s> epoch:%d/%d iter:%d/%d  %3.1f ms per iter." % 
                 (job.name, job.epoch, job.epochsToTrain, job.iter, job.itersToTrain, (1000.0*elapsed)/ job.itersPerPoll))
 

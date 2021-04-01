@@ -161,6 +161,7 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
         tensorTagsInJson = json.dumps(tensorTags)
         jobRankToGlobalRank = list(range(gpusUsed))
         jobRankToGlobalRankInJson = json.dumps(jobRankToGlobalRank)
+        
 
         # TODO: should pick locations that doesn't have other priority job scheduled.
         if len(self.locations) < gpusUsed:
@@ -176,7 +177,7 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
         for rank in range(gpusUsed):
             location = self.locations[rank]
             moduleDesc = moduleDescList[rank]
-            thread = threading.Thread(name='init_comm%d'%rank, target=requestScheduleTraining, args=(location.getProxy(), jobName, moduleDesc, "SYNTHETIC", tensorTagsInJson, jobRankToGlobalRankInJson))
+            thread = threading.Thread(name='reqScheTrain%d'%rank, target=requestScheduleTraining, args=(location.getProxy(), jobName, moduleDesc, "SYNTHETIC", tensorTagsInJson, jobRankToGlobalRankInJson))
             threadList.append(thread)
         for thread in threadList:
             thread.start()
@@ -190,8 +191,8 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
         #     print(location.getProxy().scheduleTraining(jobName, moduleDesc, "SYNTHETIC", tensorTagsInJson, jobRankToGlobalRankInJson))
         return 'done'
 
-    def export_notifyTrainingFinished(self, runtimeAddress: str, name: str, remainingJobCount: int):
-        print("Training for %s is completed at %s. (%d jobs are remaining)" % (name, runtimeAddress, remainingJobCount))
+    def export_notifyTrainingFinished(self, runtimeAddress: str, name: str, remainingJobCount: int, iterTime: float):
+        print("Training for %s is completed at %s. (%d jobs are remaining) iterTime: %3.1f" % (name, runtimeAddress, remainingJobCount, iterTime))
         return 'done'
 
     def export_addGpuNode(self):
@@ -228,7 +229,7 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
             for pipPackage in pipPackages:
                 location.rsh("pip install %s" % pipPackage)
         
-    def launchRuntimeAll(self, c10dBackend: str):
+    def launchRuntimeAll(self, c10dBackend: str, profile: bool):
         """ Launch runtime at all remote locations. Also registers the sighandler
             that cleanly shuts down all remote runtime servers.
         """
@@ -237,8 +238,12 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
             # pass master ip and port.
             stdoutFp = open("logs/runtime%d.out"%i, "w", buffering=1)
             stderrFp = open("logs/runtime%d.err"%i, "w", buffering=1)
+            if profile and location.device == 0: # Only run 1 nsys per host.
+                nsysPrefix = "nsys profile -f true -o net%d -c cudaProfilerApi --stop-on-range-end true -t cuda,nvtx --export sqlite " % i # -s none
+            else:
+                nsysPrefix = ""
             self.processes.append(location.rshAsync(
-                "python3 " + self.workDir + "runtime.py" + \
+                nsysPrefix + "python3 " + self.workDir + "runtime.py" + \
                 " --coordinatorAddr %s:%d --myAddr %s:%d --device %d --c10dBackend %s --rank %d --worldSize %d" % \
                     (self.myAddr, self.myPort, location.address, location.port, location.device, c10dBackend, i, len(self.locations)) #+ \
                 , stdout=stdoutFp, stderr=stderrFp))
@@ -294,6 +299,11 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
             thread.join()
 
     def initCommGroupsAll(self, jobName: str, commGrpDict: dict, jobRankToGlobalRank: list):
+        """ A helper function that will ask all runtimes to create new c10d comm groups.
+            Used while scheduling a new training job. This method should be invoked before
+            scheduling a new training job to any runtime that will participate in training.
+        """
+
         commGrpDictWithGlobalRanks = {}
         for grpName in commGrpDict:
             grpRanks = commGrpDict[grpName]
@@ -340,25 +350,22 @@ def parse_args():
     parser.add_argument("--addrToBind", type=str, default="localhost:12340",
                         help="IP:port to listen for requests to the cluster coordinator")
     parser.add_argument("--c10dBackend", type=str, default="nccl",
-                    help="pytorch c10d communication backend. Type either nccl or gloo")
+                        help="pytorch c10d communication backend. Type either nccl or gloo")
     parser.add_argument("--logLevel", type=int, default=1,
-                    help="Logging level. 0: verbose, 1: Info, 2: Error") # NOT YET IMPLEMENTED.
-    # node_local_rank_stdout_filename = "node_{}_local_rank_{}_stdout"
-    # node_local_rank_stderr_filename = "node_{}_local_rank_{}_stderr"
-    # parser.add_argument(
-    #     "--logdir",
-    #     default=None,
-    #     type=str,
-    #     help=f"""Relative path to write subprocess logs to. Passing in a relative
-    #     path will create a directory if needed, and write the stdout and stderr to files
-    #     {node_local_rank_stdout_filename} and {node_local_rank_stderr_filename}. Note that
-    #     successive runs with the  same path to write logs to will overwrite existing logs,
-    #     so be sure to save logs as needed.""",
-    # )
+                        help="Logging level. 0: verbose, 1: Info, 2: Error") # NOT YET IMPLEMENTED.
     parser.add_argument("--pathToConfig", type=str, default="clusterConfig.json",
                         help="The full path to the cluster configuration files")
     parser.add_argument('--install', default=False, action='store_true',
                         help="When this option is set, it will install required pip packages to all servers")
+    parser.add_argument('--profile', default=False, action='store_true',
+                        help="To launch runtimes with night system profiling.")
+    # For installing nsys.. (with other cuda toolkit..)
+    # wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu1804/x86_64/cuda-ubuntu1804.pin
+    # sudo mv cuda-ubuntu1804.pin /etc/apt/preferences.d/cuda-repository-pin-600
+    # sudo apt-key adv --fetch-keys https://developer.download.nvidia.com/compute/cuda/repos/ubuntu1804/x86_64/7fa2af80.pub
+    # sudo add-apt-repository "deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu1804/x86_64/ /"
+    # sudo apt-get update
+    # sudo apt-get -y install cuda
 
     return parser.parse_args()
 
@@ -382,7 +389,7 @@ def main():
     coordinator.shutdownRuntimeAll()
     time.sleep(10)
 
-    coordinator.launchRuntimeAll(args.c10dBackend)
+    coordinator.launchRuntimeAll(args.c10dBackend, profile=args.profile)
     print("All runtime nodes are up and running. Now, initializing communication backend..")
     time.sleep(5)
     coordinator.initCommBackendAll()

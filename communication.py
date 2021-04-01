@@ -150,6 +150,7 @@ class CommunicationHandler:
         self.asyncReqs.clear()
 
     def recv(self, tensorName: str, src: int, dtype=torch.float32) -> torch.Tensor:
+        self.waitForAll()
         tensor = self.recvAsync(tensorName, src, dtype)
         self.waitForAll()
         if self.sendFromCpu:
@@ -174,11 +175,12 @@ class CommunicationHandler:
         else:
             tensor_shape = self.tensorSizes[tensorName]
         # Receive tensor.
-        tensor = torch.zeros(tensor_shape, dtype=dtype, device=self.deviceForComm)
-        Logger.log("dist.irecv(%s)"%str({"tensor": tensor.size(), "src": src_rank, "tag": tag}), level=0, flush=True)
+        tensor = torch.zeros(tensor_shape, dtype=dtype, device=self.deviceForComm, requires_grad=True)
+        Logger.log("dist.irecv(%s)"%str({"tensor": tensor.size(), "src": src_rank, "tag": tag, "require_grad": tensor.requires_grad}), level=0, flush=True)
         # dist.recv(tensor=tensor, src=src_rank, tag=tag)
         asyncReq = dist.irecv(tensor=tensor, src=src_rank, tag=tag)
         self.asyncReqs.append(asyncReq)
+        Logger.log("dist.irecv(%s)"%str({"require_grad": tensor.requires_grad}), level=0, flush=True)
         return tensor
 
     def allGather(self, tensorList, tensor, grpName):
