@@ -289,6 +289,17 @@ def vgg19_bn(pretrained=False, **kwargs):
         model.load_state_dict(model_zoo.load_url(model_urls['vgg19_bn']))
     return model
 
+def genTestJob(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=False):
+    profiler = GpuProfiler("cuda")
+    profiler.loadProfile()
+    global cs
+    cs = CostSim(profiler, netBw=1.25E5, verbose=True)
+    model = vgg16(pretrained=False)
+    cs.printAllLayers()
+    cs.computeInputDimensions((224,224,3))
+    job = cs.searchBestSplits(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline)
+    return job
+
 def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=False):
     profiler = GpuProfiler("cuda")
     profiler.loadProfile()

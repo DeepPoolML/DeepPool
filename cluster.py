@@ -24,6 +24,7 @@ import threading
 from argparse import ArgumentParser, REMAINDER
 from typing import Optional, IO, List, Any
 from jobDescription import TrainingJob
+import examples.vgg as vgg  # TODO: this is used for debugging. Remove this later.
 
 class Location:
     def __init__(self, address: str, port: int, device: int, userId: str, sshKeyPath: str):
@@ -161,14 +162,13 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
         tensorTagsInJson = json.dumps(tensorTags)
         jobRankToGlobalRank = list(range(gpusUsed))
         jobRankToGlobalRankInJson = json.dumps(jobRankToGlobalRank)
-        
 
         # TODO: should pick locations that doesn't have other priority job scheduled.
         if len(self.locations) < gpusUsed:
             return "Not enough servers available. %d gpus available while %d needed" % (len(self.locations), gpusUsed)
 
         # convert local ranks to global rank & invoke make groups.
-        commGroups = {'all': list(range(gpusUsed)), 'partial': [1,0]} # TODO: replace this hardcoded one with something like self.buildCommTensorTags(moduleDescList).
+        commGroups = {'all': list(range(gpusUsed))} # TODO: replace this hardcoded one with something like self.buildCommTensorTags(moduleDescList).
         self.initCommGroupsAll(jobName, commGroups, jobRankToGlobalRank)
 
         threadList = []
@@ -238,7 +238,7 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
             # pass master ip and port.
             stdoutFp = open("logs/runtime%d.out"%i, "w", buffering=1)
             stderrFp = open("logs/runtime%d.err"%i, "w", buffering=1)
-            if profile and location.device == 0: # Only run 1 nsys per host.
+            if profile:# and location.device == 0: # Only run 1 nsys per host.
                 nsysPrefix = "nsys profile -f true -o net%d -c cudaProfilerApi --stop-on-range-end true -t cuda,nvtx --export sqlite " % i # -s none
             else:
                 nsysPrefix = ""
@@ -395,12 +395,16 @@ def main():
     coordinator.initCommBackendAll()
     print("Communication backends are ready at all locations.")
     print("Now, cluster is ready to accept training jobs.")
-    coordinator.serve_forever()
-    # time.sleep(10)
-    # coordinator.shutdownRuntimeAll()
-    # coordinator.waitForRuntimeAll()
 
-    # TODO: listen port to changes on config?
+    # def submitVGG():
+    #     job = vgg.genTestJob(1, 16)
+    #     coordinator.export_scheduleTraining("vggLocal", job.dumpInJSON())
+    # thread = threading.Thread(name='vgg.main', target=submitVGG)
+    # thread.start()
+
+    coordinator.serve_forever()
+    
+    # thread.join()
 
 if __name__ == "__main__":
     main()
