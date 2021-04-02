@@ -89,7 +89,10 @@ def downloadResults():
 
     for host in publicIps:
         for remotePath in ["~/net*.qdrep", "~/DeepPoolRuntime/logs/*.out"]: #["~/net*.qdrep", "~/net*.sqlite", "~/DeepPoolRuntime/logs/*.out"]:
-            downloadFile(host, remotePath, "results/")
+            try:
+                downloadFile(host, remotePath, "results/")
+            except subprocess.CalledProcessError as e:
+                print(e.output)
             print("Downloaded \"%s\" from %s"%(remotePath, host))
 
 def main():
