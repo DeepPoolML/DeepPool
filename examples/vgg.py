@@ -289,7 +289,7 @@ def vgg19_bn(pretrained=False, **kwargs):
         model.load_state_dict(model_zoo.load_url(model_urls['vgg19_bn']))
     return model
 
-def main(gpuCount, globalBatch, amplificationLimit=2.0):
+def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=False):
     profiler = GpuProfiler("cuda")
     profiler.loadProfile()
     global cs
@@ -302,7 +302,7 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0):
     # job = cs.searchBestSplits(4, 16, dataParallelBaseline=True)
     # job = cs.searchBestSplits(4, 16)
     # job = cs.searchBestSplits(gpuCount, globalBatch, dataParallelBaseline=True)
-    job = cs.searchBestSplits(gpuCount, globalBatch, amplificationLimit=amplificationLimit)
+    job = cs.searchBestSplits(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline)
     jobInJson = job.dumpInJSON()
 
     # for rank in range(4):
@@ -380,9 +380,9 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0):
 if __name__ == "__main__":
     print(len(sys.argv))
     if len(sys.argv) == 3:
-        main(int(sys.argv[1]), int(sys.argv[2]))
+        main(int(sys.argv[1]), int(sys.argv[2]), dataParallelBaseline=True)
     elif len(sys.argv) == 4:
-        main(int(sys.argv[1]), int(sys.argv[2]), float(sys.argv[3]))
+        main(int(sys.argv[1]), int(sys.argv[2]), amplificationLimit=float(sys.argv[3]))
     else:
         print("Wrong number of arguments.\nUsage: ")
 

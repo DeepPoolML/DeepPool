@@ -90,7 +90,7 @@ class CommunicationBackend:
         Logger.log("[CommunicationBackend] makeCommunicationHandler sendFromCpu(%s)"%str(sendFromCpu), level=0)
         if jobName not in self.commGrpHandlerDicts:
             Logger.log("Error in makeCommunicationHandler. commGroupHandlers are not previously initialized for %s." % jobName, level=2, flush=True)
-        commGrpHandlerDict = self.commGrpHandlerDicts[jobName]
+        commGrpHandlerDict = self.commGrpHandlerDicts.pop(jobName)
         return CommunicationHandler(worldSize, tensor_tags, jobRankToGlobalRank, sendFromCpu, deviceForComm, commGrpHandlerDict, shouldSendSizes=True)
 
 class CommunicationHandler:
@@ -180,7 +180,7 @@ class CommunicationHandler:
         # dist.recv(tensor=tensor, src=src_rank, tag=tag)
         asyncReq = dist.irecv(tensor=tensor, src=src_rank, tag=tag)
         self.asyncReqs.append(asyncReq)
-        Logger.log("dist.irecv(%s)"%str({"require_grad": tensor.requires_grad}), level=0, flush=True)
+        # Logger.log("dist.irecv(%s)"%str({"require_grad": tensor.requires_grad}), level=0, flush=True)
         return tensor
 
     def allGather(self, tensorList, tensor, grpName):

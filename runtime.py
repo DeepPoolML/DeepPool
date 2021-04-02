@@ -79,7 +79,7 @@ class JobContext:
         if self.dataLoaderIt != None:
             data, target = next(self.dataLoaderIt)
             data, target = data.to(self.device), target.to(self.device)
-            Logger.log("train_single_iter target's size: %s"%str(target.size()), flush=True)
+            # Logger.log("train_single_iter target's size: %s"%str(target.size()), level=0, flush=True)
         else:
             data = None
             target = None
@@ -98,9 +98,9 @@ class JobContext:
         if runCriterionAndLoss:
             output = F.log_softmax(output, dim=1)
             
-            # Hack to match target's sample count with the output at this node.
             if output.size()[0] != target.size()[0]:
                 Logger.log("error! target size doesn't match even after shuffling.", flush=True, level=2)
+                # Hack to match target's sample count with the output at this node.
                 # target = torch.repeat_interleave(target, int(1 + output.size()[0] / target.size()[0]), dim=0)
                 # target = target.narrow(0, 0, output.size()[0])
 
@@ -145,6 +145,7 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
         self.myAddr = myAddr
         self.myPort = myPort
         self.device = ("cuda:%d" % device) if device is not "cpu" else device
+        torch.cuda.set_device(device)
         print("self.device=%s"%str(self.device))
         print("torch.cuda.current_device(): ", torch.cuda.current_device())
         print('torch.cuda availability: ', torch.cuda.is_available())
@@ -220,7 +221,7 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
         job = JobContext(module, name, loader, commHandler, targetShuffler, device=self.device)
         
         # job.limit_iters_to_train(500)
-        job.limit_iters_to_train(1)
+        job.limit_iters_to_train(200)
         self.jobs.append(job)
         Logger.log("Scheduled a training job (%s). Total jobs on queue: %d" % (name, len(self.jobs)))
         return "Scheduled a training job. @ %s!"%self.myAddr

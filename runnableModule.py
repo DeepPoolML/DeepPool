@@ -295,16 +295,13 @@ class ReceiveSamplesFunc(torch.autograd.Function):
         for rxItem in recvList:
             additionalInput = commHandler.recv(rxItem["name"], rxItem["src"])
             inputTensorList.append(additionalInput)
-            print("[ReceiveSamplesFunc] ** additionalInput: %s, requires_grad? %s leaf? %s" % \
-                (str(additionalInput.size()), str(additionalInput.requires_grad), str(additionalInput.is_leaf) ))
-        
-            # additionalInput.retain_grad()
+            # print("[ReceiveSamplesFunc] ** additionalInput: %s, requires_grad? %s leaf? %s" % \
+            #     (str(additionalInput.size()), str(additionalInput.requires_grad), str(additionalInput.is_leaf) ))
         if x != None:
             inputTensorList.append(x)
         inputTensor = torch.cat(inputTensorList, 0)
-        # inputTensor.retain_grad()
-        print("[ReceiveSamplesFunc] ** output from ReceiveSamplesFunc.forward: %s, requires_grad? %s leaf? %s  x: %s %s" % \
-                (str(inputTensor.size()), str(inputTensor.requires_grad), str(inputTensor.is_leaf), str(x.size() if x != None else None), str(x.requires_grad if x != None else None) ))
+        # print("[ReceiveSamplesFunc] ** output from ReceiveSamplesFunc.forward: %s, requires_grad? %s leaf? %s  x: %s %s" % \
+        #         (str(inputTensor.size()), str(inputTensor.requires_grad), str(inputTensor.is_leaf), str(x.size() if x != None else None), str(x.requires_grad if x != None else None) ))
         return inputTensor
 
     @staticmethod
@@ -319,6 +316,8 @@ class ReceiveSamplesFunc(torch.autograd.Function):
             ctx.commHandler.sendAsync(splittedOutputs[rxIdx], rxItem["name"]+"_back", rxItem["src"])
 
         output = splittedOutputs[-1]
+        if output.size()[0] == 0:
+            output = torch.empty(0, device=torch.device('cuda'), requires_grad=True)
         return output, None, None
 
 class RunnableModule(nn.Module):
@@ -350,8 +349,6 @@ class RunnableModule(nn.Module):
             elif name in ["ReLU2d", "ReLU1d", "ReLU"]:
                 module = nn.ReLU(params["inplace"])
             elif name == "flatten":
-                # For VGG and Resnet, we can ignore this for now.
-                # Maybe view(-1)?
                 module = nn.Flatten(start_dim=1)
                 Logger.log("[RunnableModule.__init__] %s layer is not implemented. Safe to ignore for VGG or Resnet" % name)
             elif name == "concat":
@@ -371,13 +368,6 @@ class RunnableModule(nn.Module):
 
     def forward(self, x):   
         # Assumes modules and layers are topologically sorted.
-
-        def hook_wrapper(name):
-            def hook(grad):
-                print("hook_wrapper invoked! %s ; grad: %s" % (name, str(grad.size())) )
-            return hook
-        # x.requires_grad = True
-        # x.register_hook(hook_wrapper("initial input's hook " + str(x.size()) ))
         tensorToReturn = None
 
         self.outputs = []
@@ -391,12 +381,12 @@ class RunnableModule(nn.Module):
                 raise Exception("[RunnableModule::forward] more than 2 previous layers is not yet supported.")
             
             if ldsc["config"][0] > 0: # This rank has assigned samples for this layer.
-                Logger.log("[RunnableModule] forward inputTensor.size(): %s"%str(inputTensor.size() if inputTensor != None else None), level=0)
+                # Logger.log("[RunnableModule] forward inputTensor.size(): %s"%str(inputTensor.size() if inputTensor != None else None), level=0)
                 if inputTensor == None:    
-                    inputTensor = torch.empty(0, device=torch.device(self.device))
+                    inputTensor = torch.empty(0, device=torch.device(self.device), requires_grad=True) ############ STOPPED HERE. try requires_grad=True?
                 
                 output = module(inputTensor)
-                Logger.log("[RunnableModule] Layer %d ==> output from running module: %s. requireGrad? %s" % (i, str(output.size()), str(output.requires_grad)), level=0)
+                # Logger.log("[RunnableModule] Layer %d ==> output from running module: %s. requireGrad? %s" % (i, str(output.size()), str(output.requires_grad)), level=0)
                 tensorToReturn = output
                 runCriterionAndLoss = True
             else: # This rank doesn't participate for this layer.
@@ -408,28 +398,32 @@ class RunnableModule(nn.Module):
                 if tensorToReturn != None:
                     self.leavesForBackward.append(tensorToReturn)
 
-                output = None
+                # output = None
+                output = torch.empty(0, device=torch.device(self.device), requires_grad=True)
                 runCriterionAndLoss = False
                 tensorToReturn = None
             # Logger.log("        ==> final output after sending out samples: %s" % (str(output.size())), level=0)
 
-            if output != None:
-                output.register_hook(hook_wrapper(str(ldsc["id"]) + " " + ldsc["name"] + str(output.size()) ))
+            # def hook_wrapper(name):
+            #     def hook(grad):
+            #         print("hook_wrapper invoked! %s ; grad: %s" % (name, str(grad.size())) )
+            #     return hook
+            # output.register_hook(hook_wrapper(str(ldsc["id"]) + " " + ldsc["name"] + str(output.size()) ))
             self.outputs.append(output)
         return tensorToReturn, runCriterionAndLoss
 
     def backwardRemainder(self):
         """ Run backward or any obsolete ramainders. """
 
-        Logger.log("backwardRemainder starting. total leaves: %d" % len(self.leavesForBackward), level=0, flush=True)
+        # Logger.log("backwardRemainder starting. total leaves: %d" % len(self.leavesForBackward), level=0, flush=True)
         while len(self.leavesForBackward) > 0:
             leaf = self.leavesForBackward.pop()
-            Logger.log("backwardRemainder: found a leaf (%s). %s" % (str(leaf), str(leaf.requires_grad)), level=0, flush=True)
+            # Logger.log("backwardRemainder: found a leaf (%s). %s" % (str(leaf), str(leaf.requires_grad)), level=0, flush=True)
             # assert leaf.size()[0] == 0
             if leaf.size()[0] != 0:
-                Logger.log("leaf.size()[0] == 0 failed. leaf.size(): %s" % str(leaf.size()))
+                Logger.log("leaf.size()[0] == 0 failed. leaf.size(): %s" % str(leaf.size()), level=2, flush=True)
+            # grad = torch.empty(0, device=torch.device(self.device), requires_grad=True)
             leaf.backward(leaf) # gradient passed is dummy with 0 sample.
-        
 
 def test():
     # testExpandingGpuUsed()

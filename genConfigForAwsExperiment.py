@@ -22,7 +22,7 @@ pkeyPath = '~/.ssh/ulma-sjp.pem'
 userId = "ubuntu"
 workDir = "~/DeepPoolRuntime/"
 # gpuCount = 1
-gpuCount = 8 # TODO remove.
+gpuCount = 4 # TODO remove.
 portPrefix = 1140 # prefix + Device# is used for port.
 coordinatorPort = 12345
 
