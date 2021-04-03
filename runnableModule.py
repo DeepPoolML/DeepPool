@@ -9,6 +9,8 @@ import torchvision.transforms
 import torchvision.datasets
 from typing import Optional, List, Any
 from logger import Logger
+from timetrace import EventTypes
+from timetrace import Timetrace as TT
 
 class SyntheticDataset(torch.utils.data.dataset.Dataset):
     def __init__(self, input_size, length, num_classes=1000):
@@ -248,6 +250,7 @@ class SendSamples(nn.Module):
 class SendSamplesFunc(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, sendList, commHandler):
+        TT.cudaRecord(EventTypes.send_samples)
         ctx.commHandler = commHandler
         ctx.sendList = sendList
         sampleSplitSections = [txItem["prop"]["xferSamples"] for txItem in sendList]
@@ -260,19 +263,31 @@ class SendSamplesFunc(torch.autograd.Function):
             commHandler.sendAsync(splittedOutputs[idx], item["name"], item["dest"])
         # commHandler.waitForAll()
         output = splittedOutputs[-1].clone()
+        if output.size()[0] == 0:
+            TT.cudaRecord(EventTypes.send_samples_done_idle)
+        else:
+            TT.cudaRecord(EventTypes.send_samples_done)
         return output
     
     @staticmethod
     def backward(ctx, grad_output):
+        TT.cudaRecord(EventTypes.recv_samples)
+        TT.record(EventTypes.recv_samples_cpu)
+
         sendList = ctx.sendList
         # print("SendSamplesFunc backward grad_in: %s" % str(grad_output.size()))
         inputTensorList = []
         for item in sendList:
-            additionalInput = ctx.commHandler.recv(item["name"]+"_back", item["dest"])
+            additionalInput = ctx.commHandler.recvAsync(item["name"]+"_back", item["dest"])
             inputTensorList.append(additionalInput)
         inputTensorList.append(grad_output)
+        ctx.commHandler.waitForAll()
+
         inputTensor = torch.cat(inputTensorList, 0)
         # print("                           grad_out: %s" % str(inputTensor.size()))
+        
+        TT.cudaRecord(EventTypes.recv_samples_done)
+        TT.record(EventTypes.recv_samples_done_cpu)
         return inputTensor, None, None
 
 class ReceiveSamples(nn.Module):
@@ -289,23 +304,31 @@ class ReceiveSamples(nn.Module):
 class ReceiveSamplesFunc(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, recvList, commHandler):
+        TT.cudaRecord(EventTypes.recv_samples)
+        TT.record(EventTypes.recv_samples_cpu)
+
         ctx.commHandler = commHandler
         ctx.recvList = recvList
         inputTensorList = []
         for rxItem in recvList:
-            additionalInput = commHandler.recv(rxItem["name"], rxItem["src"])
+            additionalInput = commHandler.recvAsync(rxItem["name"], rxItem["src"])
             inputTensorList.append(additionalInput)
             # print("[ReceiveSamplesFunc] ** additionalInput: %s, requires_grad? %s leaf? %s" % \
             #     (str(additionalInput.size()), str(additionalInput.requires_grad), str(additionalInput.is_leaf) ))
         if x != None:
             inputTensorList.append(x)
+        commHandler.waitForAll()
         inputTensor = torch.cat(inputTensorList, 0)
         # print("[ReceiveSamplesFunc] ** output from ReceiveSamplesFunc.forward: %s, requires_grad? %s leaf? %s  x: %s %s" % \
         #         (str(inputTensor.size()), str(inputTensor.requires_grad), str(inputTensor.is_leaf), str(x.size() if x != None else None), str(x.requires_grad if x != None else None) ))
+        
+        TT.cudaRecord(EventTypes.recv_samples_done)
+        TT.record(EventTypes.recv_samples_done_cpu)
         return inputTensor
 
     @staticmethod
     def backward(ctx, grad_output):
+        TT.cudaRecord(EventTypes.send_samples)
         recvList = ctx.recvList
         sampleSplitSections = [item["prop"]["xferSamples"] for item in recvList]
         remainingSamples = grad_output.shape[0] - sum(sampleSplitSections)
@@ -318,6 +341,10 @@ class ReceiveSamplesFunc(torch.autograd.Function):
         output = splittedOutputs[-1]
         if output.size()[0] == 0:
             output = torch.empty(0, device=torch.device('cuda'), requires_grad=True)
+            TT.cudaRecord(EventTypes.send_samples_done_idle)
+        else:
+            TT.cudaRecord(EventTypes.send_samples_done)
+
         return output, None, None
 
 class RunnableModule(nn.Module):

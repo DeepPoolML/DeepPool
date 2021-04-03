@@ -24,7 +24,7 @@ import threading
 from argparse import ArgumentParser, REMAINDER
 from typing import Optional, IO, List, Any
 from jobDescription import TrainingJob
-import examples.vgg as vgg  # TODO: this is used for debugging. Remove this later.
+# import examples.vgg as vgg  # TODO: this is used for debugging. Remove this later.
 
 class Location:
     def __init__(self, address: str, port: int, device: int, userId: str, sshKeyPath: str):
@@ -403,7 +403,7 @@ def main():
     # thread.start()
 
     coordinator.serve_forever()
-    
+
     # thread.join()
 
 if __name__ == "__main__":

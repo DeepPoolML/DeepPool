@@ -32,6 +32,8 @@ from runnableModule import VisionDataLoaderGenerator
 from runnableModule import TargetShuffler
 from communication import CommunicationBackend
 from logger import Logger
+from timetrace import EventTypes
+from timetrace import Timetrace as TT
 
 import torch.cuda.profiler as profiler
 import pyprof
@@ -55,7 +57,7 @@ class JobContext:
         self.itersToTrain = len(dataLoader) if dataLoader != None else None #TODO: this is a temporary hack..
         self.itersPerPoll = 30
         self.training_initialized = False
-        self.iterToCapture = 100
+        self.itersToCapture = [100, 101, 102]
         self.iterTimeDuringLastRun = 0
 
     def train_init(self):
@@ -76,6 +78,7 @@ class JobContext:
         if not self.training_initialized:
             self.train_init()
         
+        TT.cudaInitIter(self.iter)
         if self.dataLoaderIt != None:
             data, target = next(self.dataLoaderIt)
             data, target = data.to(self.device), target.to(self.device)
@@ -85,15 +88,17 @@ class JobContext:
             target = None
         # optimizer.zero_grad()
 
-        if self.iter == self.iterToCapture:
+        if self.iter in self.itersToCapture and (self.iter - 1) not in self.itersToCapture:
             profiler.start()
         
         target = self.targetShuffler.shuffle(target)
+        TT.cudaRecord(EventTypes.target_shuffle)
 
-        Logger.log("forward pass is starting.. data: %s" % str(data.size() if data != None else "none"), level=0)
+        Logger.log("forward pass is starting.", level=0)
         output, runCriterionAndLoss = self.model(data)
-        Logger.log("forward pass is completed.. output: %s runCriterionAndLoss: %s" %
-                    (str(output.size() if output != None else None), str(runCriterionAndLoss)), level=0, flush=True)
+        TT.cudaRecord(EventTypes.fp_done)
+        # Logger.log("forward pass is completed.. output: %s runCriterionAndLoss: %s" %
+        #             (str(output.size() if output != None else None), str(runCriterionAndLoss)), level=0, flush=True)
         # output = torch.flatten(output, 1)
         if runCriterionAndLoss:
             output = F.log_softmax(output, dim=1)
@@ -105,25 +110,29 @@ class JobContext:
                 # target = target.narrow(0, 0, output.size()[0])
 
             loss = self.criterion(output, target)
+            TT.cudaRecord(EventTypes.bp_start)
             Logger.log("backward pass is starting", level=0, flush=True)
             loss.backward()
         # else:
         #     Logger.log("backward pass is starting", level=0, flush=True)
         #     output.backward(output) # gradient passed is dummy.
         Logger.log("backward remainder is starting", level=0, flush=True)
+        TT.cudaRecord(EventTypes.bp_remainder_start)
         self.model.backwardRemainder()
+        TT.cudaRecord(EventTypes.bp_done)
 
-        if self.iter == self.iterToCapture:
+        if self.iter in self.itersToCapture and (self.iter + 1) not in self.itersToCapture:
             profiler.stop()
         
         # optimizer.step()
+
+        TT.cudaFinishIter()
         self.iter += 1
         if self.iter == 1:
             self.model.commHandler.stopSendingSizes()
         if self.iter == self.itersToTrain:
             self.iter = 0
             self.epoch += 1
-        # TODO: check iter is over len(dataLoader), bump epoch when down with iter.
 
     def isCompleted(self):
         if self.epoch == self.epochsToTrain:
@@ -259,6 +268,7 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
                         self.getCoordinatorProxy().notifyTrainingFinished(self.myAddr, job.name, len(self.jobs) - 1, job.iterTimeDuringLastRun)
                         Logger.log("Training job <%s> is finished." % job.name, flush=True)
                         self.jobs.pop(0)
+                        TT.printAllTraces()
                         break
             elapsed = time.time() - startTime
             job.iterTimeDuringLastRun = (1000.0*elapsed)/ job.itersPerPoll
