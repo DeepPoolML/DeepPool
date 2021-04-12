@@ -1,11 +1,6 @@
 #!/bin/bash
-echo "Before using this script, modify EXPNAME in all *.sh files."
-echo "For this script, modify EXPNAME."
-exit 1
 
-EXPNAME="sp-dev"
-INSTANCE_FILENAME="aws-$EXPNAME-instanceIds.txt"
-
+source vars.sh
 
 OUTOPT=" >> ~/out.log 2>&1"
 # OUTOPT=""

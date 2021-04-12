@@ -1,10 +1,7 @@
 #!/bin/bash
-echo "Before using this script, modify EXPNAME in all *.sh files."
-echo "For this script, modify EXPNAME & ssh key path."
-exit 1
 
-EXPNAME="sp-dev"
-INSTANCE_FILENAME="aws-$EXPNAME-instanceIds.txt"
+source vars.sh
+
 # set -x
 
 totalInstances=`wc -w $INSTANCE_FILENAME | awk '{print $1}'`
@@ -50,7 +47,7 @@ aws ec2 wait instance-status-ok --instance-ids $instances
 #                    # "cp -r /data/pipedream /fast/")
 
 for dns in $dnsnames; do
-    ssh -i ~/.ssh/ulma-sjp.pem -o StrictHostKeyChecking=no ubuntu@$dns "echo 'Re-started at $timestamp' $OUTOPT"
+    ssh -i $KEYPATH -o StrictHostKeyChecking=no ubuntu@$dns "echo 'Re-started at $timestamp' $OUTOPT"
     echo $dns
     # for cmd in "${cmdarrMount[@]}"; do
     #     echo "  $cmd"
@@ -67,14 +64,14 @@ echo $privateIps > aws-started-privateIps.txt
 ipArr=($privateIps)
 i=0
 for dns in $dnsnames; do
-    scp -i ~/.ssh/ulma-sjp.pem aws-started-privateIps.txt ubuntu@$dns:~/
-    scp -i ~/.ssh/ulma-sjp.pem '/Users/seojin/Nextcloud/Research/Huygens (clock sync)/clocksync_prober-1.3-1.x86_64.rpm' ubuntu@$dns:~/
+    scp -i $KEYPATH aws-started-privateIps.txt ubuntu@$dns:~/
+    scp -i $KEYPATH '/Users/seojin/Nextcloud/Research/Huygens (clock sync)/clocksync_prober-1.3-1.x86_64.rpm' ubuntu@$dns:~/
 
-    ssh -i ~/.ssh/ulma-sjp.pem ubuntu@$dns "sudo apt-get --assume-yes install alien"
-    ssh -i ~/.ssh/ulma-sjp.pem ubuntu@$dns "sudo alien --scripts clocksync_prober-1.3-1.x86_64.rpm && sudo dpkg -i clocksync-prober_1.3-2_amd64.deb"
+    ssh -i $KEYPATH ubuntu@$dns "sudo apt-get --assume-yes install alien"
+    ssh -i $KEYPATH ubuntu@$dns "sudo alien --scripts clocksync_prober-1.3-1.x86_64.rpm && sudo dpkg -i clocksync-prober_1.3-2_amd64.deb"
 
     localPrivateIp=${ipArr[$i]}
-    ssh -i ~/.ssh/ulma-sjp.pem ubuntu@$dns 'tmux new -d "sudo /opt/clocksync/bin/prober 172.31.72.31 54321 '$localPrivateIp' 54322 '$localPrivateIp' 319 sw |& tee clocksync.log"'
+    ssh -i $KEYPATH ubuntu@$dns 'tmux new -d "sudo /opt/clocksync/bin/prober 172.31.72.31 54321 '$localPrivateIp' 54322 '$localPrivateIp' 319 sw |& tee clocksync.log"'
     ((i++))
 done
 

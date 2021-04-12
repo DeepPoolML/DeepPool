@@ -1,24 +1,14 @@
 #!/bin/bash
 # set -x
 
-echo "Before using this script, modify EXPNAME in all *.sh files."
-echo "For this script, modify EXPNAME, COUNT, TYPE, AMI, security-group-ids, key-name, subnet accordingly."
-exit 1
-
-EXPNAME="sp-dev"
-COUNT="4"
-# TYPE="p3.8xlarge"
-# TYPE="p3.2xlarge"
-TYPE="g4dn.xlarge"
-# AMI="ami-024e767756d8c822a"
-AMI="ami-061ccafb14db56c63"
+source vars.sh
 
 aws ec2 run-instances \
  --image-id $AMI \
  --security-group-ids sg-02badf64e80ee25af \
  --count $COUNT \
  --instance-type $TYPE \
- --key-name ulma-sjp \
+ --key-name $KEYNAME \
  --subnet-id subnet-e8bd288d \
  --tag-specifications  "ResourceType=instance,Tags=[{Key=Name,Value=$EXPNAME}]"
 
@@ -26,7 +16,7 @@ aws ec2 run-instances \
 sleep 60
 
 aws ec2 describe-instances --filters "Name=tag:Name,Values=$EXPNAME" --query 'Reservations[].Instances[].PublicDnsName' > aws-$EXPNAME-publicDnsName.txt
-aws ec2 describe-instances --filters "Name=tag:Name,Values=$EXPNAME" --query 'Reservations[].Instances[].InstanceId' > aws-$EXPNAME-instanceIds.txt
+aws ec2 describe-instances --filters "Name=tag:Name,Values=$EXPNAME" --query 'Reservations[].Instances[].InstanceId' > $INSTANCE_FILENAME
 
 instances=`cat aws-$EXPNAME-instanceIds.txt`
 dnsnames=`cat aws-$EXPNAME-publicDnsName.txt`
@@ -56,7 +46,7 @@ for dns in $dnsnames; do
     CMD='sudo mkdir /data; sudo chown ubuntu:ubuntu /data'
     #sudo mount -o ro /dev/xvdf /data
     echo "  $CMD"
-    ssh -i ~/.ssh/ulma-sjp.pem -o StrictHostKeyChecking=no ubuntu@$dns "$CMD"
+    ssh -i $KEYPATH -o StrictHostKeyChecking=no ubuntu@$dns "$CMD"
 
     # ssh -i ~/.ssh/ulma-sjp.pem -o StrictHostKeyChecking=no ubuntu@$dns "echo 'UUID=2fa7ec6a-0ae9-4b0a-afcf-e97f27cf9c27  /data  xfs  ro,suid,dev,exec,auto,nouser,async,nofail  0  2' | sudo tee -a /etc/fstab"
 
@@ -88,5 +78,5 @@ aws ec2 wait instance-status-ok \
 ##########################################################################################
 for dns in $dnsnames; do
     echo $dns
-    scp -i ~/.ssh/ulma-sjp.pem ~/.ssh/ulma-sjp.pem ubuntu@$dns:~/.ssh/id_rsa
+    scp -i $KEYPATH $KEYPATH ubuntu@$dns:~/.ssh/id_rsa
 done
