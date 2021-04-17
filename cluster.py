@@ -100,28 +100,6 @@ class Location:
             output = e.output
             exit(1)
 
-class ClusterClient:
-    """ A handle to submit training job to cluster. """
-
-    def __init__(self, coordinatorAddr: str, coordinatorPort: int, maxRetries = 5):
-        retryGap = 1
-        retryCount = 0
-        while retryCount < maxRetries:
-            try:
-                self.proxy = xmlrpc.client.ServerProxy("http://%s:%d/"%(coordinatorAddr, coordinatorPort))
-                self.proxy.poke()
-                return
-            except ConnectionRefusedError:
-                print("Cannot connect to %s:%d. Will retry in %d sec." %
-                    (coordinatorAddr, coordinatorPort, retryGap))
-                time.sleep(retryGap)
-                retryGap *= 2 # exponential back off.
-                retryCount += 1
-    
-    def submitTrainingJob(self, jobName: str, trainingJobInJSON: str):
-        self.proxy.poke()
-        self.proxy.scheduleTraining(jobName, trainingJobInJSON)
-
 class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
     """ GPU cluster coordinator. It accepts training jobs from clients and schedule them to runtimes. """
 
@@ -269,7 +247,7 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
             signal.signal(signal.SIGINT, sigkill_handler)
             # signal.signal(signal.SIGTERM, sigkill_handler)
         
-        time.sleep(5)
+        time.sleep(5 + (10 if profile else 0))
         for location in self.locations:
             print(location.getProxy().poke())
 

@@ -10,7 +10,7 @@ parentdir = os.path.dirname(currentdir)
 sys.path.append(parentdir)
 from parallelizationPlanner import CostSim
 from parallelizationPlanner import GpuProfiler
-from cluster import ClusterClient
+from clusterClient import ClusterClient
 from jobDescription import TrainingJob
 from runnableModule import RunnableModule
 from runnableModule import MockCommHandler
@@ -379,9 +379,7 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
 
     # testRunOnCPU()
 
-    # cc = ClusterClient("172.31.64.125", 12345)
-    cc = ClusterClient("172.31.73.183", 12345)      # bench-small
-    # cc = ClusterClient("172.31.78.3", 12345)      # bench-large
+    cc = ClusterClient()
     cc.submitTrainingJob("vgg16", jobInJson)
 
     profiler.saveProfile()
