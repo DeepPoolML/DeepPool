@@ -304,7 +304,8 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     profiler = GpuProfiler("cuda")
     profiler.loadProfile()
     global cs
-    cs = CostSim(profiler, netBw=1.25E5, verbose=True)
+    # cs = CostSim(profiler, netBw=1.25E5, verbose=True)
+    cs = CostSim(profiler, netBw=5E4, verbose=True)
     model = vgg16(pretrained=False)
     # model = vgg11()
     # model = resnet34()

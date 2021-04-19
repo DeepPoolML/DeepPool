@@ -300,7 +300,7 @@ class CostSim:
         self.NET_LATENCY = 40
         self.verbose = verbose
 
-    def generateModuleDescription(self, layerConfigs: list):
+    def generateModuleDescription(self, layerConfigs: list, globalBatch: int):
         # allProps = []
         # for l, config in zip(self.layers, layerConfigs):
         #     prop = l.dumpForJSON()
@@ -310,7 +310,7 @@ class CostSim:
         #     allProps.append(prop)
         # print(json.dumps(allProps, indent=1, sort_keys=False))
 
-        return TrainingJob("test", self.layers, layerConfigs, 16, "na")
+        return TrainingJob("test", self.layers, layerConfigs, globalBatch, "na")
         
         # job.dumpSingleRunnableModule(15)
 
@@ -1336,7 +1336,7 @@ class CostSim:
                     gpuUsecSum
                     ))
         
-        return self.generateModuleDescription([t[i][bestConfigChain[i]][0] for i in range(len(bestConfigChain))])
+        return self.generateModuleDescription([t[i][bestConfigChain[i]][0] for i in range(len(bestConfigChain))], globalBatch)
 
     def searchBestSplitsV2(self, totalGpus: int, globalBatch: int = 16, useZhihaoAlgo = False):
         t = [[] for i in range(len(self.layers))] # [layer] = list of (config, cumulativeTime, prevConfigIndex)

@@ -138,7 +138,7 @@ class CommunicationHandler:
             dist.send(tensor=tensor_shape_len, dst=dstRank, tag=tag)
             Logger.log("dist.send(%s)"%str({"tensor": tensor_shape.size(), "dst": dstRank, "tag": tag}), level=0, flush=True)
             dist.send(tensor=tensor_shape, dst=dstRank, tag=tag)
-            Logger.log("dist.isend(%s)"%str({"tensor": tensor.size(), "dst": dstRank, "tag": tag, "bytes": tensor.element_size()*tensor.nelement(), "elems": tensor.nelement(), "elemSize": tensor.element_size()}), level=0, flush=True)
+            Logger.log("dist.isend(%s)"%str({"tensor": tensor.size(), "dst": dstRank, "tag": tag, "bytes": tensor.element_size()*tensor.nelement(), "elems": tensor.nelement(), "elemSize": tensor.element_size()}), level=1, flush=True)
         # Logger.log("dist.isend(%s)"%str({"tensor": tensor.size(), "dst": dstRank, "tag": tag}), level=0, flush=True)
         # dist.send(tensor=tensor, dst=dstRank, tag=tag)
         tensorReq = dist.isend(tensor=tensor, dst=dstRank, tag=tag)
