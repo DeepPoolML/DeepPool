@@ -138,7 +138,8 @@ class CommunicationHandler:
             dist.send(tensor=tensor_shape_len, dst=dstRank, tag=tag)
             Logger.log("dist.send(%s)"%str({"tensor": tensor_shape.size(), "dst": dstRank, "tag": tag}), level=0, flush=True)
             dist.send(tensor=tensor_shape, dst=dstRank, tag=tag)
-        Logger.log("dist.isend(%s)"%str({"tensor": tensor.size(), "dst": dstRank, "tag": tag}), level=0, flush=True)
+            Logger.log("dist.isend(%s)"%str({"tensor": tensor.size(), "dst": dstRank, "tag": tag, "bytes": tensor.element_size()*tensor.nelement(), "elems": tensor.nelement(), "elemSize": tensor.element_size()}), level=0, flush=True)
+        # Logger.log("dist.isend(%s)"%str({"tensor": tensor.size(), "dst": dstRank, "tag": tag}), level=0, flush=True)
         # dist.send(tensor=tensor, dst=dstRank, tag=tag)
         tensorReq = dist.isend(tensor=tensor, dst=dstRank, tag=tag)
         self.asyncReqs.append(tensorReq)
@@ -175,8 +176,8 @@ class CommunicationHandler:
         else:
             tensor_shape = self.tensorSizes[tensorName]
         # Receive tensor.
-        tensor = torch.zeros(tensor_shape, dtype=dtype, device=self.deviceForComm, requires_grad=True)
-        Logger.log("dist.irecv(%s)"%str({"tensor": tensor.size(), "src": src_rank, "tag": tag, "require_grad": tensor.requires_grad}), level=0, flush=True)
+        tensor = torch.empty(tensor_shape, dtype=dtype, device=self.deviceForComm, requires_grad=True)
+        # Logger.log("dist.irecv(%s)"%str({"tensor": tensor.size(), "src": src_rank, "tag": tag, "require_grad": tensor.requires_grad}), level=0, flush=True)
         # dist.recv(tensor=tensor, src=src_rank, tag=tag)
         asyncReq = dist.irecv(tensor=tensor, src=src_rank, tag=tag)
         self.asyncReqs.append(asyncReq)
@@ -190,4 +191,6 @@ class CommunicationHandler:
     def allReduce(self, tensor, operation, grpName):
         commGrpHandler = self.commGrpHandlerDict[grpName]
         enum = dist.ReduceOp.SUM # operation argument should specify, now default to SUM
+        if self.shouldSendSizes:
+            Logger.log("dist.all_reduce(%s)"%str({"tensor": tensor.size(), "enum": enum, "grpName": grpName, "kbytes": (tensor.element_size()*tensor.nelement() / 1024)}), level=0, flush=True)
         dist.all_reduce(tensor, enum, commGrpHandler)
