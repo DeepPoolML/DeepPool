@@ -187,7 +187,7 @@ class GpuProfiler:
         height = config[2]
         inChannels = config[3]
         filterCount = config[4]
-        train_dataset = self.SyntheticDataset((inChannels, width, height), batchSize * 90)
+        train_dataset = self.SyntheticDataset((inChannels, width, height), batchSize * 200) #90)
         train_loader = torch.utils.data.DataLoader(
                 train_dataset, batch_size=batchSize, shuffle=False, pin_memory=True, drop_last=True)
 
@@ -211,7 +211,7 @@ class GpuProfiler:
         batchSize = config[0]
         inFeatures = config[1]
         outFeatures = config[2]
-        train_dataset = self.SyntheticDataset((inFeatures), batchSize * 20, num_classes=outFeatures)
+        train_dataset = self.SyntheticDataset((inFeatures), batchSize * 200, num_classes=outFeatures)
         train_loader = torch.utils.data.DataLoader(
                 train_dataset, batch_size=batchSize, shuffle=False, pin_memory=True, drop_last=True)
 
@@ -297,7 +297,7 @@ class CostSim:
         self.profiler = profiler
         self.layers: List[CostSim.Layer] = []
         self.NET_BANDWIDTH = netBw
-        self.NET_LATENCY = 10
+        self.NET_LATENCY = 40
         self.verbose = verbose
 
     def generateModuleDescription(self, layerConfigs: list):
