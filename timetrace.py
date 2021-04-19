@@ -31,6 +31,7 @@ class Timetrace:
     cudaEvents = []
     iterStartCpuTime = None
     iterMinibatchId = None
+    timeSyncPeriod = 5
 
     @classmethod
     def buildTablesForEventTypes(cls):
@@ -55,6 +56,11 @@ class Timetrace:
     
     @classmethod
     def cudaInitIter(cls, minibatch_id):
+        cls.iterMinibatchId = minibatch_id
+
+        if minibatch_id % cls.timeSyncPeriod != 0: # do this every 3 iteration.
+            return
+
         # synchronize cuda. take cpu time, insert cuda event for initial stuff.. 
         if len(cls.cudaEvents) != 0:
             raise Exception("[Timetrace.cudaInitIter] cudaEvents list is not empty.")
@@ -62,11 +68,14 @@ class Timetrace:
         cls.iterStartCpuTime = time.time()
         ev_start = torch.cuda.Event(enable_timing=True)
         ev_start.record()
-        cls.cudaEvents.append( (ev_start, EventTypes.iter_init, None) )
-        cls.iterMinibatchId = minibatch_id
+        cls.cudaEvents.append( (ev_start, EventTypes.iter_init, minibatch_id, None) )
+        # cls.iterMinibatchId = minibatch_id
     
     @classmethod
-    def cudaFinishIter(cls):
+    def cudaFinishIter(cls, minibatch_id):
+        if minibatch_id % cls.timeSyncPeriod != (cls.timeSyncPeriod - 1): # do this every 3 iteration.
+            return
+        
         # synchronize cuda. flush all timing data.
         torch.cuda.synchronize()
         if len(cls.cudaEvents) <= 1:
@@ -74,15 +83,15 @@ class Timetrace:
             return
         
         # Flush all cuda events to traces.
-        startEvent, startEid, startComment = cls.cudaEvents[0]
-        cls.traces.append((cls.iterStartCpuTime, startEid, cls.iterMinibatchId, startComment))
+        startEvent, startEid, startBatchId, startComment = cls.cudaEvents[0]
+        cls.traces.append((cls.iterStartCpuTime, startEid, startBatchId, startComment))
         for i in range(1, len(cls.cudaEvents)):
-            cudaEv, eid, comment = cls.cudaEvents[i]
+            cudaEv, eid, batchId, comment = cls.cudaEvents[i]
             cudaElapsedMs = startEvent.elapsed_time(cudaEv)
             absTime = cls.iterStartCpuTime + (cudaElapsedMs / 1000.)
-            cls.traces.append((absTime, eid, cls.iterMinibatchId, comment))
+            cls.traces.append((absTime, eid, batchId, comment))
 
-            cls.iterMinibatchId
+            # cls.iterMinibatchId
 
         cls.cudaEvents.clear()
 
@@ -94,7 +103,7 @@ class Timetrace:
         # flush method which does cuda.synchronize  take cpu time. compute absolute time for all cuda events.
         ev = torch.cuda.Event(enable_timing=True)
         ev.record()
-        cls.cudaEvents.append( (ev, eid, comment) )
+        cls.cudaEvents.append( (ev, eid, cls.iterMinibatchId, comment) )
 
     @classmethod
     def printAllTraces(cls):

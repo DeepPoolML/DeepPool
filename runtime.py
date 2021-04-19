@@ -36,8 +36,9 @@ from timetrace import EventTypes
 from timetrace import Timetrace as TT
 
 import torch.cuda.profiler as profiler
+import torch.cuda.nvtx as nvtx
 import pyprof
-pyprof.init()
+# pyprof.init()
 
 class JobContext:
     def __init__(self, model: nn.Module, name: str, dataLoader, commHandler, targetShuffler,
@@ -55,9 +56,9 @@ class JobContext:
         self.epoch = 0
         self.iter = 0
         self.itersToTrain = len(dataLoader) if dataLoader != None else None #TODO: this is a temporary hack..
-        self.itersPerPoll = 30
+        self.itersPerPoll = 50
         self.training_initialized = False
-        self.itersToCapture = [100, 101, 102]
+        self.itersToCapture = [100, 101, 102, 103, 104, 105, 106, 107, 108, 109]
         self.iterTimeDuringLastRun = 0
 
     def train_init(self):
@@ -79,27 +80,36 @@ class JobContext:
             self.train_init()
         
         TT.cudaInitIter(self.iter)
+        nvtx.range_push("Copy to device")
         if self.dataLoaderIt != None:
-            data, target = next(self.dataLoaderIt)
-            data, target = data.to(self.device), target.to(self.device)
+            data, targetRaw = next(self.dataLoaderIt)
+            data, targetRaw = data.to(self.device), targetRaw.to(self.device)
             # Logger.log("train_single_iter target's size: %s"%str(target.size()), level=0, flush=True)
         else:
             data = None
-            target = None
+            targetRaw = None
         # optimizer.zero_grad()
+        nvtx.range_pop()
+
 
         if self.iter in self.itersToCapture and (self.iter - 1) not in self.itersToCapture:
             profiler.start()
         
-        target = self.targetShuffler.shuffle(target)
+        nvtx.range_push("Target shuffle")
+        for i in range(30):
+            target = self.targetShuffler.shuffle(targetRaw)
+        nvtx.range_pop()
         TT.cudaRecord(EventTypes.target_shuffle)
 
         Logger.log("forward pass is starting.", level=0)
+        nvtx.range_push("Forward Pass")
         output, runCriterionAndLoss = self.model(data)
+        nvtx.range_pop()
         TT.cudaRecord(EventTypes.fp_done)
         # Logger.log("forward pass is completed.. output: %s runCriterionAndLoss: %s" %
         #             (str(output.size() if output != None else None), str(runCriterionAndLoss)), level=0, flush=True)
         # output = torch.flatten(output, 1)
+        nvtx.range_push("Backward Pass")
         if runCriterionAndLoss:
             output = F.log_softmax(output, dim=1)
             
@@ -119,6 +129,7 @@ class JobContext:
         Logger.log("backward remainder is starting", level=0, flush=True)
         TT.cudaRecord(EventTypes.bp_remainder_start)
         self.model.backwardRemainder()
+        nvtx.range_pop()
         TT.cudaRecord(EventTypes.bp_done)
 
         if self.iter in self.itersToCapture and (self.iter + 1) not in self.itersToCapture:
@@ -126,7 +137,7 @@ class JobContext:
         
         # optimizer.step()
 
-        TT.cudaFinishIter()
+        TT.cudaFinishIter(self.iter)
         self.iter += 1
         if self.iter == 1:
             self.model.commHandler.stopSendingSizes()
@@ -224,13 +235,13 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
         module = RunnableModule(jobInJson, commHandler, self.device)
         if dataDir == "SYNTHETIC":
             dataDir = None # Use synthetic dataset.
-        loader = VisionDataLoaderGenerator.genDataLoader(jobInJson, dataDir, syntheticDataLength=3200)
+        loader = VisionDataLoaderGenerator.genDataLoader(jobInJson, dataDir, syntheticDataLength=320000)
         targetShuffler = TargetShuffler(commHandler, jobSpec["rank"], jobSpec["initialBatchSizes"],
                                         jobSpec["sampleIndices"], device=self.device)
         job = JobContext(module, name, loader, commHandler, targetShuffler, device=self.device)
         
-        # job.limit_iters_to_train(500)
-        job.limit_iters_to_train(200)
+        job.limit_iters_to_train(1000)
+        # job.limit_iters_to_train(200)
         self.jobs.append(job)
         Logger.log("Scheduled a training job (%s). Total jobs on queue: %d" % (name, len(self.jobs)))
         return "Scheduled a training job. @ %s!"%self.myAddr

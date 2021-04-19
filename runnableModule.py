@@ -261,7 +261,7 @@ class SendSamplesFunc(torch.autograd.Function):
         for idx, item in enumerate(sendList):
             # commHandler.send(splittedOutputs[idx].clone(), item["name"], item["dest"])
             commHandler.sendAsync(splittedOutputs[idx], item["name"], item["dest"])
-        # commHandler.waitForAll()
+        commHandler.waitForAll() # TODO: testing if this is faster or not..
         output = splittedOutputs[-1].clone()
         if output.size()[0] == 0:
             TT.cudaRecord(EventTypes.send_samples_done_idle)
@@ -305,7 +305,7 @@ class ReceiveSamplesFunc(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, recvList, commHandler):
         TT.cudaRecord(EventTypes.recv_samples)
-        TT.record(EventTypes.recv_samples_cpu)
+        # TT.record(EventTypes.recv_samples_cpu)
 
         ctx.commHandler = commHandler
         ctx.recvList = recvList
@@ -323,7 +323,7 @@ class ReceiveSamplesFunc(torch.autograd.Function):
         #         (str(inputTensor.size()), str(inputTensor.requires_grad), str(inputTensor.is_leaf), str(x.size() if x != None else None), str(x.requires_grad if x != None else None) ))
         
         TT.cudaRecord(EventTypes.recv_samples_done)
-        TT.record(EventTypes.recv_samples_done_cpu)
+        # TT.record(EventTypes.recv_samples_done_cpu)
         return inputTensor
 
     @staticmethod
@@ -338,6 +338,8 @@ class ReceiveSamplesFunc(torch.autograd.Function):
         for rxIdx, rxItem in enumerate(recvList):
             ctx.commHandler.sendAsync(splittedOutputs[rxIdx], rxItem["name"]+"_back", rxItem["src"])
 
+        ctx.commHandler.waitForAll()
+        
         output = splittedOutputs[-1]
         if output.size()[0] == 0:
             output = torch.empty(0, device=torch.device('cuda'), requires_grad=True)
