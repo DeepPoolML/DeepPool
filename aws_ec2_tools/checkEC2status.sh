@@ -1,7 +1,6 @@
 #!/bin/bash
-echo "For this script, modify EXPNAME."
 
-EXPNAME="sp-test-6"
+source vars.sh
 
  # aws-$EXPNAME-instanceIds.txt
 
