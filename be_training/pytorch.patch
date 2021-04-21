@@ -1,0 +1,15 @@
+diff --git a/torch/csrc/autograd/engine.cpp b/torch/csrc/autograd/engine.cpp
+index 04d40bf220..460996dab3 100644
+--- a/torch/csrc/autograd/engine.cpp
++++ b/torch/csrc/autograd/engine.cpp
+@@ -1121,6 +1121,10 @@ auto Engine::start_device_threads() -> void {
+   for (int i = 0; i < num_devices; ++i) {
+     std::thread t(&Engine::thread_init, this, i, device_ready_queues_[i], true);
+     t.detach();
++    for (int j = 0; j < 5; j++) {
++       std::thread t(&Engine::thread_init, this, i, device_ready_queues_[i], false);
++      t.detach();
++    }
+   }
+   // Wait for the threads to start
+   {
