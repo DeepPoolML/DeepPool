@@ -105,9 +105,10 @@ class JobContext:
 
     def idle_measurement_finalize(self):
         for layerno, times in self.idle_timings_raw.items():
-            # conservative measurement of idle time for now...
-            self.idle_timings.append(min(times))
-            Logger.log("[{}] Idle time discovered: {} ms".format(layerno, min(times)))
+            times = sorted(times)
+            med = times[len(times) // 2]
+            self.idle_timings.append(med)
+            Logger.log("[{}] Idle time discovered: {} ms".format(layerno, med))
 
     def idle_measurement_round_done(self):
         self.cur_idle_round = 0
@@ -162,8 +163,7 @@ class JobContext:
             profiler.start()
         
         nvtx.range_push("Target shuffle")
-        for i in range(30):
-            target = self.targetShuffler.shuffle(targetRaw)
+        target = self.targetShuffler.shuffle(targetRaw)
         nvtx.range_pop()
         TT.cudaRecord(EventTypes.target_shuffle)
 
