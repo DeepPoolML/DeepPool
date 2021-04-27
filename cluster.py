@@ -103,7 +103,7 @@ class Location:
 class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
     """ GPU cluster coordinator. It accepts training jobs from clients and schedule them to runtimes. """
 
-    def __init__(self, addrToBind: str, portToBind: int, locations: List[Location], workDir: str):
+    def __init__(self, addrToBind: str, portToBind: int, locations: List[Location], workDir: str, be_batch_size: int):
         super(ClusterCoordinator, self).__init__((addrToBind, portToBind))
         self.myAddr = addrToBind
         self.myPort = portToBind
@@ -111,6 +111,7 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
         self.workDir = workDir
         self.processes = []  # from subprocess calls used for launching runtime.
         self.nextTagStartOffset = 1
+        self.be_batch_size = be_batch_size
     
     def _dispatch(self, method, params):
         """ Custom dispatcher for XML-RPC server. """
@@ -222,8 +223,8 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
                 nsysPrefix = ""
             self.processes.append(location.rshAsync(
                 nsysPrefix + "python3 " + self.workDir + "runtime.py" + \
-                " --coordinatorAddr %s:%d --myAddr %s:%d --device %d --c10dBackend %s --rank %d --worldSize %d" % \
-                    (self.myAddr, self.myPort, location.address, location.port, location.device, c10dBackend, i, len(self.locations)) #+ \
+                " --coordinatorAddr %s:%d --myAddr %s:%d --device %d --c10dBackend %s --rank %d --worldSize %d --be_batch_size %d" % \
+                    (self.myAddr, self.myPort, location.address, location.port, location.device, c10dBackend, i, len(self.locations), self.be_batch_size) #+ \
                 , stdout=stdoutFp, stderr=stderrFp))
 
             sig_names = {2: "SIGINT", 15: "SIGTERM"}
@@ -337,6 +338,8 @@ def parse_args():
                         help="When this option is set, it will install required pip packages to all servers")
     parser.add_argument('--profile', default=False, action='store_true',
                         help="To launch runtimes with night system profiling.")
+    parser.add_argument("--be_batch_size", type=int, default=0,
+                        help="launch runtimes with be beatch size")
     # For installing nsys.. (with other cuda toolkit..)
     # wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu1804/x86_64/cuda-ubuntu1804.pin
     # sudo mv cuda-ubuntu1804.pin /etc/apt/preferences.d/cuda-repository-pin-600
@@ -359,7 +362,7 @@ def main():
     addrToBind = addrToBindCombo[0]
     portToBind = int(addrToBindCombo[1])
 
-    coordinator = ClusterCoordinator(addrToBind, portToBind, locations, clusterConfig["workDir"])
+    coordinator = ClusterCoordinator(addrToBind, portToBind, locations, clusterConfig["workDir"], args.be_batch_size)
     if args.install:
         coordinator.installPackages()
     # Just make sure there's no previously left runtimes.

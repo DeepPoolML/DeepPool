@@ -66,7 +66,7 @@ class JobContext:
         self.itersToTrain = len(dataLoader) if dataLoader != None else None #TODO: this is a temporary hack..
         self.itersPerPoll = 50
         self.training_initialized = False
-        self.itersToCapture = [100, 101, 102, 103, 104, 105, 106, 107, 108, 109]
+        self.itersToCapture = set(range(250, 260))
         self.iterTimeDuringLastRun = 0
         self.runtime = runtime
 
@@ -80,8 +80,8 @@ class JobContext:
         self.cur_idle_round = 0
         self.idle_start_events = []
         self.idle_end_events = []
-        self.idle_iter_track_start = 50
-        self.idle_iter_track_end = 100
+        self.idle_iter_track_start = 100
+        self.idle_iter_track_end = 200
 
     def idle_track_should_record(self):
         return (self.iter >= self.idle_iter_track_start and

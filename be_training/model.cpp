@@ -270,14 +270,15 @@ FakeDataLoader::FakeDataLoader(unsigned int batch_size) {
 }
 
 TrainableModel::TrainableModel(ResNet<BottleNeck> model, long bsize, int device,
-                               bool train)
+                               bool train, bool low_pri)
     : model_(model),
       optimizer_(model_.parameters(),
                  torch::optim::SGDOptions(0.1).momentum(0.9)),
       dataloader_(bsize),
       training_iteration_(0),
       device_(c10::DeviceType::CUDA, device),
-      train_(train) {
+      train_(train),
+      low_pri_(low_pri) {
   if (train_)
     model_.train();
   else
@@ -285,9 +286,13 @@ TrainableModel::TrainableModel(ResNet<BottleNeck> model, long bsize, int device,
   model_.to(device_);
 
   auto fwdpre = [&](int layern, torch::nn::AnyModule m, at::Tensor &t) {
+#ifdef MODEL_DEBUG
     std::stringstream mm;
     m.ptr()->pretty_print(mm);
     LayerStart(t, mm.str());
+#else
+    LayerStart(t);
+#endif
   };
 
   auto fwdpost = [&](int layern, torch::nn::AnyModule, at::Tensor &t) {
@@ -295,9 +300,8 @@ TrainableModel::TrainableModel(ResNet<BottleNeck> model, long bsize, int device,
   };
 
   auto bwdpre = [&](int layern, at::Tensor &t) {
-    if (last_backward_++ != -1) {
-      LayerEnd(t);
-    }
+    if (in_backward_) LayerEnd(t);
+    in_backward_ = true;
     LayerStart(t, "Bwd");
   };
 
@@ -322,8 +326,10 @@ void TrainableModel::Iterate() {
 
   Tensor empty, input, target, loss, output;
 
-  /* Move data to device */
   layer_counter_ = 0;
+  in_backward_ = false;
+
+  /* Move data to device */
   {
     LayerRunner l(*this, empty, "inputs");
     input = data.first.to(device_, data.first.scalar_type(), true);
@@ -346,16 +352,22 @@ void TrainableModel::Iterate() {
   }
 
   /* Backward Pass */
-  last_backward_ = -1;
-  loss.backward();
+#ifdef MODEL_DEBUG
+  nvtxRangePush("bwd");
+#endif
+  if (low_pri_)
+    loss.lp_backward();
+  else
+    loss.backward();
+  in_backward_ = false;
   LayerEnd(empty);
 
   /* Step optimizer */
   do_step();
 }
 
-#define ZERO_GRAD_BATCH 20
-#define STEP_GRAD_BATCH 6
+#define ZERO_GRAD_BATCH 40
+#define STEP_GRAD_BATCH 24
 
 void TrainableModel::zero_grad() {
   for (auto &group : optimizer_.param_groups()) {

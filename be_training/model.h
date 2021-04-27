@@ -1,7 +1,11 @@
 #pragma once
 
-#include <nvToolsExt.h>
 #include <torch/torch.h>
+
+//#define MODEL_DEBUG 1
+#ifdef MODEL_DEBUG
+#include <nvToolsExt.h>
+#endif
 
 struct WithHooks {
   using FwdHookFn =
@@ -114,7 +118,7 @@ class TrainableModel {
   using HookFn = std::function<void(int layern, at::Tensor &)>;
 
   TrainableModel(ResNet<BottleNeck> model, long bsize, int device,
-                 bool train = true);
+                 bool train = true, bool low_pri = true);
   void Iterate();
   void HookPreLayer(HookFn fn);
   void HookPostLayer(HookFn fn);
@@ -135,6 +139,8 @@ class TrainableModel {
 
   void LayerStart(at::Tensor t = {}, std::string name = {}) {
     if (pre_hook_) pre_hook_(layer_counter_, t);
+    if (in_backward_) return;
+#ifdef MODEL_DEBUG
     std::stringstream ss;
     ss << layer_counter_;
     if (!name.empty()) {
@@ -142,12 +148,15 @@ class TrainableModel {
     }
     std::string str = ss.str();
     nvtxRangePush(str.c_str());
+#endif
   }
 
   void LayerEnd(at::Tensor t = {}) {
     if (post_hook_) post_hook_(layer_counter_, t);
     layer_counter_++;
-    nvtxRangePop();
+#ifdef MODEL_DEBUG
+    if (!in_backward_) nvtxRangePop();
+#endif
   }
 
   struct LayerRunner {
@@ -164,9 +173,10 @@ class TrainableModel {
   HookFn post_hook_;
 
   size_t layer_counter_;
-  ssize_t last_backward_;
 
+  bool in_backward_;
   bool train_;
+  bool low_pri_;
 
   /* optimizer */
   void zero_grad();
