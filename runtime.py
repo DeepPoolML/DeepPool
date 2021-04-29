@@ -34,6 +34,7 @@ from communication import CommunicationBackend
 from logger import Logger
 from timetrace import EventTypes
 from timetrace import Timetrace as TT
+from contextlib import nullcontext
 
 from collections import defaultdict
 
@@ -83,6 +84,17 @@ class JobContext:
         self.idle_iter_track_start = 100
         self.idle_iter_track_end = 200
 
+    def get_be_stats(self):
+        if not self.idle_timings:
+            return 0, 0
+        cur_be_stats = be_training.query()
+        be_iters_trained = cur_be_stats["full_iterations"] - self.init_stats["full_iterations"]
+        total_fg_iters = (cur_be_stats["individual_grants"] - self.init_stats["individual_grants"])
+        total_fg_iters //= len(self.idle_timings)
+        images_trained_per_iter = (be_iters_trained / total_fg_iters) * self.runtime.be_task_enabled
+        msec_idle_per_iter = sum(self.idle_timings)
+        return images_trained_per_iter, msec_idle_per_iter
+
     def idle_track_should_record(self):
         return (self.iter >= self.idle_iter_track_start and
                 self.iter < self.idle_iter_track_end)
@@ -109,6 +121,7 @@ class JobContext:
             med = times[len(times) // 2]
             self.idle_timings.append(med)
             Logger.log("[{}] Idle time discovered: {} ms".format(layerno, med))
+        self.init_stats = be_training.query()
 
     def idle_measurement_round_done(self):
         self.cur_idle_round = 0
@@ -118,8 +131,10 @@ class JobContext:
             return
         torch.cuda.synchronize()
         s, e = self.idle_start_events, self.idle_end_events
+        assert len(s) == len(e)
         for layer, (start_ev, end_ev) in enumerate(zip(s, e)):
             ms = start_ev.elapsed_time(end_ev)
+            assert ms >= 0
             self.idle_timings_raw[layer].append(ms)
         self.idle_start_events.clear()
         self.idle_end_events.clear()
@@ -224,14 +239,15 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
     """
 
     def __init__(self, coordinatorAddr: str, coordinatorPort: int, myAddr: str,
-                myPort: int, device: int, c10dBackend: str, c10dMasterPort: int, rank: int, worldSize: int):
+                myPort: int, device: int, c10dBackend: str, c10dMasterPort: int, rank: int, worldSize: int, args):
         super(Runtime, self).__init__((myAddr, myPort))
         self.coordinatorAddr = coordinatorAddr
         self.coordinatorPort = coordinatorPort
         self.myAddr = myAddr
         self.myPort = myPort
         self.device = ("cuda:%d" % device) if device != "cpu" else device
-        self.be_task_enabled = False
+        self.be_task_enabled = 0
+        self.profile = args.profile
         torch.cuda.set_device(device)
         print("self.device=%s"%str(self.device))
         print("torch.cuda.current_device(): ", torch.cuda.current_device())
@@ -309,7 +325,7 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
         job = JobContext(module, name, loader, commHandler, targetShuffler, optimizer=optimizer, device=self.device, runtime=self)
         
         # job.limit_iters_to_train(1000)
-        job.limit_iters_to_train(200)
+        job.limit_iters_to_train(1000)
         self.jobs.append(job)
         Logger.log("Scheduled a training job (%s). Total jobs on queue: %d" % (name, len(self.jobs)))
         return "Scheduled a training job. @ %s!"%self.myAddr
@@ -335,7 +351,7 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
             Logger.log("Failed to initialize BE task... is it installed?")
             return
         be_training.init(batch_size, device)
-        self.be_task_enabled = True
+        self.be_task_enabled = batch_size
 
     # A job reports it is temporarily idle
     def report_idle(self, idle_time_ms):
@@ -359,14 +375,19 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
             hadWork = True
             startTime = time.time()
             job = self.jobs[0]
-            with torch.autograd.profiler.emit_nvtx():
+            ctx = torch.autograd.profiler.emit_nvtx if self.profile else nullcontext
+            with ctx():
                 for itersRan in range(job.itersPerPoll):
                     self.cur_job = job
                     job.train_single_iter()
                     self.cur_job = None
                     if job.isCompleted():
                         stats = TT.getStats()
-                        self.getCoordinatorProxy().notifyTrainingFinished(self.myAddr, job.name, len(self.jobs) - 1, *stats) # job.iterTimeDuringLastRun
+                        if self.be_task_enabled:
+                            be_im_iter, idle_ms_iter = job.get_be_stats()
+                        else:
+                            be_im_iter, idle_ms_iter = 0, 0
+                        self.getCoordinatorProxy().notifyTrainingFinished(self.myAddr, job.name, be_im_iter, idle_ms_iter, len(self.jobs) - 1, *stats) # job.iterTimeDuringLastRun
                         Logger.log("Training job <%s> is finished." % job.name, flush=True)
                         self.jobs.pop(0)
                         TT.printAllTraces()
@@ -427,6 +448,7 @@ def parse_args():
                         help="global world size for c10d.")
     parser.add_argument("--logdir", default=None, type=str)
     parser.add_argument("--be_batch_size", default=16, type=int, help="best effort batch size, 0 for disabled")
+    parser.add_argument("--profile", default=False, action='store_true', help="runtime will be profiled")
 
     return parser.parse_args()
 
@@ -440,7 +462,7 @@ def main():
     myPort = int(myAddrCombined[1])
 
     runtime = Runtime(coordinatorAddr, coordinatorPort, myAddr, myPort,
-                      args.device, args.c10dBackend, args.c10dMasterPort, args.rank, args.worldSize)
+                      args.device, args.c10dBackend, args.c10dMasterPort, args.rank, args.worldSize, args)
 
     if args.be_batch_size > 0:
         runtime.enable_be_task(args.be_batch_size)

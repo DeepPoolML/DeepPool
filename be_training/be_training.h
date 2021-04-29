@@ -16,6 +16,15 @@ struct GrantMsg {
   uint64_t do_writeback;
 };
 
+struct TrainingStats {
+  double images_per_sec;
+  double grants_per_sec;
+  uint64_t full_iterations;
+  uint64_t individual_grants;
+  uint64_t total_granted_nanos;
+  uint64_t total_used_nanos;
+};
+
 class ExternalController {
  public:
   virtual GrantMsg BlockNextGrant() = 0;
@@ -27,8 +36,8 @@ class SameProcessController : public ExternalController {
  public:
   GrantMsg BlockNextGrant() {
     std::unique_lock<std::mutex> lck(m_);
-    cv_.wait(lck, [&] { return !terminated_ && micros_to_train_ > 0; });
-    if (terminated_) return {0, 0};
+    cv_.wait(lck, [&] { return micros_to_train_ > 0 || IsDone(); });
+    if (IsDone()) return {0, 0};
     auto micros = micros_to_train_;
     micros_to_train_ = 0;
     train_after_event_.block(c10::cuda::getCurrentCUDAStream());
@@ -101,4 +110,5 @@ std::vector<double> TimeLayers(std::shared_ptr<TrainableModel> model,
                                long batch_size,
                                std::string cached_timings_file);
 void Train(ExternalController *c, std::shared_ptr<TrainableModel> model,
-           long bsize, uint64_t iters, std::vector<double> timings);
+           long bsize, uint64_t iters, std::vector<double> timings,
+           TrainingStats *stats);

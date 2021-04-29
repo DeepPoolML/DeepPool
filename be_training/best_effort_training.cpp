@@ -86,7 +86,8 @@ std::vector<double> TimeLayers(std::shared_ptr<TrainableModel> model,
 }
 
 static void ConsumeOrBlock(ExternalController *c, uint64_t micros,
-                           uint64_t layern, bool invalidate) {
+                           uint64_t layern, bool invalidate,
+                           TrainingStats *stats) {
   static bool first_round = true;
   static GrantMsg cur_grant;
   uint64_t now;
@@ -95,6 +96,7 @@ static void ConsumeOrBlock(ExternalController *c, uint64_t micros,
   uint64_t nanos = micros * 1000;
 
   while (invalidate || nanos > cur_grant.granted_nanos) {
+    if (c->IsDone()) return;
     invalidate = false;
     if (cur_grant.do_writeback || first_round) {
       first_round = false;
@@ -108,26 +110,31 @@ static void ConsumeOrBlock(ExternalController *c, uint64_t micros,
       c->AckGrant(cur_grant);
     }
     cur_grant = c->BlockNextGrant();
+    stats->individual_grants++;
+    stats->total_granted_nanos += cur_grant.granted_nanos;
 #if 0
     if (cur_grant.granted_nanos < nanos)
       std::cerr << "Got grant for " << last_ns_grant << " neeed grant for "
                 << nanos << " layer no " << layern << std::endl;
 #endif
   }
+  stats->total_used_nanos += nanos;
   cur_grant.granted_nanos -= nanos;
 }
 
 void Train(ExternalController *c, std::shared_ptr<TrainableModel> model,
-           long bsize, uint64_t iters, std::vector<double> timings) {
-  uint64_t last_log_iter = 0;
-  // , last_wasted = 0;
+           long bsize, uint64_t iters, std::vector<double> timings,
+           TrainingStats *stats) {
+  TrainingStats nullstats;
+  if (!stats) stats = &nullstats;
+  uint64_t last_log_iter = 0, last_total_grants = 0;
   auto last_log = steady_clock::now();
   std::cout << "Train thread created " << getpid() << std::endl << std::flush;
   bool invalidate_grant = false;
 
   if (c && timings.size() > 0) {
     model->HookPreLayer([&](int layern, torch::Tensor &t) {
-      ConsumeOrBlock(c, timings.at(layern), layern, invalidate_grant);
+      ConsumeOrBlock(c, timings.at(layern), layern, invalidate_grant, stats);
       invalidate_grant = false;
     });
   }
@@ -136,6 +143,7 @@ void Train(ExternalController *c, std::shared_ptr<TrainableModel> model,
 
   for (uint64_t i = 0; i < iters && (!c || !c->IsDone()); i++) {
     model->Iterate();
+    stats->full_iterations++;
 
     if (steady_clock::now() - last_log > seconds(5)) {
       invalidate_grant = true;
@@ -146,15 +154,15 @@ void Train(ExternalController *c, std::shared_ptr<TrainableModel> model,
       last_log_iter = i;
       last_log = now;
 
-      // auto waste = wasted_time_ns - last_wasted;
-      // last_wasted = wasted_time_ns;
+      stats->grants_per_sec =
+          static_cast<double>(stats->individual_grants - last_total_grants) /
+          duration_cast<duration<double>>(now - last_log).count();
+      last_total_grants = stats->individual_grants;
+      stats->images_per_sec = iter_ps * bsize;
 
       auto dtime = static_cast<double>(get_now_ns()) / 1000000000.0;
       std::cout << dtime << " Training iter/s: " << iter_ps << " ("
-                << iter_ps * bsize
-                << " im/s)"
-                // << " -- wasted ns: " << waste
-                << std::endl
+                << iter_ps * bsize << " im/s)" << std::endl
                 << std::flush;
     }
   }

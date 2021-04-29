@@ -263,13 +263,14 @@ ResNet<BottleNeck> resnet152() {
 
 FakeDataLoader::FakeDataLoader(unsigned int batch_size) {
   for (int i = 0; i < 5; i++) {
-    auto input = torch::rand({batch_size, 3, 224, 224});
-    auto target = torch::empty(batch_size).uniform_(0, 1000).to(at::kLong);
+    auto input = torch::rand({batch_size, 3, 224, 224}).pin_memory();
+    auto target =
+        torch::empty(batch_size).uniform_(0, 1000).to(at::kLong).pin_memory();
     dummy_data.emplace_back(input, target);
   }
 }
 
-TrainableModel::TrainableModel(ResNet<BottleNeck> model, long bsize, int device,
+TrainableModel::TrainableModel(ResNet<BasicBlock> model, long bsize, int device,
                                bool train, bool low_pri)
     : model_(model),
       optimizer_(model_.parameters(),
@@ -333,8 +334,12 @@ void TrainableModel::Iterate() {
   {
     LayerRunner l(*this, empty, "inputs");
     input = data.first.to(device_, data.first.scalar_type(), true);
-    target = data.second.to(device_, data.second.scalar_type(), true);
     if (train_) input.set_requires_grad(true);
+  }
+
+  if (train_) {
+    LayerRunner l(*this, empty, "targets");
+    target = data.second.to(device_, data.second.scalar_type(), true);
   }
 
   /* Zero out existing gradients layer by layer*/

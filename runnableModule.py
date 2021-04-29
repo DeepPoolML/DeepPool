@@ -327,9 +327,10 @@ class ReceiveSamplesFunc(torch.autograd.Function):
             #     (str(additionalInput.size()), str(additionalInput.requires_grad), str(additionalInput.is_leaf) ))
         if x != None:
             inputTensorList.append(x)
-        elif x is None or x.size()[0] == 0:
-            runtime_handle.cur_job.mark_non_idle()
         commHandler.waitForAll()
+        if x is None or x.size()[0] == 0:
+            runtime_handle.cur_job.mark_non_idle()
+
         inputTensor = torch.cat(inputTensorList, 0)
         # print("[ReceiveSamplesFunc] ** output from ReceiveSamplesFunc.forward: %s, requires_grad? %s leaf? %s  x: %s %s" % \
         #         (str(inputTensor.size()), str(inputTensor.requires_grad), str(inputTensor.is_leaf), str(x.size() if x != None else None), str(x.requires_grad if x != None else None) ))
@@ -414,6 +415,9 @@ class RunnableModule(nn.Module):
         # Assumes modules and layers are topologically sorted.
         tensorToReturn = None
 
+        if self.initialBatchSize == 0:
+            self.runtime_handle.cur_job.mark_idle()
+
         self.outputs = []
         for i, (module, ldsc) in enumerate(zip(self.moduleList, self.layersInJson)):
             if len(ldsc["prevLayers"]) == 0:
@@ -470,6 +474,10 @@ class RunnableModule(nn.Module):
                 Logger.log("leaf.size()[0] == 0 failed. leaf.size(): %s" % str(leaf.size()), level=2, flush=True)
             # grad = torch.empty(0, device=torch.device(self.device), requires_grad=True)
             leaf.backward(leaf) # gradient passed is dummy with 0 sample.
+
+        if self.initialBatchSize == 0:
+            self.runtime_handle.cur_job.mark_non_idle()
+
 
 def test():
     # testExpandingGpuUsed()

@@ -169,7 +169,8 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
         for thread in threadList:
             thread.join()
 
-        self.ongoingJobs[jobName] = {"iterTime": 0, "gpuUsec": 0, "gpusUsed": gpusUsed, "gpusFinished": 0, "globalBatchSize": job.globalBatchSize}
+        self.ongoingJobs[jobName] = {"iterTime": 0, "gpuMsec": 0, "gpusUsed": gpusUsed, "gpusFinished": 0, "globalBatchSize": job.globalBatchSize}
+        self.ongoingJobs[jobName].update({"beImagesPerIter": 0.0, "idleMsPerIter": 0.0})
 
         # for rank in range(gpusUsed):
         #     location = self.locations[rank]
@@ -177,19 +178,27 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
         #     print(location.getProxy().scheduleTraining(jobName, moduleDesc, "SYNTHETIC", tensorTagsInJson, jobRankToGlobalRankInJson))
         return 'done'
 
-    def export_notifyTrainingFinished(self, runtimeAddress: str, name: str, remainingJobCount: int, fpTime: float, bpTime: float, iterTime: float):
+    def export_notifyTrainingFinished(self, runtimeAddress: str, name: str, beImagesPerIter: float, idleMsPerIter: float, remainingJobCount: int, fpTime: float, bpTime: float, iterTime: float):
         print("Training for %s is completed at %s. (%d jobs are remaining) fp: %3.1f bp: %3.1f iterTime: %3.1f" % (name, runtimeAddress, remainingJobCount, fpTime, bpTime, iterTime))
+        iterTime /= 1000
         self.ongoingJobs[name]["iterTime"] = max(self.ongoingJobs[name]["iterTime"], iterTime)
-        self.ongoingJobs[name]["gpuUsec"] += fpTime + bpTime
+        self.ongoingJobs[name]["gpuMsec"] += (fpTime + bpTime) / 1000
         self.ongoingJobs[name]["gpusFinished"] += 1
+        self.ongoingJobs[name]["beImagesPerIter"] += beImagesPerIter
+        self.ongoingJobs[name]["idleMsPerIter"] += idleMsPerIter
         if self.ongoingJobs[name]["gpusFinished"] == self.ongoingJobs[name]["gpusUsed"]:
-            print("Training for %s is completed entirely. GpusUsed: %d  IterTime: %3.1f ms  GpuMsec: %3.1f ms" %
-                    (name, self.ongoingJobs[name]["gpusUsed"], self.ongoingJobs[name]["iterTime"] / 1000, self.ongoingJobs[name]["gpuUsec"] / 1000))
-            print("  %2d    %2d    %3.1f   %3.1f " %
-                    (self.ongoingJobs[name]["globalBatchSize"], self.ongoingJobs[name]["gpusUsed"], self.ongoingJobs[name]["iterTime"] / 1000, self.ongoingJobs[name]["gpuUsec"] / 1000))
+            toprints = [
+                "{globalBatchSize:2}", "{gpusUsed:2}", "{iterTime:4.1f}",
+                "{gpuMsec:4.1f}", "{beImagesPerIter:3.1f}",
+                "{idleMsPerIter:3.1f}"
+            ]
+            print("Training for {} is completed entirely.".format(name))
+            cols = ["GlobalBatchSize", "GpusUsed", "IterTime", "GpuMsec", "BeImagesPerIter", "IdleMsPerIter"]
+            print("  " + "    ".join(cols))
+            dataline = "  " + "    ".join(toprints).format(**self.ongoingJobs[name])
+            print(dataline)
             f = open("runtimeResult.data", "a")
-            f.write("  %2d    %2d   %4.1f  %4.1f\n" %
-                    (self.ongoingJobs[name]["globalBatchSize"], self.ongoingJobs[name]["gpusUsed"], self.ongoingJobs[name]["iterTime"] / 1000, self.ongoingJobs[name]["gpuUsec"] / 1000))
+            f.write(dataline + "\n")
             f.close()
         return 'done'
 
@@ -242,8 +251,8 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
                 nsysPrefix = ""
             self.processes.append(location.rshAsync(
                 nsysPrefix + "python3 " + self.workDir + "runtime.py" + \
-                " --coordinatorAddr %s:%d --myAddr %s:%d --device %d --c10dBackend %s --rank %d --worldSize %d --be_batch_size %d" % \
-                    (self.myAddr, self.myPort, location.address, location.port, location.device, c10dBackend, i, len(self.locations), self.be_batch_size) #+ \
+                " --coordinatorAddr %s:%d --myAddr %s:%d --device %d --c10dBackend %s --rank %d --worldSize %d --be_batch_size %d %s" % \
+                    (self.myAddr, self.myPort, location.address, location.port, location.device, c10dBackend, i, len(self.locations), self.be_batch_size, "--profile" if profile else "") #+ \
                 , stdout=stdoutFp, stderr=stderrFp))
 
             sig_names = {2: "SIGINT", 15: "SIGTERM"}

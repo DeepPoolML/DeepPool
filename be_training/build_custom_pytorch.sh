@@ -6,8 +6,8 @@ set -x
 git clone https://github.com/pytorch/pytorch pytorch
 
 cd pytorch
-patch -p1 < ../pytorch.patch
 git checkout ce05b7a3244ae7a61e989c9cd4eabf6d668ecbb0
+patch -p1 < ../pytorch.patch
 
 export CMAKE_PREFIX_PATH=${CONDA_PREFIX:-"$(dirname $(which conda))/../"}
 export CUDA_HOME=/usr/local/cuda-11.0

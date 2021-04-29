@@ -117,7 +117,7 @@ class TrainableModel {
  public:
   using HookFn = std::function<void(int layern, at::Tensor &)>;
 
-  TrainableModel(ResNet<BottleNeck> model, long bsize, int device,
+  TrainableModel(ResNet<BasicBlock> model, long bsize, int device,
                  bool train = true, bool low_pri = true);
   void Iterate();
   void HookPreLayer(HookFn fn);
@@ -131,7 +131,7 @@ class TrainableModel {
   size_t GetNumLayers();
 
  private:
-  ResNet<BottleNeck> model_;
+  ResNet<BasicBlock> model_;
   torch::optim::SGD optimizer_;
   FakeDataLoader dataloader_;
   uint64_t training_iteration_;
@@ -139,7 +139,6 @@ class TrainableModel {
 
   void LayerStart(at::Tensor t = {}, std::string name = {}) {
     if (pre_hook_) pre_hook_(layer_counter_, t);
-    if (in_backward_) return;
 #ifdef MODEL_DEBUG
     std::stringstream ss;
     ss << layer_counter_;
@@ -147,7 +146,7 @@ class TrainableModel {
       ss << " " << name;
     }
     std::string str = ss.str();
-    nvtxRangePush(str.c_str());
+    if (!in_backward_) nvtxRangePush(str.c_str());
 #endif
   }
 
