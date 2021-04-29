@@ -172,7 +172,7 @@ class TargetShuffler:
     
     def shuffle(self, targetsFromLoader):
         if targetsFromLoader == None:
-            targetsFromLoader = torch.zeros(0, device=self.device)
+            targetsFromLoader = torch.zeros(0)
         paddedTarget = []
         for i, initBatchSize in enumerate(self.initialBatchSizes):
             if i == self.rank:
@@ -180,7 +180,8 @@ class TargetShuffler:
                 paddedTarget.extend(targetsFromLoader.tolist())
             else:
                 paddedTarget.extend([0] * initBatchSize)
-        tsr = torch.tensor(paddedTarget, dtype=torch.long, device=torch.device(self.device))
+        tsr = torch.tensor(paddedTarget, dtype=torch.long)
+        tsr = tsr.to(device=self.device, non_blocking=True)
         self.commHandler.allReduce(tsr, torch.distributed.ReduceOp, "all")
         allTargetList = torch.chunk(tsr, chunks=tsr.size()[0], dim=0)
         # Logger.log("allTargetList: %s" % str(allTargetList), flush=True)
@@ -237,22 +238,24 @@ class MockCommHandler:
         return tensorToReturn
 
 class SendSamples(nn.Module):
-    def __init__(self, sendList: list, commHandler):
+    def __init__(self, sendList: list, commHandler, runtime_handle):
         super(SendSamples, self).__init__()
         if len(sendList) == 0:
             raise Exception("sendList is empty")
         self.sendList = sendList
         self.commHandler = commHandler
+        self.runtime_handle = runtime_handle
     
     def forward(self, x):
-        return SendSamplesFunc.apply(x, self.sendList, self.commHandler)
+        return SendSamplesFunc.apply(x, self.sendList, self.commHandler, self.runtime_handle)
 
 class SendSamplesFunc(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, x, sendList, commHandler):
+    def forward(ctx, x, sendList, commHandler, runtime_handle):
         TT.cudaRecord(EventTypes.send_samples)
         ctx.commHandler = commHandler
         ctx.sendList = sendList
+        ctx.runtime_handle = runtime_handle
         sampleSplitSections = [txItem["prop"]["xferSamples"] for txItem in sendList]
         remainingSamples = x.shape[0] - sum(sampleSplitSections)
         sampleSplitSections.append(remainingSamples)
@@ -265,6 +268,7 @@ class SendSamplesFunc(torch.autograd.Function):
         # output = splittedOutputs[-1].clone()
         output = splittedOutputs[-1]
         if output.size()[0] == 0:
+            runtime_handle.cur_job.mark_idle()
             TT.cudaRecord(EventTypes.send_samples_done_idle)
         else:
             TT.cudaRecord(EventTypes.send_samples_done)
@@ -284,32 +288,37 @@ class SendSamplesFunc(torch.autograd.Function):
         inputTensorList.append(grad_output)
         ctx.commHandler.waitForAll()
 
+        if grad_output.size()[0] == 0:
+            ctx.runtime_handle.cur_job.mark_non_idle()
+
         inputTensor = torch.cat(inputTensorList, 0)
         # print("                           grad_out: %s" % str(inputTensor.size()))
         
         TT.cudaRecord(EventTypes.recv_samples_done)
         TT.record(EventTypes.recv_samples_done_cpu)
-        return inputTensor, None, None
+        return inputTensor, None, None, None
 
 class ReceiveSamples(nn.Module):
-    def __init__(self, recvList: list, commHandler):
+    def __init__(self, recvList: list, commHandler, runtime_handle):
         super(ReceiveSamples, self).__init__()
         if len(recvList) == 0:
             raise Exception("recvList is empty")
         self.recvList = recvList
         self.commHandler = commHandler
+        self.runtime_handle = runtime_handle
     
     def forward(self, x):
-        return ReceiveSamplesFunc.apply(x, self.recvList, self.commHandler)
+        return ReceiveSamplesFunc.apply(x, self.recvList, self.commHandler, self.runtime_handle)
 
 class ReceiveSamplesFunc(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, x, recvList, commHandler):
+    def forward(ctx, x, recvList, commHandler, runtime_handle):
         TT.cudaRecord(EventTypes.recv_samples)
         # TT.record(EventTypes.recv_samples_cpu)
 
         ctx.commHandler = commHandler
         ctx.recvList = recvList
+        ctx.runtime_handle = runtime_handle
         inputTensorList = []
         for rxItem in recvList:
             additionalInput = commHandler.recvAsync(rxItem["name"], rxItem["src"])
@@ -318,11 +327,13 @@ class ReceiveSamplesFunc(torch.autograd.Function):
             #     (str(additionalInput.size()), str(additionalInput.requires_grad), str(additionalInput.is_leaf) ))
         if x != None:
             inputTensorList.append(x)
+        elif x is None or x.size()[0] == 0:
+            runtime_handle.cur_job.mark_non_idle()
         commHandler.waitForAll()
         inputTensor = torch.cat(inputTensorList, 0)
         # print("[ReceiveSamplesFunc] ** output from ReceiveSamplesFunc.forward: %s, requires_grad? %s leaf? %s  x: %s %s" % \
         #         (str(inputTensor.size()), str(inputTensor.requires_grad), str(inputTensor.is_leaf), str(x.size() if x != None else None), str(x.requires_grad if x != None else None) ))
-        
+
         TT.cudaRecord(EventTypes.recv_samples_done)
         # TT.record(EventTypes.recv_samples_done_cpu)
         return inputTensor
@@ -343,15 +354,17 @@ class ReceiveSamplesFunc(torch.autograd.Function):
         
         output = splittedOutputs[-1]
         if output.size()[0] == 0:
-            output = torch.empty(0, device=torch.device('cuda'), requires_grad=True)
+            ctx.runtime_handle.cur_job.mark_idle()
+            output = torch.empty(0, requires_grad=True)
+            output = output.cuda(non_blocking=True)
             TT.cudaRecord(EventTypes.send_samples_done_idle)
         else:
             TT.cudaRecord(EventTypes.send_samples_done)
 
-        return output, None, None
+        return output, None, None, None
 
 class RunnableModule(nn.Module):
-    def __init__(self, specInJson, commHandler, device):
+    def __init__(self, specInJson, commHandler, device, runtime_handle):
         super(RunnableModule, self).__init__()
         spec = json.loads(specInJson)
         self.rank = spec["rank"]
@@ -362,6 +375,7 @@ class RunnableModule(nn.Module):
         self.commHandler = commHandler
         self.device = device
         self.leavesForBackward = []
+        self.runtime_handle = runtime_handle
 
         for ldsc in self.layersInJson:
             name = ldsc["name"]
@@ -389,10 +403,10 @@ class RunnableModule(nn.Module):
             if ldsc["config"][0] > 0: # This rank has assigned samples for this layer.
                 if "tensorRx" in ldsc: # receive parts of input.
                     Logger.log("[RunnableModule.__init__] recv tensor found for layer: %d" % ldsc["id"])
-                    module = torch.nn.Sequential(ReceiveSamples(ldsc["tensorRx"], self.commHandler), module)
+                    module = torch.nn.Sequential(ReceiveSamples(ldsc["tensorRx"], self.commHandler, runtime_handle), module)
                 if "tensorTx" in ldsc: # send parts of output.
                     Logger.log("[RunnableModule.__init__] send tensor found for layer: %d" % ldsc["id"])
-                    module = torch.nn.Sequential(module, SendSamples(ldsc["tensorTx"], self.commHandler))
+                    module = torch.nn.Sequential(module, SendSamples(ldsc["tensorTx"], self.commHandler, runtime_handle))
 
             self.moduleList.append(module)
 
@@ -413,8 +427,9 @@ class RunnableModule(nn.Module):
             if ldsc["config"][0] > 0: # This rank has assigned samples for this layer.
                 # Logger.log("[RunnableModule] forward inputTensor.size(): %s"%str(inputTensor.size() if inputTensor != None else None), level=0)
                 if inputTensor == None:    
-                    inputTensor = torch.empty(0, device=torch.device(self.device), requires_grad=True) ############ STOPPED HERE. try requires_grad=True?
-                
+                    inputTensor = torch.empty(0, requires_grad=True) ############ STOPPED HERE. try requires_grad=True?
+                    inputTensor = inputTensor.to(device=self.device, non_blocking=True)
+
                 output = module(inputTensor)
                 # Logger.log("[RunnableModule] Layer %d ==> output from running module: %s. requireGrad? %s" % (i, str(output.size()), str(output.requires_grad)), level=0)
                 tensorToReturn = output
@@ -429,7 +444,8 @@ class RunnableModule(nn.Module):
                     self.leavesForBackward.append(tensorToReturn)
 
                 # output = None
-                output = torch.empty(0, device=torch.device(self.device), requires_grad=True)
+                output = torch.empty(0, requires_grad=True)
+                output = output.to(device=self.device, non_blocking=True)
                 runCriterionAndLoss = False
                 tensorToReturn = None
             # Logger.log("        ==> final output after sending out samples: %s" % (str(output.size())), level=0)

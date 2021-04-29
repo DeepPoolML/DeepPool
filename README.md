@@ -33,5 +33,9 @@
       - Setup a security group which opens all ports within the group.
       - A private key registered in AWS.
       
+## Enabling best-effort training (Single GPU Resnet50)
+- BE training requires a patched pytorch. Run `build_custom_pytorch.sh` in the `be_training` directory to download, patch, compile, and install pytorch.
+- Build and install the training extension by running `python setup.py install` in the same directory.
+- Control batch training using the `--be_batch_size=N` flag for `runtime.py` (0 disables training, 16 is the default).
 
 

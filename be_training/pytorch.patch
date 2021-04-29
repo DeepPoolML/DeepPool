@@ -1,0 +1,433 @@
+diff --git a/aten/src/ATen/core/Tensor.cpp b/aten/src/ATen/core/Tensor.cpp
+index 4c23f78136..be836cac72 100644
+--- a/aten/src/ATen/core/Tensor.cpp
++++ b/aten/src/ATen/core/Tensor.cpp
+@@ -79,8 +79,8 @@ void Tensor::retain_grad() const {
+ void Tensor::_backward(TensorList inputs,
+         const c10::optional<Tensor>& gradient,
+         c10::optional<bool> keep_graph,
+-        bool create_graph) const {
+-  return impl::GetVariableHooks()->_backward(*this, inputs, gradient, keep_graph, create_graph);
++        bool create_graph, bool low_pri) const {
++  return impl::GetVariableHooks()->_backward(*this, inputs, gradient, keep_graph, create_graph, low_pri);
+ }
+ 
+ const Tensor& Tensor::requires_grad_(bool _requires_grad) const {
+diff --git a/aten/src/ATen/core/VariableHooksInterface.h b/aten/src/ATen/core/VariableHooksInterface.h
+index a802b97d82..8d029ffbfd 100644
+--- a/aten/src/ATen/core/VariableHooksInterface.h
++++ b/aten/src/ATen/core/VariableHooksInterface.h
+@@ -54,7 +54,7 @@ struct TORCH_API VariableHooksInterface {
+   virtual Tensor data(const Tensor&) const = 0;
+   virtual int64_t _version(const Tensor&) const = 0;
+   virtual void retain_grad(const Tensor&) const = 0;
+-  virtual void _backward(const Tensor&, TensorList, const c10::optional<Tensor>&, c10::optional<bool>, bool) const = 0;
++  virtual void _backward(const Tensor&, TensorList, const c10::optional<Tensor>&, c10::optional<bool>, bool, bool) const = 0;
+   virtual void requires_grad_(const Tensor&, bool) const = 0;
+ };
+ 
+diff --git a/aten/src/ATen/cudnn/Handle.cpp b/aten/src/ATen/cudnn/Handle.cpp
+index 2b1d90f4b3..85ca706799 100644
+--- a/aten/src/ATen/cudnn/Handle.cpp
++++ b/aten/src/ATen/cudnn/Handle.cpp
+@@ -23,7 +23,7 @@ void destroyCuDNNHandle(cudnnHandle_t handle) {
+ //
+ // #ifdef NO_CUDNN_DESTROY_HANDLE
+ // #else
+-//   cudnnDestroy(handle);
++   cudnnDestroy(handle);
+ // #endif
+ }
+ 
+@@ -40,7 +40,7 @@ cudnnHandle_t getCudnnHandle() {
+   // See: https://github.com/pytorch/pytorch/pull/22405
+   // This thread local unique_ptrs will be destroyed when the thread terminates,
+   // releasing its reserved handles back to the pool.
+-  static auto pool = std::make_shared<CudnnPoolType>();
++  thread_local auto pool = std::make_shared<CudnnPoolType>();
+   thread_local std::unique_ptr<CudnnPoolType::PoolWindow> myPoolWindow(
+       pool->newPoolWindow());
+ 
+diff --git a/aten/src/ATen/native/VariableMethodStubs.cpp b/aten/src/ATen/native/VariableMethodStubs.cpp
+index 86bd931c9e..8613dd8145 100644
+--- a/aten/src/ATen/native/VariableMethodStubs.cpp
++++ b/aten/src/ATen/native/VariableMethodStubs.cpp
+@@ -7,8 +7,8 @@
+ namespace at {
+ namespace native {
+ 
+-void _backward(const Tensor& self, TensorList inputs, const c10::optional<Tensor>& gradient_opt, c10::optional<bool> keep_graph, bool create_graph) {
+-  return self._backward(inputs, gradient_opt, keep_graph, create_graph);
++void _backward(const Tensor& self, TensorList inputs, const c10::optional<Tensor>& gradient_opt, c10::optional<bool> keep_graph, bool create_graph, bool low_pri) {
++  return self._backward(inputs, gradient_opt, keep_graph, create_graph, low_pri);
+ }
+ 
+ void set_data(Tensor& self, const Tensor& new_data) {
+diff --git a/aten/src/ATen/native/native_functions.yaml b/aten/src/ATen/native/native_functions.yaml
+index bf52225f18..3754c57aa7 100644
+--- a/aten/src/ATen/native/native_functions.yaml
++++ b/aten/src/ATen/native/native_functions.yaml
+@@ -38,7 +38,7 @@
+   variants: function
+ 
+ # Computes the gradient of current tensor w.r.t. graph leaves.
+-- func: _backward(Tensor self, Tensor[] inputs, Tensor? gradient=None, bool? retain_graph=None, bool create_graph=False) -> ()
++- func: _backward(Tensor self, Tensor[] inputs, Tensor? gradient=None, bool? retain_graph=None, bool create_graph=False, bool low_pri=False) -> ()
+   manual_cpp_binding: True
+   variants: method
+ 
+diff --git a/aten/src/ATen/templates/TensorBody.h b/aten/src/ATen/templates/TensorBody.h
+index afc55ceaaf..970e13f587 100644
+--- a/aten/src/ATen/templates/TensorBody.h
++++ b/aten/src/ATen/templates/TensorBody.h
+@@ -671,6 +671,10 @@ class TORCH_API Tensor {
+     }
+   }
+ 
++  void lp_backward() const {
++	this->_backward({}, {}, c10::nullopt, false, true);
++  }
++
+   /// \fn Tensor detach() const;
+   ///
+   /// Returns a new Tensor, detached from the current graph.
+@@ -863,7 +867,7 @@ public:
+ 
+   void retain_grad() const;
+ 
+-  void _backward(TensorList inputs, const c10::optional<Tensor>& gradient, c10::optional<bool> keep_graph, bool create_graph) const;
++  void _backward(TensorList inputs, const c10::optional<Tensor>& gradient, c10::optional<bool> keep_graph, bool create_graph, bool low_pri=false) const;
+ 
+   const Tensor& requires_grad_(bool _requires_grad=true) const;
+ 
+diff --git a/torch/csrc/autograd/autograd.cpp b/torch/csrc/autograd/autograd.cpp
+index 3630929129..48336ac0dd 100644
+--- a/torch/csrc/autograd/autograd.cpp
++++ b/torch/csrc/autograd/autograd.cpp
+@@ -70,7 +70,7 @@ variable_list run_backward(
+     bool create_graph,
+     const variable_list& inputs,
+     bool allow_unused,
+-    bool accumulate_grad) {
++    bool accumulate_grad, bool low_pri) {
+   size_t num_tensors = outputs.size();
+   edge_list roots;
+   roots.reserve(num_tensors);
+@@ -113,7 +113,7 @@ variable_list run_backward(
+   }
+ 
+   variable_list grad_inputs = Engine::get_default_engine().execute(
+-      roots, grad_outputs, keep_graph, create_graph, accumulate_grad, output_edges);
++      roots, grad_outputs, keep_graph, create_graph, accumulate_grad, output_edges, low_pri);
+   // check if grad_inputs contains None or not base on the allow_unused flag
+   if (!inputs.empty() && !allow_unused) {
+     size_t num_inputs = inputs.size();
+@@ -134,12 +134,12 @@ void backward(
+     const variable_list& grad_tensors,
+     c10::optional<bool> retain_graph,
+     bool create_graph,
+-    const variable_list& inputs) {
++    const variable_list& inputs, bool low_pri) {
+   variable_list gradients = _make_grads(tensors, grad_tensors);
+   if (!retain_graph) {
+     retain_graph = create_graph;
+   }
+-  run_backward(tensors, gradients, retain_graph.value(), create_graph, inputs, /*allow_unused=*/true, /*accumulate_grad=*/true);
++  run_backward(tensors, gradients, retain_graph.value(), create_graph, inputs, /*allow_unused=*/true, /*accumulate_grad=*/true, low_pri);
+ }
+ 
+ variable_list grad(
+@@ -154,7 +154,7 @@ variable_list grad(
+     retain_graph = create_graph;
+   }
+   return run_backward(
+-    outputs, gradients, retain_graph.value(), create_graph, inputs, allow_unused, /*accumulate_grad=*/false);
++    outputs, gradients, retain_graph.value(), create_graph, inputs, allow_unused, /*accumulate_grad=*/false, false);
+ }
+ 
+ 
+diff --git a/torch/csrc/autograd/autograd.h b/torch/csrc/autograd/autograd.h
+index 7f905b21c3..42da006c13 100644
+--- a/torch/csrc/autograd/autograd.h
++++ b/torch/csrc/autograd/autograd.h
+@@ -41,7 +41,7 @@ TORCH_API void backward(
+     const variable_list& grad_tensors = {},
+     c10::optional<bool> retain_graph = c10::nullopt,
+     bool create_graph = false,
+-    const variable_list& inputs = {});
++    const variable_list& inputs = {}, bool low_pri = false);
+ 
+ /// Computes and returns the sum of gradients of outputs with respect to the inputs.
+ ///
+diff --git a/torch/csrc/autograd/engine.cpp b/torch/csrc/autograd/engine.cpp
+index 04d40bf220..944dc0db93 100644
+--- a/torch/csrc/autograd/engine.cpp
++++ b/torch/csrc/autograd/engine.cpp
+@@ -17,6 +17,8 @@
+ #include <c10/core/DeviceGuard.h>
+ #include <c10/util/Optional.h>
+ #include <c10/core/StreamGuard.h>
++#include <c10/cuda/CUDAFunctions.h>
++#include <c10/cuda/CUDAStream.h>
+ 
+ #include <atomic>
+ #include <chrono>
+@@ -237,9 +239,17 @@ Engine::~Engine() {
+   for (auto& queue: device_ready_queues_) {
+     noBackward =  noBackward && queue->empty();
+   }
++
++  for (auto& queue: device_ready_queues_low_pri_) {
++    noBackward =  noBackward && queue->empty();
++  }
++
+   if (noBackward && wait_duration > 0.0f) {
+     for (auto& queue : device_ready_queues_) {
+-     queue->pushShutdownTask();
++      queue->pushShutdownTask();
++    }
++    for (auto& queue : device_ready_queues_low_pri_) {
++      queue->pushShutdownTask();
+     }
+     // Do not wait for termination of global threads on Windows
+     // Because CRT terminates DLL threads before calling
+@@ -425,7 +435,7 @@ auto Engine::thread_main(const std::shared_ptr<GraphTask>& graph_task) -> void {
+       if (worker_device != base_owner) {
+         // Synchronize outstanding_tasks_ with queue mutex
+         std::atomic_thread_fence(std::memory_order_release);
+-        ready_queue_by_index(local_graph_task->cpu_ready_queue_, base_owner)
++        ready_queue_by_index(local_graph_task->cpu_ready_queue_, base_owner, local_graph_task->is_low_pri_)
+             ->push(NodeTask(local_graph_task, nullptr, InputBuffer(0)));
+       }
+     }
+@@ -455,7 +465,7 @@ void Engine::reentrant_thread_init() {
+     }
+     set_device(graph_task->owner_);
+     // set the local_ready_queue to the ready queue on the graph_task->owner_ device
+-    local_ready_queue = ready_queue_by_index(graph_task->cpu_ready_queue_, graph_task->owner_);
++    local_ready_queue = ready_queue_by_index(graph_task->cpu_ready_queue_, graph_task->owner_, graph_task->is_low_pri_);
+     total_depth = graph_task->reentrant_depth_;
+     thread_main(graph_task);
+   }
+@@ -814,7 +824,7 @@ void Engine::evaluate_function(
+                        opt_next_stream);
+ 
+       if (is_ready) {
+-        auto queue = ready_queue(cpu_ready_queue, input_buffer.device());
++        auto queue = ready_queue(cpu_ready_queue, input_buffer.device(), graph_task->is_low_pri_);
+         queue->push(
+             NodeTask(graph_task, next.function, std::move(input_buffer)));
+       } else {
+@@ -831,7 +841,7 @@ void Engine::evaluate_function(
+                        opt_parent_stream,
+                        opt_next_stream);
+       if (is_ready) {
+-        auto queue = ready_queue(cpu_ready_queue, input_buffer.device());
++        auto queue = ready_queue(cpu_ready_queue, input_buffer.device(), graph_task->is_low_pri_);
+         queue->push(
+             NodeTask(graph_task, next.function, std::move(input_buffer)));
+         not_ready.erase(not_ready_it);
+@@ -881,7 +891,7 @@ auto Engine::execute(const edge_list& roots,
+                      bool keep_graph,
+                      bool create_graph,
+                      bool accumulate_grad,
+-                     const edge_list& outputs) -> variable_list {
++                     const edge_list& outputs, bool low_pri) -> variable_list {
+   // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+   validate_outputs(roots, const_cast<variable_list&>(inputs), [](const std::string& msg) {
+     return msg;
+@@ -900,6 +910,8 @@ auto Engine::execute(const edge_list& roots,
+       /* depth */ not_reentrant_backward_call ? 0 : total_depth + 1,
+       /* cpu_ready_queue */ local_ready_queue);
+ 
++  graph_task->is_low_pri_ = low_pri;
++
+   // If we receive a single root, skip creating extra root node
+   bool skip_dummy_node = roots.size() == 1;
+   auto graph_root = skip_dummy_node ?
+@@ -954,7 +966,7 @@ std::shared_ptr<at::ivalue::Future> Engine::execute_with_graph_task(
+   // Lock mutex for GraphTask.
+   std::unique_lock<std::mutex> lock(graph_task->mutex_);
+ 
+-  auto queue = ready_queue(graph_task->cpu_ready_queue_, input_buffer.device());
++  auto queue = ready_queue(graph_task->cpu_ready_queue_, input_buffer.device(), graph_task->is_low_pri_);
+ 
+   // worker_device == NO_DEVICE it's a CPU thread and it's trying to drive the
+   // autograd engine with corresponding GraphTask, and its NOT a re-entrant call
+@@ -1069,22 +1081,24 @@ size_t Engine::ready_queue_size(const std::shared_ptr<GraphTask>& graph_task, at
+     // out of bound error.
+     return 0;
+   }
+-  return ready_queue(graph_task->cpu_ready_queue_, device)->size();
++  return ready_queue(graph_task->cpu_ready_queue_, device, graph_task->is_low_pri_)->size();
+ }
+ 
+ // CPU ready queue is per GraphTask, but CUDA device ready queues are shared across all graph tasks
+-auto Engine::ready_queue(std::shared_ptr<ReadyQueue> cpu_ready_queue, at::Device device) -> std::shared_ptr<ReadyQueue>{
++auto Engine::ready_queue(std::shared_ptr<ReadyQueue> cpu_ready_queue, at::Device device, bool low_pri) -> std::shared_ptr<ReadyQueue>{
+   if (device.type() == at::kCPU || device.type() == at::DeviceType::Meta) {
+     // return the cpu ready queue passed in
+     TORCH_INTERNAL_ASSERT(cpu_ready_queue);
+     return cpu_ready_queue;
+   } else {
++    if (low_pri)
++      return device_ready_queues_low_pri_.at(device.index());
+     // See Note [Allocating GPUs to autograd threads]
+     return device_ready_queues_.at(device.index());
+   }
+ }
+ 
+-auto Engine::ready_queue_by_index(std::shared_ptr<ReadyQueue> cpu_ready_queue, int device_index) -> std::shared_ptr<ReadyQueue> {
++auto Engine::ready_queue_by_index(std::shared_ptr<ReadyQueue> cpu_ready_queue, int device_index, bool low_pri) -> std::shared_ptr<ReadyQueue> {
+   if (device_index == CPU_DEVICE) {
+     // return the cpu ready queue passed in
+     TORCH_INTERNAL_ASSERT(cpu_ready_queue);
+@@ -1095,6 +1109,8 @@ auto Engine::ready_queue_by_index(std::shared_ptr<ReadyQueue> cpu_ready_queue, i
+     // See Note [Allocating GPUs to autograd threads]
+     // NB: This function would become obsolete if we truly allocated a CPU thread
+     // per device, rather than colocate.
++    if (low_pri)
++      return device_ready_queues_low_pri_.at(device_index);
+     return device_ready_queues_.at(device_index);
+   }
+ }
+@@ -1116,16 +1132,34 @@ auto Engine::start_device_threads() -> void {
+     queue.reset(new ReadyQueue());
+   }
+ 
++  device_ready_queues_low_pri_ = std::vector<std::shared_ptr<ReadyQueue>>(num_devices);
++  for (auto& queue : device_ready_queues_low_pri_)    {
++    queue.reset(new ReadyQueue());
++  }
++
+   thread_pool_shared_ = std::make_shared<ThreadPoolShared>();
+ 
+   for (int i = 0; i < num_devices; ++i) {
+-    std::thread t(&Engine::thread_init, this, i, device_ready_queues_[i], true);
++    std::thread t([=] {
++      c10::cuda::set_device(i);
++      auto stream = c10::cuda::getStreamFromPool(true, i);
++      c10::cuda::setCurrentCUDAStream(stream);
++      this->thread_init(i, device_ready_queues_[i], true);
++    });
+     t.detach();
++
++    std::thread t1([=] {
++      c10::cuda::set_device(i);
++      auto stream = c10::cuda::getStreamFromPool(false, i);
++      c10::cuda::setCurrentCUDAStream(stream);
++      this->thread_init(i, device_ready_queues_low_pri_[i], true);
++    });
++    t1.detach();
+   }
+   // Wait for the threads to start
+   {
+     std::unique_lock<std::mutex> lk(non_reentrant_device_thread_mutex_);
+-    while(non_reentrant_device_thread_count_.load() != static_cast<uint32_t>(num_devices)) {
++    while(non_reentrant_device_thread_count_.load() != 2 * static_cast<uint32_t>(num_devices)) {
+       non_reentrant_device_thread_condvar_.wait(lk);
+     }
+   }
+diff --git a/torch/csrc/autograd/engine.h b/torch/csrc/autograd/engine.h
+index a6a4436de6..38067731e7 100644
+--- a/torch/csrc/autograd/engine.h
++++ b/torch/csrc/autograd/engine.h
+@@ -48,6 +48,7 @@ void validate_outputs(
+ // GraphTask holds metadata needed for a single execution of backward()
+ struct GraphTask: std::enable_shared_from_this<GraphTask> {
+   std::atomic<uint64_t> outstanding_tasks_{0};
++  bool is_low_pri_{false};
+   // Indicates if an error occurred while executing any task.  When this is
+   // true, it signals all threads to stop executing.
+   std::atomic_bool has_error_{false};
+@@ -285,7 +286,7 @@ struct TORCH_API Engine {
+       bool keep_graph,
+       bool create_graph,
+       bool accumulate_grad,
+-      const edge_list& outputs = {});
++      const edge_list& outputs = {}, bool low_pri = false);
+ 
+   // Given a pre-populated GraphTask and GraphRoot, computes the backward pass
+   // for the graph.
+@@ -341,10 +342,10 @@ struct TORCH_API Engine {
+ 
+   std::shared_ptr<ReadyQueue> ready_queue(
+       std::shared_ptr<ReadyQueue> cpu_ready_queue,
+-      at::Device device);
++      at::Device device, bool low_pri);
+   std::shared_ptr<ReadyQueue> ready_queue_by_index(
+       std::shared_ptr<ReadyQueue> cpu_ready_queue,
+-      int device_index);
++      int device_index, bool low_pri);
+   // start device threads (CUDA, XLA, etc.) in Engine,
+   // note that it does NOT start CPU thread.
+   void start_device_threads();
+@@ -358,6 +359,7 @@ struct TORCH_API Engine {
+   std::once_flag start_device_threads_flag_;
+   // Safe to read device_ready_queues_ without synchronization after initialization
+   std::vector<std::shared_ptr<ReadyQueue>> device_ready_queues_;
++  std::vector<std::shared_ptr<ReadyQueue>> device_ready_queues_low_pri_;
+ 
+   std::vector<std::function<void()>> final_callbacks_;
+   // To protect reads and writes to final_callbacks_
+diff --git a/torch/csrc/autograd/python_engine.cpp b/torch/csrc/autograd/python_engine.cpp
+index 213af2d657..18ee60b921 100644
+--- a/torch/csrc/autograd/python_engine.cpp
++++ b/torch/csrc/autograd/python_engine.cpp
+@@ -105,13 +105,13 @@ variable_list PythonEngine::execute(
+     bool keep_graph,
+     bool create_graph,
+     bool accumulate_grad,
+-    const edge_list& outputs) {
++    const edge_list& outputs, bool low_pri) {
+   TORCH_CHECK(!PyGILState_Check(), "The autograd engine was called while holding the GIL. If you are using the C++ "
+                                    "API, the autograd engine is an expensive operation that does not require the "
+                                    "GIL to be held so you should release it with 'pybind11::gil_scoped_release no_gil;'"
+                                    ". If you are not using the C++ API, please report a bug to the pytorch team.")
+   try {
+-    return Engine::execute(roots, inputs, keep_graph, create_graph, accumulate_grad, outputs);
++    return Engine::execute(roots, inputs, keep_graph, create_graph, accumulate_grad, outputs, low_pri);
+   } catch (python_error& e) {
+     e.restore();
+     throw;
+diff --git a/torch/csrc/autograd/python_engine.h b/torch/csrc/autograd/python_engine.h
+index 3a54484d4d..47d5746d6f 100644
+--- a/torch/csrc/autograd/python_engine.h
++++ b/torch/csrc/autograd/python_engine.h
+@@ -24,7 +24,7 @@ struct PythonEngine : public Engine {
+       bool keep_graph,
+       bool create_graph,
+       bool accumulate_grad,
+-      const edge_list& outputs = {}) override;
++      const edge_list& outputs = {}, bool low_pri = false) override;
+ 
+   std::shared_ptr<at::ivalue::Future> execute_with_graph_task(
+       const std::shared_ptr<GraphTask>& graph_task,
+diff --git a/torch/csrc/autograd/variable.cpp b/torch/csrc/autograd/variable.cpp
+index 75ba7f4985..7ea7bb31d0 100644
+--- a/torch/csrc/autograd/variable.cpp
++++ b/torch/csrc/autograd/variable.cpp
+@@ -352,7 +352,7 @@ struct VariableHooks final : at::impl::VariableHooksInterface {
+   void retain_grad(const Tensor & self) const override;
+   void _backward(const Tensor& self, at::TensorList inputs,
+     const c10::optional<Tensor>& gradient, c10::optional<bool> keep_graph,
+-    bool create_graph) const override;
++    bool create_graph, bool low_pri) const override;
+   void requires_grad_(const Tensor& self, bool _requires_grad) const override;
+ };
+ 
+@@ -470,12 +470,12 @@ void VariableHooks::_backward(
+     at::TensorList inputs,
+     const c10::optional<Tensor>& gradient,
+     c10::optional<bool> keep_graph,
+-    bool create_graph) const {
++    bool create_graph, bool low_pri) const {
+   // TODO torch::autograd::backward should take the c10::optional<Tensor> gradient directly
+   // instead of us having to unwrap it to Tensor _gradient here.
+   Tensor _gradient = gradient.has_value() ? *gradient : Tensor();
+   std::vector<torch::autograd::Variable> input_vars(inputs.begin(), inputs.end());
+-  torch::autograd::backward({self}, {_gradient}, keep_graph, create_graph, input_vars);
++  torch::autograd::backward({self}, {_gradient}, keep_graph, create_graph, input_vars, low_pri);
+ }
+ 
+ void VariableHooks::requires_grad_(const Tensor& self, bool _requires_grad) const {
