@@ -111,6 +111,9 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
         self.workDir = workDir
         self.processes = []  # from subprocess calls used for launching runtime.
         self.nextTagStartOffset = 1
+        self.ongoingJobs = {} # Dict of contexts of ongoing jobs. Indexed by job name.
+        f = open("runtimeResult.data", "w")
+        f.close()
     
     def _dispatch(self, method, params):
         """ Custom dispatcher for XML-RPC server. """
@@ -151,7 +154,8 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
 
         threadList = []
         def requestScheduleTraining(proxy, name, jobInJson, dataDir, tensorTagsInJson, jobRankToGlobalRankInJson):
-            print(proxy.scheduleTraining(name, jobInJson, dataDir, tensorTagsInJson, jobRankToGlobalRankInJson))
+            # print(proxy.scheduleTraining(name, jobInJson, dataDir, tensorTagsInJson, jobRankToGlobalRankInJson))
+            proxy.scheduleTraining(name, jobInJson, dataDir, tensorTagsInJson, jobRankToGlobalRankInJson)
         for rank in range(gpusUsed):
             location = self.locations[rank]
             moduleDesc = moduleDescList[rank]
@@ -163,14 +167,28 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
         for thread in threadList:
             thread.join()
 
+        self.ongoingJobs[jobName] = {"iterTime": 0, "gpuUsec": 0, "gpusUsed": gpusUsed, "gpusFinished": 0, "globalBatchSize": job.globalBatchSize}
+
         # for rank in range(gpusUsed):
         #     location = self.locations[rank]
         #     moduleDesc = moduleDescList[rank] # job.dumpSingleRunnableModule(rank)
         #     print(location.getProxy().scheduleTraining(jobName, moduleDesc, "SYNTHETIC", tensorTagsInJson, jobRankToGlobalRankInJson))
         return 'done'
 
-    def export_notifyTrainingFinished(self, runtimeAddress: str, name: str, remainingJobCount: int, iterTime: float):
-        print("Training for %s is completed at %s. (%d jobs are remaining) iterTime: %3.1f" % (name, runtimeAddress, remainingJobCount, iterTime))
+    def export_notifyTrainingFinished(self, runtimeAddress: str, name: str, remainingJobCount: int, fpTime: float, bpTime: float, iterTime: float):
+        print("Training for %s is completed at %s. (%d jobs are remaining) fp: %3.1f bp: %3.1f iterTime: %3.1f" % (name, runtimeAddress, remainingJobCount, fpTime, bpTime, iterTime))
+        self.ongoingJobs[name]["iterTime"] = max(self.ongoingJobs[name]["iterTime"], iterTime)
+        self.ongoingJobs[name]["gpuUsec"] += fpTime + bpTime
+        self.ongoingJobs[name]["gpusFinished"] += 1
+        if self.ongoingJobs[name]["gpusFinished"] == self.ongoingJobs[name]["gpusUsed"]:
+            print("Training for %s is completed entirely. GpusUsed: %d  IterTime: %3.1f ms  GpuMsec: %3.1f ms" %
+                    (name, self.ongoingJobs[name]["gpusUsed"], self.ongoingJobs[name]["iterTime"] / 1000, self.ongoingJobs[name]["gpuUsec"] / 1000))
+            print("  %2d    %2d    %3.1f   %3.1f " %
+                    (self.ongoingJobs[name]["globalBatchSize"], self.ongoingJobs[name]["gpusUsed"], self.ongoingJobs[name]["iterTime"] / 1000, self.ongoingJobs[name]["gpuUsec"] / 1000))
+            f = open("runtimeResult.data", "a")
+            f.write("  %2d    %2d   %4.1f  %4.1f\n" %
+                    (self.ongoingJobs[name]["globalBatchSize"], self.ongoingJobs[name]["gpusUsed"], self.ongoingJobs[name]["iterTime"] / 1000, self.ongoingJobs[name]["gpuUsec"] / 1000))
+            f.close()
         return 'done'
 
     def export_addGpuNode(self):
@@ -247,7 +265,7 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
             signal.signal(signal.SIGINT, sigkill_handler)
             # signal.signal(signal.SIGTERM, sigkill_handler)
         
-        time.sleep(5 + (10 if profile else 0))
+        time.sleep(5 + (15 if profile else 0))
         for location in self.locations:
             print(location.getProxy().poke())
 
@@ -291,7 +309,8 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
 
         threadList = []
         def requestInitCommGroups(proxy, jobName, commGroupsInJson):
-            print(proxy.initCommGroups(jobName, commGroupsInJson))
+            # print(proxy.initCommGroups(jobName, commGroupsInJson))
+            proxy.initCommGroups(jobName, commGroupsInJson)
         for i, location in enumerate(self.locations):
             thread = threading.Thread(name='init_commGroups%d'%i, target=requestInitCommGroups,
                                       args=(location.getProxy(), jobName, commGrpDictWithGlobalRanksInJson,))

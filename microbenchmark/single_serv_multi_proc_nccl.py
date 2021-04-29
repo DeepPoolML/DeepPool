@@ -21,7 +21,9 @@ def run(rank, size):
 		end_pt = [20100] # [40, 1040, 10040, 20040, 30040]
 
 		# tensorSizes = [(1, 64, 224, 224), (2, 64, 224, 224), (4, 64, 224, 224), (16, 64, 112, 112), (16, 16, 224, 224)]
-		tensorSizes = [(1, 16, 112, 112), (1, 64, 112, 112), (1, 64, 224, 224), (2, 64, 224, 224), (4, 64, 224, 224), (16, 64, 112, 112), (16, 16, 224, 224)]
+		# tensorSizes = [(1, 16, 112, 112), (1, 64, 112, 112), (1, 64, 224, 224), (2, 64, 224, 224), (4, 64, 224, 224), (16, 64, 112, 112), (16, 16, 224, 224)]
+		tensorSizes = [(2**x, 4, 7, 7) for x in range(20)]
+		data = []
 		if rank == 0:
 			for tensorSize in tensorSizes:
 				tensorReadyTimes = []
@@ -59,6 +61,10 @@ def run(rank, size):
 						print('average per send-recv comm (ms): ', dif*1000/(end_idx-start_idx))
 						print("tneosrReadyTime: %.3f ms" % (sum(tensorReadyTimes)/ len(tensorReadyTimes)))
 						print("SentTime: %.3f ms" % (sum(sentTimes)/ len(sentTimes)))
+						data.append( (tensor.element_size()*tensor.nelement(), dif*1000/(end_idx-start_idx), sum(sentTimes)/ len(sentTimes)) )
+			print("\n # tensorSize     end2endTime(ms)   sentTime(ms)")
+			for datum in data:
+				print("  %12d       %.3f       %.3f" % datum)
 		else:
 			for tensorSize in tensorSizes:
 				tensorReadyTimes = []

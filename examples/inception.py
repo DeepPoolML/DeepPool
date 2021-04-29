@@ -5,8 +5,15 @@ from torch import nn, Tensor
 import torch.nn.functional as F
 # from .utils import load_state_dict_from_url
 from typing import Callable, Any, Optional, Tuple, List
-from costSimulator import CostSim
-from costSimulator import GpuProfiler
+import os, sys
+
+currentdir = os.path.dirname(os.path.realpath(__file__))
+parentdir = os.path.dirname(currentdir)
+sys.path.append(parentdir)
+from parallelizationPlanner import CostSim
+from parallelizationPlanner import GpuProfiler
+from clusterClient import ClusterClient
+from jobDescription import TrainingJob
 
 __all__ = ['Inception3', 'inception_v3', 'InceptionOutputs', '_InceptionOutputs']
 
@@ -557,40 +564,40 @@ globalBatch = 16
 totalGpus = 4
 
 # cs.searchBestSplitsV2(totalGpus, globalBatch)
-cs.searchBestSplits(8, globalBatch)
+# cs.searchBestSplits(8, globalBatch)
 
 
-# for startLayerId in [6, 15, 24, 33]:
-#     startLayer = cs.layers[startLayerId]
+for startLayerId in [6, 15, 24, 33]:
+    startLayer = cs.layers[startLayerId]
 
-#     bestMultiChainTime = 9999999999
-#     bestJiaTime = 9999999999
-#     startConfig = cs.listConfigOptions(startLayer, globalBatch, totalGpus)[0]
-#     startAndEndConfigsToTime = {}
-#     startAndEndConfigsToTimeJia = {}
-#     for startConfig in cs.listConfigOptions(startLayer, globalBatch, totalGpus):
-#         print(startConfig)
-#         startGpuTime = cs.benchGpuTime(startLayer, startConfig)
-#         (endLayer, configToTimeDict, t) = cs.searchMultiChain(startLayer, startConfig, globalBatch, totalGpus)
-#         (jiaEndLayer, jiaConfigToTimeDict, jiaT) = cs.runMultiChainZhihao(startLayer, startConfig, globalBatch, totalGpus)
-#         startAndEndConfigsToTime[startConfig] = configToTimeDict
-#         startAndEndConfigsToTimeJia[startConfig] = jiaConfigToTimeDict
-#         for config in configToTimeDict:
-#             multiChainTime = configToTimeDict[config][0] + startGpuTime
-#             jiaTime = jiaConfigToTimeDict[config][0] + startGpuTime
-#             print(" lastConfig: %20s,   multi-chain algo: %7.1f ms   Zhihao's time: %7.1f ms" % (str(config), multiChainTime, jiaTime))    
-#             bestMultiChainTime = min(bestMultiChainTime, multiChainTime)
-#             bestJiaTime = min(bestJiaTime, jiaTime)
+    bestMultiChainTime = 9999999999
+    bestJiaTime = 9999999999
+    startConfig = cs.listConfigOptions(startLayer, globalBatch, totalGpus)[0]
+    startAndEndConfigsToTime = {}
+    startAndEndConfigsToTimeJia = {}
+    for startConfig in cs.listConfigOptions(startLayer, globalBatch, totalGpus):
+        print(startConfig)
+        startGpuTime = cs.benchGpuTime(startLayer, startConfig)
+        # (endLayer, configToTimeDict, t) = cs.searchMultiChain(startLayer, startConfig, globalBatch, totalGpus)
+        (jiaEndLayer, jiaConfigToTimeDict, jiaT) = cs.runMultiChainZhihao(startLayer, startConfig, globalBatch, totalGpus)
+        # startAndEndConfigsToTime[startConfig] = configToTimeDict
+        startAndEndConfigsToTimeJia[startConfig] = jiaConfigToTimeDict
+        for config in jiaConfigToTimeDict:
+            multiChainTime = jiaConfigToTimeDict[config][0] + startGpuTime
+            jiaTime = jiaConfigToTimeDict[config][0] + startGpuTime
+            print(" lastConfig: %20s,   multi-chain algo: %7.1f ms   Zhihao's time: %7.1f ms" % (str(config), multiChainTime, jiaTime))    
+            bestMultiChainTime = min(bestMultiChainTime, multiChainTime)
+            bestJiaTime = min(bestJiaTime, jiaTime)
 
-#         bestConfigToTimeDict = (999999999, None)
-#         bestEndConfig = None
-#         for config in configToTimeDict:
-#             if bestConfigToTimeDict[0] > configToTimeDict[config][0]:
-#                 bestConfigToTimeDict = configToTimeDict[config]
-#                 bestEndConfig = config
-#         cs.displayMultiChainResult(endLayer, bestEndConfig, t, bestConfigToTimeDict[1])
+        bestConfigToTimeDict = (999999999, None)
+        bestEndConfig = None
+        for config in jiaConfigToTimeDict:
+            if bestConfigToTimeDict[0] > jiaConfigToTimeDict[config][0]:
+                bestConfigToTimeDict = jiaConfigToTimeDict[config]
+                bestEndConfig = config
+        cs.displayMultiChainResult(jiaEndLayer, bestEndConfig, jiaT, bestConfigToTimeDict[1])
 
-#     print("Best multi-chain: %.2f  best jia: %.2f" % (bestMultiChainTime, bestJiaTime) )
+    print("Best multi-chain: %.2f  best jia: %.2f" % (bestMultiChainTime, bestJiaTime) )
 
 
 profiler.saveProfile()

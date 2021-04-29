@@ -31,7 +31,32 @@ class Timetrace:
     cudaEvents = []
     iterStartCpuTime = None
     iterMinibatchId = None
-    timeSyncPeriod = 5
+    timeSyncPeriod = 1 # Changing this value to larger one didn't affect training time.
+    fpTimes = []
+    bpTimes = []
+    iterTimes = []
+
+    @classmethod
+    def reset(cls):
+        cls.traces.clear()
+        cls.cudaEvents.clear()
+        cls.iterStartCpuTime = None
+        cls.iterMinibatchId = None
+        cls.fpTimes.clear()
+        cls.bpTimes.clear()
+        cls.iterTimes.clear()
+
+    @classmethod
+    def getStats(cls, itersToSkip = 50):
+        fpt = cls.fpTimes[itersToSkip:]
+        bpt = cls.bpTimes[itersToSkip:]
+        itert = cls.iterTimes[itersToSkip:]
+        fpAvg = sum(fpt) / len(fpt)
+        bpAvg = sum(bpt) / len(bpt)
+        iterAvg = sum(itert) / len(itert)
+        print(" timetrace stats: %s" % str((fpAvg, bpAvg, iterAvg)))
+        return (fpAvg, bpAvg, iterAvg)
+
 
     @classmethod
     def buildTablesForEventTypes(cls):
@@ -58,8 +83,8 @@ class Timetrace:
     def cudaInitIter(cls, minibatch_id):
         cls.iterMinibatchId = minibatch_id
 
-        if minibatch_id % cls.timeSyncPeriod != 0: # do this every 3 iteration.
-            return
+        # if minibatch_id % cls.timeSyncPeriod != 0: # do this every 3 iteration.
+        #     return
 
         # synchronize cuda. take cpu time, insert cuda event for initial stuff.. 
         if len(cls.cudaEvents) != 0:
@@ -73,8 +98,8 @@ class Timetrace:
     
     @classmethod
     def cudaFinishIter(cls, minibatch_id):
-        if minibatch_id % cls.timeSyncPeriod != (cls.timeSyncPeriod - 1): # do this every 3 iteration.
-            return
+        # if minibatch_id % cls.timeSyncPeriod != (cls.timeSyncPeriod - 1): # do this every 3 iteration.
+        #     return
         
         # synchronize cuda. flush all timing data.
         torch.cuda.synchronize()
@@ -82,6 +107,13 @@ class Timetrace:
             cls.cudaEvents.clear()
             return
         
+        # Initialize variables for computing stats.
+        assert cls.timeSyncPeriod == 1
+        passiveFp = False
+        passiveBp = False
+        fpStartTime = 0
+        bpStartTime = 0
+
         # Flush all cuda events to traces.
         startEvent, startEid, startBatchId, startComment = cls.cudaEvents[0]
         cls.traces.append((cls.iterStartCpuTime, startEid, startBatchId, startComment))
@@ -90,6 +122,28 @@ class Timetrace:
             cudaElapsedMs = startEvent.elapsed_time(cudaEv)
             absTime = cls.iterStartCpuTime + (cudaElapsedMs / 1000.)
             cls.traces.append((absTime, eid, batchId, comment))
+
+            # Take the stats 
+            if eid == EventTypes.target_shuffle:
+                fpStartTime = absTime
+            elif eid == "recv_samples" and (absTime - fpStartTime) * 1000000 < 10:
+                passiveFp = True
+                fpStartTime = 0
+            elif (passiveFp and fpStartTime == 0) and eid == EventTypes.recv_samples_done:
+                fpStartTime = absTime
+            elif eid == EventTypes.fp_done:
+                cls.fpTimes.append(1000000*(absTime - fpStartTime))
+            elif eid == EventTypes.bp_start:
+                bpStartTime = absTime
+            elif eid == EventTypes.bp_remainder_start and bpStartTime == 0:
+                passiveBp = True
+            elif (passiveBp and bpStartTime == 0) and eid == EventTypes.recv_samples_done:
+                bpStartTime = absTime
+            elif eid == EventTypes.bp_done:
+                cls.iterTimes.append(1000000*(absTime - fpStartTime))
+                cls.bpTimes.append(1000000*(absTime - bpStartTime))
+                bpStartTime = 0
+                passiveBp = False
 
             # cls.iterMinibatchId
 

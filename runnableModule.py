@@ -261,8 +261,9 @@ class SendSamplesFunc(torch.autograd.Function):
         for idx, item in enumerate(sendList):
             # commHandler.send(splittedOutputs[idx].clone(), item["name"], item["dest"])
             commHandler.sendAsync(splittedOutputs[idx], item["name"], item["dest"])
-        commHandler.waitForAll() # TODO: testing if this is faster or not..
-        output = splittedOutputs[-1].clone()
+        # commHandler.waitForAll() # TODO: testing if this is faster or not..
+        # output = splittedOutputs[-1].clone()
+        output = splittedOutputs[-1]
         if output.size()[0] == 0:
             TT.cudaRecord(EventTypes.send_samples_done_idle)
         else:
@@ -338,7 +339,7 @@ class ReceiveSamplesFunc(torch.autograd.Function):
         for rxIdx, rxItem in enumerate(recvList):
             ctx.commHandler.sendAsync(splittedOutputs[rxIdx], rxItem["name"]+"_back", rxItem["src"])
 
-        ctx.commHandler.waitForAll()
+        # ctx.commHandler.waitForAll()
         
         output = splittedOutputs[-1]
         if output.size()[0] == 0:

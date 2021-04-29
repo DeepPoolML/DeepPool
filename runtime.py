@@ -42,7 +42,7 @@ import pyprof
 
 class JobContext:
     def __init__(self, model: nn.Module, name: str, dataLoader, commHandler, targetShuffler,
-            epochsToTrain = 1, optimizer = None, criterion = nn.CrossEntropyLoss(), device="cpu"):
+            epochsToTrain = 1, optimizer = None, criterion = None, device="cpu"):
         self.model = model
         self.name = name
         self.dataLoader = dataLoader
@@ -50,7 +50,7 @@ class JobContext:
         self.commHandler = commHandler
         self.targetShuffler = targetShuffler
         self.optimizer = optimizer
-        self.criterion = criterion
+        self.criterion = nn.CrossEntropyLoss().cuda(device) if criterion == None else criterion
         self.device = device
         self.epochsToTrain = epochsToTrain
         self.epoch = 0
@@ -88,7 +88,7 @@ class JobContext:
         else:
             data = None
             targetRaw = None
-        # optimizer.zero_grad()
+        self.optimizer.zero_grad()
         nvtx.range_pop()
 
 
@@ -100,6 +100,7 @@ class JobContext:
             target = self.targetShuffler.shuffle(targetRaw)
         nvtx.range_pop()
         TT.cudaRecord(EventTypes.target_shuffle)
+        torch.cuda.synchronize(device=self.device)
 
         Logger.log("forward pass is starting.", level=0)
         nvtx.range_push("Forward Pass")
@@ -135,7 +136,7 @@ class JobContext:
         if self.iter in self.itersToCapture and (self.iter + 1) not in self.itersToCapture:
             profiler.stop()
         
-        # optimizer.step()
+        self.optimizer.step()
 
         TT.cudaFinishIter(self.iter)
         self.iter += 1
@@ -238,10 +239,11 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
         loader = VisionDataLoaderGenerator.genDataLoader(jobInJson, dataDir, syntheticDataLength=320000)
         targetShuffler = TargetShuffler(commHandler, jobSpec["rank"], jobSpec["initialBatchSizes"],
                                         jobSpec["sampleIndices"], device=self.device)
-        job = JobContext(module, name, loader, commHandler, targetShuffler, device=self.device)
+        optimizer = torch.optim.SGD(module.parameters(), lr=0.1)
+        job = JobContext(module, name, loader, commHandler, targetShuffler, optimizer=optimizer, device=self.device)
         
-        job.limit_iters_to_train(1000)
-        # job.limit_iters_to_train(200)
+        # job.limit_iters_to_train(1000)
+        job.limit_iters_to_train(200)
         self.jobs.append(job)
         Logger.log("Scheduled a training job (%s). Total jobs on queue: %d" % (name, len(self.jobs)))
         return "Scheduled a training job. @ %s!"%self.myAddr
@@ -276,10 +278,12 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
                 for itersRan in range(job.itersPerPoll):
                     job.train_single_iter()
                     if job.isCompleted():
-                        self.getCoordinatorProxy().notifyTrainingFinished(self.myAddr, job.name, len(self.jobs) - 1, job.iterTimeDuringLastRun)
+                        stats = TT.getStats()
+                        self.getCoordinatorProxy().notifyTrainingFinished(self.myAddr, job.name, len(self.jobs) - 1, *stats) # job.iterTimeDuringLastRun
                         Logger.log("Training job <%s> is finished." % job.name, flush=True)
                         self.jobs.pop(0)
                         TT.printAllTraces()
+                        TT.reset()
                         break
             elapsed = time.time() - startTime
             job.iterTimeDuringLastRun = (1000.0*elapsed)/ job.itersPerPoll

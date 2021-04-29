@@ -100,6 +100,8 @@ def printAllTrace():
     rankPrevEvTime = [0 for i in range(maxRank + 1)]
     fpStartTime = [0 for i in range(maxRank + 1)]
     bpStartTime = [0 for i in range(maxRank + 1)]
+    lastStartTime = [0 for i in range(maxRank + 1)]
+    activeTime = [0 for i in range(maxRank + 1)]
     fpTimes = [[] for i in range(maxRank + 1)]
     bpTimes = [[] for i in range(maxRank + 1)]
     iterTimes = [[] for i in range(maxRank + 1)]
@@ -131,6 +133,7 @@ def printAllTrace():
             passStartTime[rank] = time
         elif event == "target_shuffle":
             fpStartTime[rank] = time
+            lastStartTime[rank] = time
         elif event == "recv_samples" and (time - fpStartTime[rank]) * 1000000 < 10:
             if not passiveFps[rank]:
                 print("rank%d is passiveFP"%rank)
@@ -138,17 +141,34 @@ def printAllTrace():
             fpStartTime[rank] = 0
         elif (passiveFps[rank] and fpStartTime[rank] == 0) and event == "recv_samples_done":
             fpStartTime[rank] = time
+            lastStartTime[rank] = time
+        elif event == "send_samples_done_idle":
+            activeTime[rank] += time - lastStartTime[rank]
+            lastStartTime[rank] = 0
         elif event == "fp_done":
-            fpTimes[rank].append(1000000*(time - fpStartTime[rank]))
+            if lastStartTime[rank] != 0:
+                activeTime[rank] += time - lastStartTime[rank]
+                lastStartTime[rank] = 0
+            fpTimes[rank].append(1000000*(activeTime[rank]))
+            activeTime[rank] = 0
+            # fpTimes[rank].append(1000000*(time - fpStartTime[rank]))
         elif event == "bp_start":
             bpStartTime[rank] = time
+            lastStartTime[rank] = time
         elif event == "bp_remainder_start" and bpStartTime[rank] == 0:
             passiveBps[rank] = True
         elif (passiveBps[rank] and bpStartTime[rank] == 0) and event == "recv_samples_done":
             bpStartTime[rank] = time
+            lastStartTime[rank] = time
         elif event == "bp_done":
+            if lastStartTime[rank] != 0:
+                activeTime[rank] += time - lastStartTime[rank]
+                lastStartTime[rank] = 0
+            # bpTimes[rank].append(1000000*(time - bpStartTime[rank]))
+            bpTimes[rank].append(1000000*(activeTime[rank]))
+            activeTime[rank] = 0
+
             iterTimes[rank].append(1000000*(time - fpStartTime[rank]))
-            bpTimes[rank].append(1000000*(time - bpStartTime[rank]))
             suffix = "rank: %d  fp: %4.f bp: %4.f iter: %4.f" % (rank, fpTimes[rank][-1], bpTimes[rank][-1], iterTimes[rank][-1])
             bpStartTime[rank] = 0
             passiveBps[rank] = False

@@ -3,10 +3,17 @@ from torch import Tensor
 import torch.nn as nn
 # from .utils import load_state_dict_from_url
 from typing import Type, Any, Callable, Union, List, Optional
-# For cost estimator
+import os, sys
+import time
 from torch.nn.common_types import _size_1_t, _size_2_t, _size_3_t
-from costSimulator import CostSim
-from costSimulator import GpuProfiler
+
+currentdir = os.path.dirname(os.path.realpath(__file__))
+parentdir = os.path.dirname(currentdir)
+sys.path.append(parentdir)
+from parallelizationPlanner import CostSim
+from parallelizationPlanner import GpuProfiler
+from clusterClient import ClusterClient
+from jobDescription import TrainingJob
 
 __all__ = ['ResNet', 'resnet18', 'resnet34', 'resnet50', 'resnet101',
            'resnet152', 'resnext50_32x4d', 'resnext101_32x8d',
@@ -402,18 +409,144 @@ def wide_resnet101_2(pretrained: bool = False, progress: bool = True, **kwargs: 
                    pretrained, progress, **kwargs)
 
 
-profiler = GpuProfiler("cuda")
-profiler.loadProfile()
-cs = CostSim(profiler)
-model = resnet50()
+# profiler = GpuProfiler("cuda")
+# profiler.loadProfile()
+# cs = CostSim(profiler)
+# # model = resnet50()
 # model = resnet18()
-# model = resnet34()
-cs.printAllLayers()
-cs.computeInputDimensions((224,224,3))
-cs.searchBestSplits(16, 16)
-cs.searchBestSplitsV2(16, 16)
-cs.searchBestSplitsV2(16, 16, useZhihaoAlgo=True)
+# # model = resnet34()
+# cs.printAllLayers()
+# cs.computeInputDimensions((224,224,3))
+# cs.searchBestSplits(16, 16)
+# cs.searchBestSplitsV2(16, 16)
+# cs.searchBestSplitsV2(16, 16, useZhihaoAlgo=True)
 
-# cs.searchBestSplits(2, 2)
-profiler.saveProfile()
+# # cs.searchBestSplits(2, 2)
+# profiler.saveProfile()
 
+
+def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=False, netBw=22937, spatialSplit=False, simResultFilename=None):
+    profiler = GpuProfiler("cuda")
+    profiler.loadProfile()
+    global cs
+    cs = CostSim(profiler, netBw=netBw, verbose=True)
+    model = resnet34()
+    cs.printAllLayers(slient=True)
+    cs.computeInputDimensions((224,224,3))
+    # job = cs.searchBestSplits(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline)
+    job, iterMs, gpuMs = cs.searchBestSplits(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
+    jobInJson = job.dumpInJSON()
+
+    # for rank in range(4):
+    #     print("GPU rank: %d"%rank)
+    #     print(job.dumpSingleRunnableModule(rank))
+
+    job2 = TrainingJob("test", None, None, 0, "")
+    job2.loadJSON(jobInJson)
+    assert(jobInJson == job2.dumpInJSON())
+    print("Load/Dump returned the same output? %s" % ("true" if jobInJson == job2.dumpInJSON() else "false"))
+    # print(jobInJson)
+    
+    if not spatialSplit:
+        cc = ClusterClient()
+        jobName = "Resnet34_%d_%d_%2.1f%s" % (gpuCount, globalBatch, amplificationLimit, "_DP" if dataParallelBaseline else "")
+        cc.submitTrainingJob(jobName, jobInJson)
+
+    profiler.saveProfile()
+    if simResultFilename != None:
+        f = open(simResultFilename, "a")
+        f.write("  %2d    %2d   %4.1f  %4.1f\n" % (globalBatch, gpuCount, iterMs, gpuMs))
+        f.close()
+
+        if gpuCount == 8:
+            f = open(simResultFilename, "r")
+            print(f.read())
+            f.close()
+
+
+def runAllConfigs(modelName: str, clusterType: str):
+    if clusterType == "V100":
+        netBw = 22937
+    elif clusterType == "A100":
+        netBw = 2.66E5
+    else:
+        print("Wrong cluster type. Put either V100 or A100")
+
+    gpuCounts = [1, 2, 4, 8]
+    # gpuCounts = [1, 2, 4]
+    globalBatchSize = 64
+    # globalBatchSize = 16
+    # globalBatchSize = 8
+    limitAndBaseline = [(2.0, True, False), (99, False, False), (2.5, False, False), (3.0, False, False)]
+    # limitAndBaseline = [(99, False, True)]
+    # limitAndBaseline = []
+    for lim, baseline, spatialSplit in limitAndBaseline:
+        simResultFilename = "%s_%s_b%d_lim%2.1f_sim.data" % (modelName, "DP" if baseline else "MP", globalBatchSize, lim)
+        f = open(simResultFilename, "w")
+        f.write("#batch GPUs IterMs  GpuMs\n")
+        f.close()
+
+        for gpuCount in gpuCounts:
+            preSize = os.stat('runtimeResult.data').st_size
+            main(gpuCount, globalBatchSize, amplificationLimit=lim, dataParallelBaseline=baseline, netBw=netBw, spatialSplit=spatialSplit, simResultFilename=simResultFilename)
+            # check exp finished.
+            print("runtimeResult.data's original size: ", preSize)
+            while os.stat('runtimeResult.data').st_size == preSize and not spatialSplit:
+                time.sleep(10)
+            print("runtimeResult.data's current size: ", os.stat('runtimeResult.data').st_size)
+        
+        if not spatialSplit:
+            fw = open("%s_%s_b%d_lim%2.1f_run.data" % (modelName, "DP" if baseline else "MP", globalBatchSize, lim), "w")
+            fr = open('runtimeResult.data', "r")
+            fw.write("#batch GPUs IterMs  GpuMs\n")
+            fw.write(fr.read())
+            fw.close()
+            fr.close()
+
+        fr = open('runtimeResult.data', "w")
+        fr.close()
+
+    # #################################
+    # ## Profiling by batch size.
+    # #################################
+    # globalBatchSizes = [1,2,4,8,16,32,64,128]
+    # lim, baseline, spatialSplit = (2.0, True, False)
+    # simResultFilename = "%s_%s_varyBatch_sim.data" % (modelName, "DP" if baseline else "MP")
+    # f = open(simResultFilename, "w")
+    # f.write("#batch GPUs IterMs  GpuMs\n")
+    # f.close()
+
+    # # for gpuCount in gpuCounts:
+    # gpuCount = 1
+    # for globalBatchSize in globalBatchSizes:
+    #     preSize = os.stat('runtimeResult.data').st_size
+    #     main(gpuCount, globalBatchSize, amplificationLimit=lim, dataParallelBaseline=baseline, netBw=netBw, spatialSplit=spatialSplit, simResultFilename=simResultFilename)
+    #     # check exp finished.
+    #     print("runtimeResult.data's original size: ", preSize)
+    #     while os.stat('runtimeResult.data').st_size == preSize and not spatialSplit:
+    #         time.sleep(10)
+    #     print("runtimeResult.data's current size: ", os.stat('runtimeResult.data').st_size)
+    
+    # if not spatialSplit:
+    #     fw = open("%s_%s_varyBatch_run.data" % (modelName, "DP" if baseline else "MP"), "w")
+    #     fr = open('runtimeResult.data', "r")
+    #     fw.write("#batch GPUs IterMs  GpuMs\n")
+    #     fw.write(fr.read())
+    #     fw.close()
+    #     fr.close()
+
+    # fr = open('runtimeResult.data', "w")
+    # fr.close()
+
+
+if __name__ == "__main__":
+    print(len(sys.argv))
+    if len(sys.argv) == 3:
+        main(int(sys.argv[1]), int(sys.argv[2]), dataParallelBaseline=True)
+    elif len(sys.argv) == 4:
+        main(int(sys.argv[1]), int(sys.argv[2]), amplificationLimit=float(sys.argv[3]))
+    elif len(sys.argv) == 2:
+        print("Run all configs")
+        runAllConfigs("resnet34", sys.argv[1])
+    else:
+        print("Wrong number of arguments.\nUsage: ")

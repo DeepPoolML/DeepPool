@@ -22,8 +22,8 @@ pkeyPath = '~/.ssh/ulma-sjp.pem'
 userId = "ubuntu"
 workDir = "~/DeepPoolRuntime/"
 # gpuCount = 1
-gpuCount = 4 # TODO remove.
-portPrefix = 1140 # prefix + Device# is used for port.
+gpuCount = 8 # TODO remove.
+portPrefix = 11140 # prefix + Device# is used for port.
 coordinatorPort = 12345
 
 with open(PUBLIC_ADDR_FILENAME, "r") as f:
@@ -88,7 +88,7 @@ def downloadResults():
         subprocess.check_call(sh_command, stderr=subprocess.STDOUT)
 
     for host in publicIps:
-        for remotePath in ["~/net*.qdrep", "~/DeepPoolRuntime/logs/*.out"]: #["~/net*.qdrep", "~/net*.sqlite", "~/DeepPoolRuntime/logs/*.out"]:
+        for remotePath in ["~/DeepPoolRuntime/*.data", "~/DeepPoolRuntime/logs/*.out"]: #["~/*.qdrep", "~/DeepPoolRuntime/logs/*.out", "~/net*.qdrep", "~/net*.sqlite", "~/DeepPoolRuntime/logs/*.out"]:
             try:
                 downloadFile(host, remotePath, "results/")
             except subprocess.CalledProcessError as e:

@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import torch.utils.model_zoo as model_zoo
 import threading
 import os, sys
+import time
 
 currentdir = os.path.dirname(os.path.realpath(__file__))
 parentdir = os.path.dirname(currentdir)
@@ -300,21 +301,70 @@ def genTestJob(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseli
     job = cs.searchBestSplits(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline)
     return job
 
-def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=False):
+def testRunOnCPU():
+    # optimizer is not yet implemented.
+    def train(loader, model, optimizer = None, criterion = nn.CrossEntropyLoss(), device="cpu"):
+        model.to(device)
+        model.train()
+        for batch_idx, (data, target) in enumerate(loader):
+            data, target = data.to(device), target.to(device)
+            # optimizer.zero_grad()
+
+            print("forward pass is starting.. data: %s" % str(data.size()))
+            output, runCriterionAndLoss = model(data)
+            # output = torch.flatten(output, 1)
+            if runCriterionAndLoss:
+                output = F.log_softmax(output, dim=1)
+                
+                # Hack to match target's sample count with the output at this node.
+                if output.size()[0] != target.size()[0]:
+                    target = torch.repeat_interleave(target, int(1 + output.size()[0] / target.size()[0]), dim=0)
+                    target = target.narrow(0, 0, output.size()[0])
+
+                loss = criterion(output, target)
+                print("backward pass is starting")
+                loss.backward()
+            else:
+                output.backward(output) # gradient passed is dummy.
+            
+            # finish after 1st iteration.
+            return
+            # optimizer.step()
+
+    comm = MockCommHandler()
+    threadList = []
+    ## For now just use all gpus.
+    for rank, location in enumerate(locations):
+        moduleDesc = job.dumpSingleRunnableModule(rank)
+        print("%s ==> \n %s" % (location, moduleDesc))
+        
+        module = RunnableModule(moduleDesc, comm)
+        loader = VisionDataLoaderGenerator.genDataLoader(
+            moduleDesc, syntheticDataLength=1600)
+        train_thread = threading.Thread(name='train_rank%d'%rank, target=train, args=(loader, module,))
+        # train_thread = threading.Thread(name='train_rank%d'%rank, target=train, args=(loader, model,))
+        threadList.append(train_thread)
+
+    for thread in threadList:
+        thread.start()
+    for thread in threadList:
+        thread.join()
+
+
+def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=False, netBw=2.66E5, spatialSplit=False, simResultFilename=None):
     profiler = GpuProfiler("cuda")
     profiler.loadProfile()
     global cs
-    # cs = CostSim(profiler, netBw=1.25E5, verbose=True)
-    cs = CostSim(profiler, netBw=5E4, verbose=True)
+    cs = CostSim(profiler, netBw=netBw, verbose=False)
     model = vgg16(pretrained=False)
     # model = vgg11()
     # model = resnet34()
-    cs.printAllLayers()
+    cs.printAllLayers(slient=True)
     cs.computeInputDimensions((224,224,3))
     # job = cs.searchBestSplits(4, 16, dataParallelBaseline=True)
     # job = cs.searchBestSplits(4, 16)
     # job = cs.searchBestSplits(gpuCount, globalBatch, dataParallelBaseline=True)
-    job = cs.searchBestSplits(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline)
+    job, iterMs, gpuMs = cs.searchBestSplits(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
     jobInJson = job.dumpInJSON()
 
     # for rank in range(4):
@@ -327,64 +377,139 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     print("Load/Dump returned the same output? %s" % ("true" if jobInJson == job2.dumpInJSON() else "false"))
     # print(jobInJson)
 
-    locations = ["a", "b", "c", "d"]
-
-    def testRunOnCPU():
-        # optimizer is not yet implemented.
-        def train(loader, model, optimizer = None, criterion = nn.CrossEntropyLoss(), device="cpu"):
-            model.to(device)
-            model.train()
-            for batch_idx, (data, target) in enumerate(loader):
-                data, target = data.to(device), target.to(device)
-                # optimizer.zero_grad()
-
-                print("forward pass is starting.. data: %s" % str(data.size()))
-                output, runCriterionAndLoss = model(data)
-                # output = torch.flatten(output, 1)
-                if runCriterionAndLoss:
-                    output = F.log_softmax(output, dim=1)
-                    
-                    # Hack to match target's sample count with the output at this node.
-                    if output.size()[0] != target.size()[0]:
-                        target = torch.repeat_interleave(target, int(1 + output.size()[0] / target.size()[0]), dim=0)
-                        target = target.narrow(0, 0, output.size()[0])
-
-                    loss = criterion(output, target)
-                    print("backward pass is starting")
-                    loss.backward()
-                else:
-                    output.backward(output) # gradient passed is dummy.
-                
-                # finish after 1st iteration.
-                return
-                # optimizer.step()
-
-        comm = MockCommHandler()
-        threadList = []
-        ## For now just use all gpus.
-        for rank, location in enumerate(locations):
-            moduleDesc = job.dumpSingleRunnableModule(rank)
-            print("%s ==> \n %s" % (location, moduleDesc))
-            
-            module = RunnableModule(moduleDesc, comm)
-            loader = VisionDataLoaderGenerator.genDataLoader(
-                moduleDesc, syntheticDataLength=1600)
-            train_thread = threading.Thread(name='train_rank%d'%rank, target=train, args=(loader, module,))
-            # train_thread = threading.Thread(name='train_rank%d'%rank, target=train, args=(loader, model,))
-            threadList.append(train_thread)
-
-        for thread in threadList:
-            thread.start()
-        for thread in threadList:
-            thread.join()
-
     # testRunOnCPU()
 
-    cc = ClusterClient()
-    cc.submitTrainingJob("vgg16", jobInJson)
+    if not spatialSplit:
+        cc = ClusterClient()
+        jobName = "vgg16_%d_%d_%2.1f%s" % (gpuCount, globalBatch, amplificationLimit, "_DP" if dataParallelBaseline else "")
+        cc.submitTrainingJob(jobName, jobInJson)
+    
+    if simResultFilename != None:
+        f = open(simResultFilename, "a")
+        f.write("  %2d    %2d   %4.1f  %4.1f\n" % (globalBatch, gpuCount, iterMs, gpuMs))
+        f.close()
+
+        if gpuCount == 8:
+            f = open(simResultFilename, "r")
+            print(f.read())
+            f.close()
 
     profiler.saveProfile()
 
+    
+
+
+# def runAllConfigs(clusterType: str):
+#     if clusterType == "V100":
+#         netBw = 22937
+#     elif clusterType == "A100":
+#         netBw = 2.66E5
+#     else:
+#         print("Wrong cluster type. Put either V100 or A100")
+
+#     gpuCounts = [1, 2, 4, 8]
+#     # gpuCounts = [1, 2, 4]
+#     # globalBatchSize = 16
+#     globalBatchSize = 8
+#     # limitAndBaseline = [(1.5, False, False), (2.0, False, False), (2.5, False, False), (99, False, False), (2.0, True, False)]
+#     limitAndBaseline = [(99, False, True)]
+#     for lim, baseline, spatialSplit in limitAndBaseline:
+#         f = open("vgg16_%s_lim%2.1f_sim.data" % ("DP" if baseline else "MP", lim), "w")
+#         f.write("#batch GPUs IterMs  GpuMs\n")
+#         f.close()
+
+#         for gpuCount in gpuCounts:
+#             preSize = os.stat('runtimeResult.data').st_size
+#             main(gpuCount, globalBatchSize, amplificationLimit=lim, dataParallelBaseline=baseline, netBw=netBw, spatialSplit=spatialSplit)
+#             # check exp finished.
+#             print("runtimeResult.data's original size: ", preSize)
+#             while os.stat('runtimeResult.data').st_size == preSize and not spatialSplit:
+#                 time.sleep(10)
+#             print("runtimeResult.data's current size: ", os.stat('runtimeResult.data').st_size)
+        
+#         if not spatialSplit:
+#             fw = open("vgg16_%s_lim%2.1f_run.data" % ("DP" if baseline else "MP", lim), "w")
+#             fr = open('runtimeResult.data', "r")
+#             fw.write("#batch GPUs IterMs  GpuMs\n")
+#             fw.write(fr.read())
+#             fw.close()
+#             fr.close()
+
+#         fr = open('runtimeResult.data', "w")
+#         fr.close()
+        
+def runAllConfigs(modelName: str, clusterType: str):
+    if clusterType == "V100":
+        netBw = 22937
+    elif clusterType == "A100":
+        netBw = 2.66E5
+    else:
+        print("Wrong cluster type. Put either V100 or A100")
+
+    gpuCounts = [1, 2, 4, 8]
+    # gpuCounts = [1, 2, 4]
+    globalBatchSize = 16
+    # globalBatchSize = 8
+    limitAndBaseline = [(2.0, True, False), (99, False, False), (4.0, False, False), (2.5, False, False)]
+    # limitAndBaseline = [(99, False, True)]
+    # limitAndBaseline = []
+    for lim, baseline, spatialSplit in limitAndBaseline:
+        simResultFilename = "%s_%s_b%d_lim%2.1f_sim.data" % (modelName, "DP" if baseline else "MP", globalBatchSize, lim)
+        f = open(simResultFilename, "w")
+        f.write("#batch GPUs IterMs  GpuMs\n")
+        f.close()
+
+        for gpuCount in gpuCounts:
+            preSize = os.stat('runtimeResult.data').st_size
+            main(gpuCount, globalBatchSize, amplificationLimit=lim, dataParallelBaseline=baseline, netBw=netBw, spatialSplit=spatialSplit, simResultFilename=simResultFilename)
+            # check exp finished.
+            print("runtimeResult.data's original size: ", preSize)
+            while os.stat('runtimeResult.data').st_size == preSize and not spatialSplit:
+                time.sleep(10)
+            print("runtimeResult.data's current size: ", os.stat('runtimeResult.data').st_size)
+        
+        if not spatialSplit:
+            fw = open("%s_%s_b%d_lim%2.1f_run.data" % (modelName, "DP" if baseline else "MP", globalBatchSize, lim), "w")
+            fr = open('runtimeResult.data', "r")
+            fw.write("#batch GPUs IterMs  GpuMs\n")
+            fw.write(fr.read())
+            fw.close()
+            fr.close()
+
+        fr = open('runtimeResult.data', "w")
+        fr.close()
+
+    # #################################
+    # ## Profiling by batch size.
+    # #################################
+    # globalBatchSizes = [1,2,4,8,16,32,64,128]
+    # lim, baseline, spatialSplit = (2.0, True, False)
+    # simResultFilename = "%s_%s_varyBatch_sim.data" % (modelName, "DP" if baseline else "MP")
+    # f = open(simResultFilename, "w")
+    # f.write("#batch GPUs IterMs  GpuMs\n")
+    # f.close()
+
+    # # for gpuCount in gpuCounts:
+    # gpuCount = 1
+    # for globalBatchSize in globalBatchSizes:
+    #     preSize = os.stat('runtimeResult.data').st_size
+    #     main(gpuCount, globalBatchSize, amplificationLimit=lim, dataParallelBaseline=baseline, netBw=netBw, spatialSplit=spatialSplit, simResultFilename=simResultFilename)
+    #     # check exp finished.
+    #     print("runtimeResult.data's original size: ", preSize)
+    #     while os.stat('runtimeResult.data').st_size == preSize and not spatialSplit:
+    #         time.sleep(10)
+    #     print("runtimeResult.data's current size: ", os.stat('runtimeResult.data').st_size)
+    
+    # if not spatialSplit:
+    #     fw = open("%s_%s_varyBatch_run.data" % (modelName, "DP" if baseline else "MP"), "w")
+    #     fr = open('runtimeResult.data', "r")
+    #     fw.write("#batch GPUs IterMs  GpuMs\n")
+    #     fw.write(fr.read())
+    #     fw.close()
+    #     fr.close()
+
+    # fr = open('runtimeResult.data', "w")
+    # fr.close()
 
 
 if __name__ == "__main__":
@@ -393,7 +518,8 @@ if __name__ == "__main__":
         main(int(sys.argv[1]), int(sys.argv[2]), dataParallelBaseline=True)
     elif len(sys.argv) == 4:
         main(int(sys.argv[1]), int(sys.argv[2]), amplificationLimit=float(sys.argv[3]))
+    elif len(sys.argv) == 2:
+        print("Run all configs")
+        runAllConfigs("vgg16", sys.argv[1])
     else:
         print("Wrong number of arguments.\nUsage: ")
-
-

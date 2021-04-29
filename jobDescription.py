@@ -87,7 +87,7 @@ class TrainingJob:
         for l, config in zip(self.layers, self.layerConfigs):
             destGpus = self.calcGpusNeeded(l, config, self.globalBatchSize)
             maxGpusUsed = max(maxGpusUsed, destGpus)
-            print("[getGpusUsed] layer: %d, destGpus: %d, maxGpusUsed: %d, config: %s" % (l.id, destGpus, maxGpusUsed, str(config)))
+            # print("[getGpusUsed] layer: %d, destGpus: %d, maxGpusUsed: %d, config: %s" % (l.id, destGpus, maxGpusUsed, str(config)))
         return maxGpusUsed
 
     def dumpInJSON(self, layers: List[Layer] = None, layerConfigs: list = None):
@@ -143,7 +143,7 @@ class TrainingJob:
         return dumpedStr
 
     def dumpSingleRunnableModuleHelper(self, targetRank: int) -> str: # Only supports DP now.
-        print("[dumpSingleRunnableModule] generating for rank: %d" % targetRank)
+        # print("[dumpSingleRunnableModule] generating for rank: %d" % targetRank)
         allProps = []
         srcGpus = None
         maxGpusUsed = 0
