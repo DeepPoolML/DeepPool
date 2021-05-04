@@ -185,6 +185,11 @@ class JobContext:
 
         Logger.log("forward pass is starting.", level=0)
         nvtx.range_push("Forward Pass")
+        if data != None and data.size()[0] > 0:
+            TT.cudaRecord(EventTypes.fp_start)
+        else:
+            TT.cudaRecord(EventTypes.fp_start_idle)
+        
         output, runCriterionAndLoss = self.model(data)
         nvtx.range_pop()
         TT.cudaRecord(EventTypes.fp_done)

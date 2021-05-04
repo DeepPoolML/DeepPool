@@ -6,7 +6,8 @@ class EventTypes:
     # EventName       ID (will be assigned by Timetrace.buildTablesForEventTypes)
     iter_init               = None
     target_shuffle          = None
-    # fp_start                = None
+    fp_start                = None
+    fp_start_idle           = None
     fp_done                 = None
     recv_samples            = None
     recv_samples_done       = None
@@ -109,10 +110,10 @@ class Timetrace:
         
         # Initialize variables for computing stats.
         assert cls.timeSyncPeriod == 1
-        passiveFp = False
-        passiveBp = False
-        fpStartTime = 0
-        bpStartTime = 0
+        iterStartTime = 0
+        lastStartTime = 0
+        activeTime = 0
+        
 
         # Flush all cuda events to traces.
         startEvent, startEid, startBatchId, startComment = cls.cudaEvents[0]
@@ -124,26 +125,32 @@ class Timetrace:
             cls.traces.append((absTime, eid, batchId, comment))
 
             # Take the stats 
-            if eid == EventTypes.target_shuffle:
-                fpStartTime = absTime
-            elif eid == "recv_samples" and (absTime - fpStartTime) * 1000000 < 10:
-                passiveFp = True
-                fpStartTime = 0
-            elif (passiveFp and fpStartTime == 0) and eid == EventTypes.recv_samples_done:
-                fpStartTime = absTime
-            elif eid == EventTypes.fp_done:
-                cls.fpTimes.append(1000000*(absTime - fpStartTime))
+            if eid == EventTypes.fp_start:
+                lastStartTime = absTime
+                iterStartTime = absTime
+            elif eid == EventTypes.fp_start_idle:
+                lastStartTime = 0
+                iterStartTime = absTime
             elif eid == EventTypes.bp_start:
-                bpStartTime = absTime
-            elif eid == EventTypes.bp_remainder_start and bpStartTime == 0:
-                passiveBp = True
-            elif (passiveBp and bpStartTime == 0) and eid == EventTypes.recv_samples_done:
-                bpStartTime = absTime
+                lastStartTime = absTime
+            elif lastStartTime == 0 and eid == EventTypes.recv_samples_done:
+                lastStartTime = absTime
+            elif eid == EventTypes.send_samples_done_idle:
+                activeTime += absTime - lastStartTime
+                lastStartTime = 0
+            elif eid == EventTypes.fp_done:
+                if lastStartTime != 0:
+                    activeTime += absTime - lastStartTime
+                    lastStartTime = 0
+                cls.fpTimes.append(1000000*(activeTime))
+                activeTime = 0
             elif eid == EventTypes.bp_done:
-                cls.iterTimes.append(1000000*(absTime - fpStartTime))
-                cls.bpTimes.append(1000000*(absTime - bpStartTime))
-                bpStartTime = 0
-                passiveBp = False
+                if lastStartTime != 0:
+                    activeTime += absTime - lastStartTime
+                    lastStartTime = 0
+                cls.iterTimes.append(1000000*(absTime - iterStartTime))
+                cls.bpTimes.append(1000000*(activeTime))
+                activeTime = 0
 
             # cls.iterMinibatchId
 
