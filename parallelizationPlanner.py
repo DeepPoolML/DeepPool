@@ -20,15 +20,18 @@ import torch.nn.functional as F
 from torch.optim.lr_scheduler import StepLR
 from torch.autograd import Variable
 import time
+import collections
 from typing import Type, Any, Callable, Union, List, Optional
 from torch.nn.common_types import _size_1_t, _size_2_t, _size_3_t
 import math
 import jsonpickle
 import json
 import numpy
+import graphviz
 from array import array
 from typing import Optional, IO, List, Any
 from jobDescription import TrainingJob
+from jobDescription import Layer
 
 import torch.cuda.profiler as profiler
 import torch.cuda.nvtx as nvtx
@@ -282,71 +285,41 @@ class GpuProfiler:
             x = self.linear1(x)
             return x
 
+class SearchContext:
+    def __init__(self, totalGpus: int, globalBatch: int, amplificationLimit: float = 2.0,
+            dataParallelBaseline = False, sampleSplit=True, spatialSplit=False, filterSplit=False):
+        self.totalGpus = totalGpus
+        self.globalBatch = globalBatch
+        self.amplificationLimit = amplificationLimit
+        self.dataParallelBaseline = dataParallelBaseline
+        self.sampleSplit = sampleSplit
+        self.spatialSplit = spatialSplit
+        self.filterSplit = filterSplit
+
 
 class CostSim:
-    class Layer:
-        def __init__(self, module: nn.Module, name: str, params: tuple, prevLayers: list):
-            self.id = None      # Assigned later by calling printAllLayers.
-            self.name = name
-            self.params = params
-            self.prevLayers = prevLayers
-            if prevLayers is not None:
-                for prevLayer in prevLayers:
-                    prevLayer.nextLayers.append(self)
-            self.nextLayers = []
-            self.module = module
-            self.inputDim = (0, 0, 0)   # (Width, Height, Channel) for 2d convolution
-            self.outputDim = (0, 0, 0)  # (Width, Height, Channel)
-        
-        def dumpForJSON(self):
-            prop = {}
-            if self.id == None:
-                raise Exception("layer is not yet initialized.")
-
-            prop["id"] = self.id
-            prop["name"] = self.name
-            prop["params"] = self.params
-            prop["prevLayers"] = []
-            if self.prevLayers != None:
-                for prevLayer in self.prevLayers:
-                    prop["prevLayers"].append(prevLayer.id)
-            prop["nextLayers"] = []
-            if self.nextLayers != None:
-                for nextLayer in self.nextLayers:
-                    prop["nextLayers"].append(nextLayer.id)
-            prop["inputDim"] = self.inputDim
-            prop["outputDim"] = self.outputDim
-            # prop["inputDim"] = {"width": self.inputDim[0], "height": self.inputDim[1], "channel": self.inputDim[2]}
-            # prop["outputDim"] = {"width": self.outputDim[0], "height": self.outputDim[1], "channel": self.outputDim[2]}
-            return prop
-
     def __init__(self, profiler: GpuProfiler, netBw = 1.25E4, verbose=False):
         self.profiler = profiler
-        self.layers: List[CostSim.Layer] = []
+        self.layers: List[Layer] = []
         self.NET_BANDWIDTH = netBw
         self.NET_LATENCY = 140 #40
         self.verbose = verbose
 
     def generateModuleDescription(self, layerConfigs: list, globalBatch: int):
-        # allProps = []
-        gpuTimeSum = 0
-        profiler.start()
+        # gpuTimeSum = 0
+        # profiler.start()
+        maxGpuUsed = 0
         for l, config in zip(self.layers, layerConfigs):
-            nvtx.range_push("l %d %s" % (l.id, l.name))
+            maxGpuUsed = max(maxGpuUsed, self.calcGpusNeeded(l, config, globalBatch))
+            # nvtx.range_push("l %d %s" % (l.id, l.name))
             # gpuTime = self.benchGpuTime(l, config, profile=True)
-            gpuTime = self.benchGpuTime(l, config)
-            nvtx.range_pop()
-            gpuTimeSum += gpuTime
-        #     prop = l.dumpForJSON()
-        #     prop["config"] = config
-        #     # prop["tensorTx"] = [{"name": "%d_0" % l.id, "dest": 1, "bytes": 10}]
-        #     # prop["tensorRx"] = [{"name": "%d_0" % l.id, "src": 2, "bytes": 50}]
-        #     allProps.append(prop)
-        # print(json.dumps(allProps, indent=1, sort_keys=False))
-        print("gpuTimeSum: ", gpuTimeSum)
-        profiler.stop()
+            # gpuTime = self.benchGpuTime(l, config)
+            # nvtx.range_pop()
+            # gpuTimeSum += gpuTime
+        # print("gpuTimeSum: ", gpuTimeSum)
+        # profiler.stop()
 
-        return TrainingJob("test", self.layers, layerConfigs, globalBatch, "na")
+        return TrainingJob("test", self.layers, layerConfigs, globalBatch, maxGpuUsed, "na")
         
         # job.dumpSingleRunnableModule(15)
 
@@ -433,9 +406,20 @@ class CostSim:
         else:
             print("Can't compute input transfer time from %s to %s." % (srcLayer.name, destLayer.name))
 
-    def calcConv2dSyncTime(self, config, bytesPerParam=4):
+    def calcSyncTime(self, layer, config, ctx):
+        if layer.name in ["conv2d"]:
+            syncTime = self.calcConv2dSyncTime(layer, config)
+        elif layer.name in ["linear"]:
+            syncTime = self.calcLinearSyncTime(config, ctx.globalBatch)
+        else:
+            syncTime = 0
+        return syncTime
+        
+    def calcConv2dSyncTime(self, layer, config, bytesPerParam=4):
         filterCount = config[4]
-        params = 3 * 3 * filterCount + 3 * 3
+        kernelSizeW = layer.params["kernel_size"][0] if type(layer.params["kernel_size"]) is tuple else layer.params["kernel_size"]
+        kernelSizeH = layer.params["kernel_size"][1] if type(layer.params["kernel_size"]) is tuple else 1
+        params = kernelSizeW * kernelSizeH * filterCount + kernelSizeW * kernelSizeH
         size = params * bytesPerParam
         return size / self.NET_BANDWIDTH # Returns microseconds.
         
@@ -450,7 +434,8 @@ class CostSim:
         destS = destConfig[0]
         destW = destConfig[1]
         destH = destConfig[2]
-        destInChannel = destConfig[3]
+        # destInChannel = destConfig[3]
+        destInChannel = srcOutChannel # TODO: temporary hack to handle Inception V3's concat.  
         # Compute "estimated" number of gpus used for src and dest. This is used only for comparing which side might unshared gpus.
         srcGpus = self.calcGpusNeeded(srcLayer, srcConfig, srcS * destS)
         destGpus = self.calcGpusNeeded(destLayer, destConfig, srcS * destS)
@@ -537,7 +522,7 @@ class CostSim:
 
         if custom_previous_layers == None and len(self.layers) > 0:
             custom_previous_layers = [self.layers[-1]]
-        layer = CostSim.Layer(module, "conv2d",
+        layer = Layer(module, "conv2d",
                             {"in_channels": in_channels, "out_channels": out_channels, "kernel_size": kernel_size, "stride": stride, "padding": padding},
                             prevLayers = custom_previous_layers)
         self.layers.append(layer)
@@ -554,7 +539,7 @@ class CostSim:
 
         if custom_previous_layers == None and len(self.layers) > 0:
             custom_previous_layers = [self.layers[-1]]
-        layer = CostSim.Layer(module, "maxPool2d",
+        layer = Layer(module, "maxPool2d",
                             {"kernel_size": kernel_size, "stride": stride, "padding": padding},
                             prevLayers = custom_previous_layers)
         self.layers.append(layer)
@@ -571,7 +556,7 @@ class CostSim:
         # stride = (input_size//output_size)  
         # kernel_size = input_size - (output_size-1)*stride  
         # padding = 0
-        layer = CostSim.Layer(module, "adAvgPool2d",
+        layer = Layer(module, "adAvgPool2d",
                             {"output_width": output_size[0], "output_height": output_size[1]},
                             prevLayers = custom_previous_layers)
         self.layers.append(layer)
@@ -586,7 +571,7 @@ class CostSim:
 
         if custom_previous_layers == None and len(self.layers) > 0:
             custom_previous_layers = [self.layers[-1]]
-        layer = CostSim.Layer(module, "avgPool2d",
+        layer = Layer(module, "avgPool2d",
                             {"kernel_size": kernel_size, "stride": stride, "padding": padding},
                             prevLayers = custom_previous_layers)
         self.layers.append(layer)
@@ -598,7 +583,7 @@ class CostSim:
 
         if custom_previous_layers == None and len(self.layers) > 0:
             custom_previous_layers = [self.layers[-1]]
-        layer = CostSim.Layer(module, "linear",
+        layer = Layer(module, "linear",
                             {"in_features": in_features, "out_features": out_features, "bias": bias},
                             prevLayers = custom_previous_layers)
         self.layers.append(layer)
@@ -616,7 +601,7 @@ class CostSim:
             name = "ReLU1d"
         else:
             name = "ReLU"
-        layer = CostSim.Layer(module, name, {"inplace": inplace, "kernel_size": 1, "stride": 1, "padding": 0}, prevLayers = custom_previous_layers)
+        layer = Layer(module, name, {"inplace": inplace, "kernel_size": 1, "stride": 1, "padding": 0}, prevLayers = custom_previous_layers)
         self.layers.append(layer)
         
         return module
@@ -624,14 +609,14 @@ class CostSim:
     def Flatten(self, custom_previous_layers: list = None):
         if custom_previous_layers == None and len(self.layers) > 0:
             custom_previous_layers = [self.layers[-1]]
-        layer = CostSim.Layer(None, "flatten", {"kernel_size": 1}, prevLayers = custom_previous_layers)
+        layer = Layer(None, "flatten", {"kernel_size": 1}, prevLayers = custom_previous_layers)
         self.layers.append(layer)
         return
     
     def Concat(self, custom_previous_layers: list = None): # concatenates tensors on channel dimension only.
         if custom_previous_layers == None and len(self.layers) > 0:
             custom_previous_layers = [self.layers[-1]]
-        layer = CostSim.Layer(None, "concat", {"kernel_size": 1}, prevLayers = custom_previous_layers)
+        layer = Layer(None, "concat", {"kernel_size": 1}, prevLayers = custom_previous_layers)
         self.layers.append(layer)
         return
 
@@ -1228,7 +1213,7 @@ class CostSim:
                 
                 # Computer all-reduce time
                 if layer.name in ["conv2d"]:
-                    syncTime = self.calcConv2dSyncTime(config)
+                    syncTime = self.calcConv2dSyncTime(layer, config)
                 elif layer.name in ["linear"]:
                     syncTime = self.calcLinearSyncTime(config, globalBatch)
                 else:
@@ -1412,7 +1397,7 @@ class CostSim:
                 
                 # Computer all-reduce time
                 if layer.name in ["conv2d"]:
-                    syncTime = self.calcConv2dSyncTime(config)
+                    syncTime = self.calcConv2dSyncTime(layer, config)
                 elif layer.name in ["linear"]:
                     syncTime = self.calcLinearSyncTime(config, globalBatch)
                 else:
@@ -1546,465 +1531,392 @@ class CostSim:
                     ))
 
 
-    def searchMultiChainDeepPool(self, startLayer, startConfig, globalBatch: int, totalGpus: int, verbose=True):
-        maximumOptionListSize = 0
-        k = len(startLayer.nextLayers)
-        llist = [[startLayer] for j in range(k)]
-        endLayer = None
-        for j in range(k):
-            l = startLayer.nextLayers[j]
-            while len(l.prevLayers) == 1: # Until join happens.
-                llist[j].append(l)
-                if len(l.nextLayers) > 1:
-                    print("[searchMultiChain] ERROR! nested multi-chain. TODO; implement handling of this.")
-                l = l.nextLayers[0]
-            if endLayer == None:
-                endLayer = l
-            else:
-                assert(endLayer == l)
-
-        print("Found %d chains, branching at %d-th layer, joining at %d-th layer" % (k, startLayer.id, endLayer.id))
-
-        # Start dynamic programming.
-        time_start = time.time()
-        def generateAllConfigs(k: int, llist: list):
-            if k == 0:
-                return [[]]
-            configs = []
-            for laterPart in generateAllConfigs(k-1, llist[1:]):
-                configs.append([(0, startConfig)] + laterPart)
-
-            for nextIndex in range(1, len(llist[0])):
-                for config in self.listConfigOptions(llist[0][nextIndex], globalBatch, totalGpus):
-                    laterPartList = generateAllConfigs(k-1, llist[1:])
-                    # print("[generateAllConfigs] for k=%d, (%d, %s), got %s" % (k, nextIndex, str(config), str(laterPartList)))
-                    for laterPart in laterPartList:
-                        completePart = [(nextIndex, config)] + laterPart
-                        configs.append(completePart)
-            return configs
-        
-        # allCombinedIdx = generateAllConfigs(k, llist)
-        print("Total # of cell in table prefore config pruning: %d" % len(generateAllConfigs(k, llist)))
-        # TODO: replace this with carefully pruned config matrix. 
-        configOptionLists = []
-        for j in range(k):
-            prevTotalStateCombo = 1
-            configOptionLists.append( [ [startConfig] ] )
-            print("[Pruning configs] %d-th chain, before prune: [" % j, end="")
-            for idx in range(1, len(llist[j])):
-                configOptionLists[j].append(self.listConfigOptions(llist[j][idx], globalBatch, totalGpus))
-                print(" %2d" % len(configOptionLists[j][idx]), end="")
-                prevTotalStateCombo *= len(configOptionLists[j][idx])
-            configOptionLists[j].append(self.listConfigOptions(endLayer, globalBatch, totalGpus))
-            print(" ] (%d combos)" % prevTotalStateCombo, end="")
-            
-            for prunIter in range(3):
-                print(" ==> after prune (pass %d): [" % (prunIter + 1), end="")
-                totalStateCombo = 1
-                for idx in range(1, len(llist[j])):
-                    prevLayer = llist[j][idx-1]
-                    layer = llist[j][idx]
-                    nextLayer = llist[j][idx + 1] if (idx + 1 < len(llist[j])) else endLayer
-                    selectedConfigs = []
-                    for nextConfig in configOptionLists[j][idx + 1]:
-                        for prevConfig in configOptionLists[j][idx - 1]:
-                            bestConfigByGpuCount = {}
-                            for config in configOptionLists[j][idx]:
-                                gpusUsed = self.calcGpusNeeded(layer, config, globalBatch)
-                                activationTime1, activationSizeMatrix = self.calcInputXfer(prevLayer, layer, prevConfig, config)
-                                activationTime2, activationSizeMatrix = self.calcInputXfer(layer, nextLayer, config, nextConfig)
-                                gpuTime = self.benchGpuTime(layer, config)
-
-                                totalTime = activationTime1 + activationTime2 + gpuTime
-                                if gpusUsed not in bestConfigByGpuCount or \
-                                        totalTime < bestConfigByGpuCount[gpusUsed][0]:
-                                    bestConfigByGpuCount[gpusUsed] = (totalTime, config)
-                            
-                            gpuCountList = bestConfigByGpuCount.keys()
-                            previousSelectedTime = 999999999
-                            for gpuCount in sorted(gpuCountList):
-                                if bestConfigByGpuCount[gpuCount][0] < previousSelectedTime * 0.9: # Don't use more GPUs unless it reduce time by 10% or more.
-                                    previousSelectedTime = bestConfigByGpuCount[gpuCount][0]
-                                    if bestConfigByGpuCount[gpuCount][1] not in selectedConfigs:
-                                        selectedConfigs.append(bestConfigByGpuCount[gpuCount][1])
-                    configOptionLists[j][idx] = selectedConfigs
-                    print(" %2d" % len(configOptionLists[j][idx]), end="")
-                    totalStateCombo *= len(configOptionLists[j][idx])
-                print(" ] (%d combos)" % totalStateCombo, end="")
-
-                # Stop prunning if it is converged.
-                if totalStateCombo == prevTotalStateCombo:
-                    break
-                prevTotalStateCombo = totalStateCombo
-            print("")
-            configOptionLists[j].pop() # remove configs of endLayer
-
-        def generatePrunedCombo(branchIdx: int, configOptionLists: list):
-            if branchIdx == len(configOptionLists):
-                return [[]]
-            
-            combos = []
-            for idx in range(len(configOptionLists[branchIdx])):
-                for config in configOptionLists[branchIdx][idx]:
-                    laterPartList = generatePrunedCombo(branchIdx + 1, configOptionLists)
-                    # print("[generateAllConfigs] for k=%d, (%d, %s), got %s" % (k, nextIndex, str(config), str(laterPartList)))
-                    for laterPart in laterPartList:
-                        completePart = [(idx, config)] + laterPart
-                        combos.append(completePart)
-            return combos
-        
-        allCombinedIdx = generatePrunedCombo(0, configOptionLists)
-
-        initialIdx = tuple(allCombinedIdx[0])
-        t = {}
-        # t[initialIdx] = [(numpy.zeros(k, dtype=numpy.int32), numpy.zeros(totalGpus, dtype=numpy.int32), (0, startConfig))]
-        t[initialIdx] = [([0 for j in range(k)], [0 for j in range(totalGpus)], (-1, startConfig, 0))]
-        # t[initialIdx] = [(array('i', [0 for j in range(k)]), [0 for j in range(totalGpus)], (0, startConfig))]
-        optionsConsideredTotal = 0
-        optionsAfterMinTotal = 0
-        # configOptionLists = [[] for j in range(k)]
-        # for j in range(k):
-        #     configOptionLists[j].append([startConfig])
-        #     for idx in range(1, len(llist[j])):
-        #         configOptionLists[j].append(self.listConfigOptions(llist[j][idx], globalBatch, totalGpus))
-        if verbose:
-            print("Total # of cells in table: %d, configGeneration took: %d sec" % (len(allCombinedIdx), time.time() - time_start))
-        for combinedIdxAndConfig in allCombinedIdx[1:]:
-            # print(combinedIdx)
-            combined = tuple(combinedIdxAndConfig)
-            t[combined] = []
-
-            prefilteredOptions = []
-            for j in range(k):
-                prevIdx = combinedIdxAndConfig[j][0] - 1
-                if prevIdx < 0:
-                    continue
-                currentIdx = combinedIdxAndConfig[j][0]
-                layer = llist[j][currentIdx]
-                prevLayer = llist[j][prevIdx]
-                currentConfig = combinedIdxAndConfig[j][1]
-                gpuTime = int(self.benchGpuTime(layer, currentConfig))
-                
-                for prevConfig in configOptionLists[j][prevIdx]: #prevConfigList:
-                    prevCombinedIdxAndConfig = combinedIdxAndConfig.copy()
-                    prevCombinedIdxAndConfig[j] = (prevIdx, prevConfig)
-                    prevCombined = tuple(prevCombinedIdxAndConfig)
-                    
-                    for optionIdx in range(len(t[prevCombined])):
-                        prevTimeVec, prevGpuReady, prevStep = t[prevCombined][optionIdx]
-                    # for (prevTimeVec, prevGpuReady, prevStep) in t[prevCombined]:
-                        # compute time.
-                        activationTime, activationSizeMatrix = self.calcInputXfer(prevLayer, layer, prevConfig, currentConfig)
-                        
-                        # First, compute the earliest time it can finish j-th chain.
-                        prevBranchReady = prevTimeVec[j]
-                        gpusNeeded = self.calcGpusNeeded(layer, currentConfig, globalBatch)
-                        newGpuReadyTimeVec = sorted(prevGpuReady, reverse=True)
-                        prevGpuReadyTime = newGpuReadyTimeVec[totalGpus - gpusNeeded]
-                        newStartTime = max(prevBranchReady, prevGpuReadyTime)
-                        # newReadyTime = int(newStartTime + activationTime + gpuTime)
-                        newReadyTime = newStartTime + int(activationTime) + gpuTime
-
-                        newTimeVec = prevTimeVec.copy()
-                        newTimeVec[j] = newReadyTime
-
-                        gpusAssigned = 0
-                        for i in range(totalGpus):
-                            if newGpuReadyTimeVec[i] <= newStartTime:
-                                newGpuReadyTimeVec[i] = newReadyTime
-                                gpusAssigned += 1
-                            if gpusAssigned >= gpusNeeded:
-                                break
-                        # # Experiment... bump always.
-                        # bumpToTime = min(newGpuReadyTimeVec)
-                        # bumpedTimeVec = [ max(timeElem, bumpToTime) for timeElem in newTimeVec ]
-                        # prefilteredOptions.append((bumpedTimeVec, newGpuReadyTimeVec, (j, prevConfig, optionIdx) ))
-
-                        prefilteredOptions.append((newTimeVec, newGpuReadyTimeVec, (j, prevConfig, optionIdx) ))
-            
-            optionsConsideredTotal += len(prefilteredOptions)
-
-            # Filter by lamportMin.
-            skipIdicesForEqual = []
-            filteredIndices = []
-            for optionIdx in range(len(prefilteredOptions)):
-                if optionIdx in skipIdicesForEqual:
-                    continue
-                (newTimeVec, newGpuReadyTimeVec, step) = prefilteredOptions[optionIdx]
-                bumpToTime = min(newGpuReadyTimeVec)
-                bumpedTimeVec = [ max(timeElem, bumpToTime) for timeElem in newTimeVec ]
-
-                # check if there's any other result that's clearly better than this.
-                foundBetterOption = False
-                for compareAgainstIdx in range(len(prefilteredOptions)):
-                    if (optionIdx == compareAgainstIdx) or (compareAgainstIdx in filteredIndices):
-                        continue
-                    (cmpTimeVec, cmpGpuReadyTimeVec, cmpStep) = prefilteredOptions[compareAgainstIdx]
-                    better = True
-                    equal = True
-                    for i in range(k):
-                        if bumpedTimeVec[i] < cmpTimeVec[i]:
-                            better = False
-                        if bumpedTimeVec[i] != cmpTimeVec[i]:
-                            equal = False
-                    if better and (not equal):
-                        foundBetterOption = True
-                    if equal:
-                        skipIdicesForEqual.append(compareAgainstIdx)
-                if foundBetterOption:
-                    filteredIndices.append(optionIdx)
-                else:
-                    t[combined].append(prefilteredOptions[optionIdx])
-            # print("[MultiChain] t[%50s] (%3d->%3d options)= %s" %
-            #         (str(combined), len(prefilteredOptions), len(t[combined]), str(t[combined])))
-            if len(t[combined]) == 0:
-                print("  ******  prefilteredOptions: %s" % str(prefilteredOptions))
-            maximumOptionListSize = max(maximumOptionListSize, len(t[combined]))
-            # optionListSizeList.append(len(t[combined]))
-            optionsAfterMinTotal += len(t[combined])
-
-
-        # TODO: Final join to end layer.
-        configToTimeDict = {}
-        
-        def generatePrunedCombo(branchIdx: int, configOptionLists: list):
-            if branchIdx == len(configOptionLists):
-                return [[]]
-            
-            combos = []
-            for idx in range(len(configOptionLists[branchIdx])):
-                for config in configOptionLists[branchIdx][idx]:
-                    laterPartList = generatePrunedCombo(branchIdx + 1, configOptionLists)
-                    # print("[generateAllConfigs] for k=%d, (%d, %s), got %s" % (k, nextIndex, str(config), str(laterPartList)))
-                    for laterPart in laterPartList:
-                        completePart = [(idx, config)] + laterPart
-                        combos.append(completePart)
-            return combos
-
-        # def generateFinalConfigs(k: int, llist: list):
-        #     if k == 0:
-        #         return [[]]
-        #     configs = []
-        #     for config in self.listConfigOptions(llist[0][-1], globalBatch, totalGpus):
-        #         laterPartList = generateFinalConfigs(k-1, llist[1:])
-        #         for laterPart in laterPartList:
-        #             completePart = [(len(llist[0])-1, config)] + laterPart
-        #             configs.append(completePart)
-        #     return configs
-        def generateFinalPrunedCombos(branchIdx: int, configOptionLists: list):
-            if branchIdx == len(configOptionLists):
-                return [[]]
-            combos = []
-            for config in configOptionLists[branchIdx][-1]:
-                laterPartList = generateFinalPrunedCombos(branchIdx + 1, configOptionLists)
-                for laterPart in laterPartList:
-                    completePart = [(len(configOptionLists[branchIdx])-1, config)] + laterPart
-                    combos.append(completePart)
-            return combos
-
-        # finalCombinedList = generateFinalConfigs(k, llist)
-        finalCombinedList = generateFinalPrunedCombos(0, configOptionLists)
-        for endConfig in self.listConfigOptions(endLayer, globalBatch, totalGpus):
-            gpuTime = self.benchGpuTime(endLayer, endConfig)
-
-            bestTime = 9999999999999
-            optionWithBestTime = None
-            for combinedIdxAndConfig in finalCombinedList:
-                # activation time. 
-                activationTimeSum = 0
-                activationTimeList = []
-                for j in range(k):
-                    prevConfig = combinedIdxAndConfig[j][1]
-                    activationTime, temp = self.calcInputXfer(llist[j][-1], endLayer, prevConfig, endConfig)
-                    activationTimeSum += activationTime
-                    activationTimeList.append(activationTime)
-
-                # traverse all options..
-                for optionIdx in range(len(t[tuple(combinedIdxAndConfig)])):
-                    timeVec, gpuReady, prevStep = t[tuple(combinedIdxAndConfig)][optionIdx]
-                # for timeVec, gpuReady, prevStep in t[tuple(combinedIdxAndConfig)]:
-                    # First, compute the earliest time it can finish j-th chain.
-                    endTime = max(timeVec) + activationTimeSum + gpuTime
-                    if endTime < bestTime:
-                        bestTime = endTime
-                        optionWithBestTime = (tuple(combinedIdxAndConfig), optionIdx)
-            configToTimeDict[endConfig] = (bestTime, optionWithBestTime)
-
-        if verbose:
-            avgOptionListSize = optionsAfterMinTotal / len(allCombinedIdx)
-            elapsedTime = time.time() - time_start
-            print("[searchMultiChain] took: %d sec (%.3f ms per cell)" % (elapsedTime, 1000 * elapsedTime / len(allCombinedIdx)))
-            print("[searchMultiChain] maximumOptionListSize: %d, avg: %.2f, pre-lamportMin: %.2f" % (maximumOptionListSize, avgOptionListSize, optionsConsideredTotal / len(allCombinedIdx)))
-        return (endLayer, configToTimeDict, t)
-
-
-
-
-
-
-
-
-    def searchBestSplitsV3(self, totalGpus: int, globalBatch: int = 16, amplificationLimit: float = 2.0, dataParallelBaseline = False):
-        """ Parallelization strategy findiing for DeepPool. """
-        t = [[] for i in range(len(self.layers))] # [layer] = list of (config, cumulativeTime, prevConfigIndex)
-
-        initialConfigs = []
-        initialTimes = []
-        bestConfigList = []
-        bestTimeList = []
-        bestDataParallelTimeList = []
-        # for i in range(len(self.layers)):
-        #     layer = self.layers[i]
-        layer = self.layers[0]
+    def searchLinear(self, preStartLayer, preStartConfig, startLayer, ctx: SearchContext):
+        layer = startLayer
         while True:
-            i = layer.id
-            
-            initCfg = self.getInitialConfig(layer, globalBatch)
-            initialConfigs.append(initCfg)
+            layer.t = {}
 
-            bestTime = self.benchGpuTime(layer, initCfg)
-            bestDataParallelTime = bestTime
-            initialTimes.append(bestTime)
-            bestConfig = initCfg
+            initCfg = self.getInitialConfig(layer, ctx.globalBatch)
+            layer.initCfg = initCfg
+            layer.noParallelTime = self.benchGpuTime(layer, initCfg) + self.calcSyncTime(layer, initCfg, ctx)
             
-            configCandidates = self.listConfigOptions(layer, globalBatch, totalGpus, sampleSplit=True, spatialSplit=False, filterSplit=False, dataParallelBaseline=dataParallelBaseline)
+            configCandidates = self.listConfigOptions(layer, ctx.globalBatch, ctx.totalGpus, sampleSplit=ctx.sampleSplit, spatialSplit=ctx.spatialSplit, filterSplit=ctx.filterSplit, dataParallelBaseline=ctx.dataParallelBaseline)
+            if self.verbose and layer.id < 3:
+                print(" %2d  configCandidates: %s" % (layer.id, str(configCandidates)))
+            
             for config in configCandidates:
-                # Benchmark GPU time
+                # Benchmark GPU time and all-reduce time
                 gpuTime = self.benchGpuTime(layer, config)
+                syncTime = self.calcSyncTime(layer, config, ctx)
                 
-                # Computer all-reduce time
-                if layer.name in ["conv2d"]:
-                    syncTime = self.calcConv2dSyncTime(config)
-                elif layer.name in ["linear"]:
-                    syncTime = self.calcLinearSyncTime(config, globalBatch)
-                else:
-                    syncTime = 0
-                
-                if i == 0:
-                    t[i].append((config, gpuTime + syncTime, None, (0, 0, gpuTime, syncTime, (0)) ))
-                else:
-                    bestPrevCfgIdx = 0
-                    bestCumulativeTime = 99999999999
-                    bestTimeComposition = None
+                if layer == startLayer:
+                    if preStartLayer != None:
+                        cumulativeTime, prevLayerTime, prevConfigOfPrev, timeComposition, prevMpIdleTime = preStartLayer.t[preStartConfig]
+                        activationTime, activationSizeMatrix = self.calcInputXfer(preStartLayer, layer, preStartConfig, config)
+                    else:
+                        cumulativeTime = 0
+                        activationTime = 0
+                        activationSizeMatrix = (0)
+                    
+                    timeComposition = (cumulativeTime, activationTime, gpuTime, syncTime, activationSizeMatrix)
+                    layerTime = activationTime + gpuTime + syncTime
+                    newTime = cumulativeTime + layerTime #activationTime + gpuTime + syncTime
 
-                    # WARNING!! Following main branch only!!
+                    layer.t[config] = (newTime, layerTime, preStartConfig, timeComposition, 0)
+                else:
                     prevLayer = layer.prevLayers[0]
-                    for prevCfgIdx in range(len(t[prevLayer.id])):
-                        prevCfg, cumulativeTime, prevConfigIndexOfPrev, timeComposition = t[prevLayer.id][prevCfgIdx]
+                    bestPrevCfg = None
+                    bestCumulativeTime = 99999999999
+                    bestLayerTime = None
+                    bestTimeComposition = None
+                    bestAmplification = 999999
+
+                    for prevCfg in prevLayer.t:
+                        cumulativeTime, prevLayerTime, prevConfigOfPrev, timeComposition, prevMpIdleTime = prevLayer.t[prevCfg]
                         activationTime, activationSizeMatrix = self.calcInputXfer(prevLayer, layer, prevCfg, config)
-                        # if self.verbose and i < 5:
-                        #     print(" %2d " % i, end="")
+                        
+                        # if self.verbose and layer.id < 150:
+                        #     print(" %2d " % layer.id, end="")
                         #     if layer.name in ["conv2d"]:
                         #         print("%9s  => " % (layer.name), end="")
                         #         print("(b=%2d, w=%3d, h=%3d, c=%4d, f=%4d) " % config, end="")
                         #     elif layer.name in ["linear", "ReLU1d"]:
-                        #         print("%9s (b=%2d, in=%6d, out=%6d)        => " % (layer.name, *initialConfigs[i]), end="")
+                        #         print("%9s  => " % (layer.name), end="")
                         #         print("(b=%2d, in=%6d, out=%6d)        " % config, end="")
                         #     elif layer.name in ["flatten", "maxPool2d", "avgPool2d", "adAvgPool2d", "ReLU2d", "concat"]:
-                        #         print("%9s (b=%2d, w=%3d, h=%3d, c=%4d)         => " % (layer.name, *initialConfigs[i]), end="")
+                        #         print("%9s  => " % (layer.name), end="")
                         #         print("(b=%2d, w=%3d, h=%3d, c=%4d)         " % config, end="")
                         #     print("  gpusUsed:%2d->%2d  %6.f   %6.f   %6.f " % \
-                        #         (self.calcGpusNeeded(prevLayer, prevCfg, globalBatch),
-                        #         self.calcGpusNeeded(layer, config, globalBatch),
+                        #         (self.calcGpusNeeded(prevLayer, prevCfg, ctx.globalBatch),
+                        #         self.calcGpusNeeded(layer, config, ctx.globalBatch),
                         #         gpuTime, activationTime, syncTime))
+                        
+                        gpusUsed = self.calcGpusNeeded(prevLayer, prevCfg, ctx.globalBatch)
+                        # if not hasattr(prevLayer, 'noParallelTime'):
+                        #     print("no prevLayer.noParallelTime. layerId:%d, name:%s" % (prevLayer.id, prevLayer.name))
+                        amplification = ((prevLayerTime * gpusUsed) / (prevLayer.noParallelTime)) if (prevLayerTime > 0 and prevLayer.noParallelTime > 300) else 1
+                        layerTime = activationTime + gpuTime + syncTime
 
-                        if cumulativeTime + activationTime + gpuTime + syncTime < bestCumulativeTime:
-                            bestCumulativeTime = cumulativeTime + activationTime + gpuTime + syncTime
+                        if cumulativeTime + layerTime < bestCumulativeTime and \
+                                (amplification < ctx.amplificationLimit or amplification < bestAmplification): # consider if this is within amplification limit or minimum among so far observed.
+                            bestCumulativeTime = cumulativeTime + layerTime
+                            bestLayerTime = layerTime
                             bestTimeComposition = (cumulativeTime, activationTime, gpuTime, syncTime, activationSizeMatrix)
-                            bestPrevCfgIdx = prevCfgIdx
-                            
-                    t[i].append((config, bestCumulativeTime, bestPrevCfgIdx, bestTimeComposition ))
+                            bestAmplification = amplification # although it might not be the best so far.. it should be still within amplification limit.
+                            bestPrevCfg = prevCfg
 
-                if gpuTime < bestTime:
-                    bestTime = gpuTime
-                    bestConfig = config
-                if self.isConfigDataParallelOnly(layer, config, globalBatch) and gpuTime < bestDataParallelTime:
-                    bestDataParallelTime = gpuTime
+                    layer.t[config] = (bestCumulativeTime, bestLayerTime, bestPrevCfg, bestTimeComposition, 0) # mpIdleTime is 0 for sequencial scan.
+
+                    #     if cumulativeTime + activationTime + gpuTime + syncTime < bestCumulativeTime:
+                    #         bestCumulativeTime = cumulativeTime + activationTime + gpuTime + syncTime
+                    #         bestTimeComposition = (cumulativeTime, activationTime, gpuTime, syncTime, activationSizeMatrix)
+                    #         bestPrevCfg = prevCfg
+
+                    # layer.t[config] = (bestCumulativeTime, bestPrevCfg, bestTimeComposition, 0) # mpIdleTime is 0 for sequencial scan.
+
+            while len(layer.nextLayers) > 1:
+                layer = self.searchBranch(layer, ctx)
             
-            bestConfigList.append(bestConfig)
-            bestTimeList.append(bestTime)
-            bestDataParallelTimeList.append(bestDataParallelTime)
-            
-            if len(layer.nextLayers) == 1:
-                print("sequencial transition.")
+            if len(layer.nextLayers) == 0:
+                return layer
+            elif len(layer.nextLayers) == 1:
                 layer = layer.nextLayers[0]
-            elif len(layer.nextLayers) == 0:
-                print("Search completed.")
-                break
-            elif len(layer.nextLayers) > 1:
-                while len(layer.nextLayers) > 1:
-                    bestTimeByConfig = {}
-                    print("Branching out at %d-th layer" % layer.id)
-                    for startCfgIdx in range(len(t[layer.id])):
-                        startCfg, cumulativeTime, prevConfigIndexOfPrev, timeComposition = t[layer.id][startCfgIdx]
-                        if useZhihaoAlgo:
-                            (endLayer, configToTimeDict, multiChainT) = self.runMultiChainZhihao(layer, startCfg, globalBatch, totalGpus)
-                        else:
-                            (endLayer, configToTimeDict, multiChainT) = self.searchMultiChain(layer, startCfg, globalBatch, totalGpus)
-
-                        for endConfig in configToTimeDict:
-                            newTime = configToTimeDict[endConfig][0] + cumulativeTime
-                            if endConfig not in bestTimeByConfig or \
-                                    bestTimeByConfig[endConfig][1] > newTime:
-                                bestTimeByConfig[endConfig] = (endConfig, newTime, startCfgIdx, (0, 0, 0, 0, (0)) )
-
-                    for endConfig in bestTimeByConfig:
-                        t[endLayer.id].append(bestTimeByConfig[endConfig])
-                    layer = endLayer
-                layer = layer.nextLayers[0]
-
-        print("Network bandwidth: %5.f Gbps" % (self.NET_BANDWIDTH * 8 / 1000))
-        print("Best GPU-only time: %6.1f" % (sum(bestTimeList)))
-        # print("Total with maxpool + linear layers: %6.1f" % (sum(bestTimeList) + 425 + 1100))
-        
-        bestDpTime = 99999999999
-        cfgIdx = 0
-        for idx in range(len(t[-1])):
-            prevCfg, cumulativeTime, prevConfigIndexOfPrev, timeComposition = t[i][idx]
-            if cumulativeTime < bestDpTime:
-                bestDpTime = cumulativeTime
-                cfgIdx = prevConfigIndexOfPrev
-        bestConfigChain = [None for i in range(len(t))]
-        print("Best DP time: %6.f"%bestDpTime)
+                if len(layer.prevLayers) > 1: # Joining layer.
+                    return layer
+            else:
+                print("Error!")
         return
+    
+    def searchBranch(self, startLayer: Layer, ctx: SearchContext):
+        print("Branching out at %d-th layer" % startLayer.id)
 
-        for i in range(len(t) - 1, -1, -1):
-            bestConfigChain[i] = cfgIdx
-            # print("for layer%2d, cfgIdx: %2d" % (i, cfgIdx))
-            config, cumulativeTime, prevConfigIndexOfPrev, timeComposition = t[i][cfgIdx]
-            cfgIdx = prevConfigIndexOfPrev
+        # First pass. Figure out the best startConfig for every ending config.
+        bestTimeByEndCfg = {}
+        bestLayerTimeByEndCfg = {}
+        bestStartCfgByEndCfg = {}
+        bestPrevCfgListByEndCfg = {}
+        mpIdleTimeByEndCfg = {}
+        joiningLayer = None
+        
+        if hasattr(startLayer, "bestCfg"):
+            startCfgOptions = [startLayer.bestCfg]
+        else:
+            startCfgOptions = startLayer.t.keys()
 
-        print("Layer    type       initial configuration          => after split configuration            time (us) |   prev inptXfer  gpuTime syncTime bestGpuTime dpGpuTime noParallelTime")
-        for i in range(len(bestConfigChain)):
-            config, cumulativeTime, prevConfigIndexOfPrev, timeComposition = t[i][bestConfigChain[i]]
-            print(" %2d " % i, end="")
-            layer = self.layers[i]
-            if layer.name in ["conv2d"]:
-                print("%9s (b=%2d, w=%3d, h=%3d, c=%4d, f=%4d) => " % (layer.name, *initialConfigs[i]), end="")
-                print("(b=%2d, w=%3d, h=%3d, c=%4d, f=%4d) " % config, end="")
-            elif layer.name in ["linear", "ReLU1d"]:
-                print("%9s (b=%2d, in=%6d, out=%6d)        => " % (layer.name, *initialConfigs[i]), end="")
-                print("(b=%2d, in=%6d, out=%6d)        " % config, end="")
-            elif layer.name in ["flatten", "maxPool2d", "avgPool2d", "adAvgPool2d", "ReLU2d", "concat"]:
-                print("%9s (b=%2d, w=%3d, h=%3d, c=%4d)         => " % (layer.name, *initialConfigs[i]), end="")
-                print("(b=%2d, w=%3d, h=%3d, c=%4d)         " % config, end="")
+        initCfg = self.getInitialConfig(startLayer, ctx.globalBatch)
+        startLayer.initCfg = initCfg
+        startLayer.noParallelTime = self.benchGpuTime(startLayer, initCfg) + self.calcSyncTime(startLayer, initCfg, ctx)
+
+        for startCfg in startCfgOptions:
+            cumulativeTime, prevLayerTime, prevConfigIndexOfPrev, timeComposition, prevMpIdleTime = startLayer.t[startCfg]
+            for layer in startLayer.nextLayers:
+                endingLayer = self.searchLinear(startLayer, startCfg, layer, ctx)
+                if joiningLayer == None:
+                    joiningLayer = endingLayer
+                else:
+                    assert joiningLayer == endingLayer
+
+            for joinConfig in self.listConfigOptions(joiningLayer, ctx.globalBatch, ctx.totalGpus, sampleSplit=ctx.sampleSplit, spatialSplit=ctx.spatialSplit, filterSplit=ctx.filterSplit, dataParallelBaseline=ctx.dataParallelBaseline):
+                gpuTime = self.benchGpuTime(joiningLayer, joinConfig)
+                syncTime = self.calcSyncTime(joiningLayer, joinConfig, ctx)
+
+                maxBestCumulativeTime = 0
+                sumBestActivationTime = 0
+                bestCumulativeTimeList = []
+                bestPrevCfgList = []
+                bestTimeCompositionList = []
+                for prevLayer in joiningLayer.prevLayers:
+                    bestPrevCfg = None
+                    bestCumulativeTime = 99999999999
+                    bestActivationTime = None
+                    bestTimeComposition = None
+                    bestAmplification = 999999
+
+                    for prevCfg in prevLayer.t:
+                        cumulativeTime, prevLayerTime, prevConfigIndexOfPrev, timeComposition, prevMpIdleTime = prevLayer.t[prevCfg]
+                        activationTime, activationSizeMatrix = self.calcInputXfer(prevLayer, joiningLayer, prevCfg, joinConfig)
+                        # print("[%d (%s)-> %d (%s)] activationTime: %6.f" % (prevLayer.id, str(prevCfg), joiningLayer.id, str(joinConfig), activationTime))
+                        gpusUsed = self.calcGpusNeeded(prevLayer, prevCfg, ctx.globalBatch)
+                        amplification = ((prevLayerTime * gpusUsed) / (prevLayer.noParallelTime)) if (prevLayerTime > 0 and prevLayer.noParallelTime > 300) else 1
+
+                        if cumulativeTime + activationTime + gpuTime + syncTime < bestCumulativeTime and \
+                                (amplification < ctx.amplificationLimit or amplification < bestAmplification): # consider if this is within amplification limit or minimum among so far observed.
+                            bestCumulativeTime = cumulativeTime + activationTime + gpuTime + syncTime
+                            bestActivationTime = activationTime
+                            bestTimeComposition = (cumulativeTime, activationTime, gpuTime, syncTime, activationSizeMatrix)
+                            bestAmplification = amplification # although it might not be the best so far.. it should be still within amplification limit.
+                            bestPrevCfg = prevCfg
+                    
+                    # TODO: consider amplifcation here as well. Currently layers just before joiningLayer don't consider amplification.
+                    maxBestCumulativeTime = max(maxBestCumulativeTime, bestCumulativeTime)
+                    sumBestActivationTime += bestActivationTime
+                    bestCumulativeTimeList.append(bestCumulativeTime)
+                    bestPrevCfgList.append(bestPrevCfg)
+                    bestTimeCompositionList.append(bestTimeComposition)
+
+                mpIdleTime = sum([maxBestCumulativeTime - bestCumulTime for bestCumulTime in bestCumulativeTimeList])
+                if joinConfig not in bestTimeByEndCfg or maxBestCumulativeTime < bestTimeByEndCfg[joinConfig]:
+                    bestTimeByEndCfg[joinConfig] = maxBestCumulativeTime
+                    bestLayerTimeByEndCfg[joinConfig] = sumBestActivationTime + gpuTime + syncTime
+                    # print("sumBestActivationTime: %6.f + gpuTime: %6.f + syncTime: %6.f" % (sumBestActivationTime, gpuTime, syncTime))
+                    bestStartCfgByEndCfg[joinConfig] = startCfg
+                    bestPrevCfgListByEndCfg[joinConfig] = bestPrevCfgList
+                    mpIdleTimeByEndCfg[joinConfig] = mpIdleTime
+
+        joiningLayerInitCfg = self.getInitialConfig(joiningLayer, ctx.globalBatch)
+        joiningLayer.initCfg = joiningLayerInitCfg
+        joiningLayer.noParallelTime = self.benchGpuTime(joiningLayer, joiningLayerInitCfg) + self.calcSyncTime(joiningLayer, joiningLayerInitCfg, ctx)
+        joiningLayer.t = {}
+        for joinConfig in bestTimeByEndCfg:
+            bestTimeByEndCfg[joinConfig]
+            bestStartCfgByEndCfg[joinConfig]
+            joiningLayer.t[joinConfig] = (bestTimeByEndCfg[joinConfig], bestLayerTimeByEndCfg[joinConfig], bestStartCfgByEndCfg[joinConfig], bestPrevCfgListByEndCfg[joinConfig], mpIdleTimeByEndCfg[joinConfig])
+            joiningLayer.branchStartLayer = startLayer
+
+        return joiningLayer
+
+    def to_dot(self, name, globalBatch):
+        dot = graphviz.Digraph(name = name)
+        for layer in self.layers:
+            gpusUsed = self.calcGpusNeeded(layer, layer.bestCfg, globalBatch)
+            comment = ""
+            # if hasattr(layer, 'gpuLocalAssignmentDict'):
+            #     comment = "\n" + str(layer.gpuLocalAssignmentDict)
+
+            node_desc = "%d) %s\nt= %.2f ms (+%.2f)\nGPU=%d%s%s" % ( #]\nidle=%.1fms" % (
+                layer.id, layer.name, layer.t[layer.bestCfg][0] / 1000, layer.t[layer.bestCfg][1] / 1000, gpusUsed, layer.gpuAssignment, comment) #, layer.t[layer.bestCfg][4] / 1000) #, str(layer.bestCfg))
+            # if node.stage_id is not None:
+            #     color = self._colors[node.stage_id % len(self._colors)]
+            #     dot.node(node.node_id, node_desc,
+            #        color=color, style='filled')
+            # else:
+            dot.node(str(layer.id), node_desc)
+        for layer in self.layers:
+            for l in layer.nextLayers:
+                dot.edge(str(layer.id), str(l.id))
+        dot.render()
+
+    def searchBestSplitsV3(self, totalGpus: int, globalBatch: int = 16, amplificationLimit: float = 2.0, dataParallelBaseline = False, sampleSplit=True, spatialSplit=False, filterSplit=False):
+        """ Parallelization strategy findiing for DeepPool. """
+        ctx = SearchContext(totalGpus, globalBatch, amplificationLimit, dataParallelBaseline, sampleSplit=sampleSplit, spatialSplit=spatialSplit, filterSplit=filterSplit)
+        finalLayer = self.searchLinear(None, None, self.layers[0], ctx)
+
+        bestTime = 99999999999
+        bestLastCfg = None
+        bestLastLayerTime = None
+        finalLayer.initCfg = self.getInitialConfig(finalLayer, ctx.globalBatch)
+        for lastCfg in finalLayer.t:
+            cumulativeTime, layerTime, prevCfg, timeComposition, prevMpIdleTime = finalLayer.t[lastCfg]
+            if cumulativeTime < bestTime:
+                bestTime = cumulativeTime
+                bestLastCfg = lastCfg
+                bestLastLayerTime = layerTime
+
+        print("Network bandwidth: %5.f Gbps" % (self.NET_BANDWIDTH * 8 / 1000))        
+        print("Best Time: %.f" % bestTime)
+
+        gpuUsecSum = 0
+        # Initial backward pass
+        def backwardLinear(lastLayer, bestLastCfg, stopAtLayer=None):
+            gpuUsecSum = 0
+            maxGpusUsed = 0
+            layer = lastLayer
+            bestCfg = bestLastCfg
+            while True:
+                layer.bestCfg = bestCfg
+                if layer == stopAtLayer:
+                    # gpuUsecSum -= layer.t[bestCfg][1] * self.calcGpusNeeded(layer, bestCfg, ctx.globalBatch) # To avoid double-counting, add startLayer in backwardBranch.
+                    return gpuUsecSum, maxGpusUsed
+                
+                gpusUsed = self.calcGpusNeeded(layer, bestCfg, ctx.globalBatch)
+                gpuUsecSum += layer.t[bestCfg][1] * gpusUsed
+                maxGpusUsed = max(maxGpusUsed, gpusUsed)
+                
+                if layer.prevLayers == None or len(layer.prevLayers) == 0:
+                    return gpuUsecSum, maxGpusUsed
+                elif len(layer.prevLayers) > 1:
+                    cumulativeTime, layerTime, prevConfig, bestPrevCfgListByEndCfg, prevMpIdleTime = layer.t[bestCfg]
+                    layer.branchStartLayer.bestCfg = prevConfig
+                    self.searchBranch(layer.branchStartLayer, ctx)
+                    gpuUsecBlock, gpusUsedBlock = backwardBranch(layer, bestPrevCfgListByEndCfg)
+                    gpuUsecSum += gpuUsecBlock
+                    maxGpusUsed = max(maxGpusUsed, gpusUsedBlock)
+
+                    layer = layer.branchStartLayer
+                    bestCfg = prevConfig
+                elif len(layer.prevLayers) == 1:
+                    cumulativeTime, layerTime, prevConfig, timeComposition, prevMpIdleTime = layer.t[bestCfg]
+                    layer = layer.prevLayers[0]
+                    bestCfg = prevConfig
+                else:
+                    assert False
+        
+        def backwardBranch(joiningLayer, bestPrevCfgListByEndCfg: list):
+            gpuUsecSum = 0
+            gpusUsedBlock = 0
+            branchStartLayer = joiningLayer.branchStartLayer
+            blockStartTime = branchStartLayer.t[branchStartLayer.bestCfg][0]
+            branchTimeList = []
+            for prevLayer, prevCfg in zip(joiningLayer.prevLayers, bestPrevCfgListByEndCfg):
+                gpuUsecBranch, gpusUsedBranch = backwardLinear(prevLayer, prevCfg, stopAtLayer=joiningLayer.branchStartLayer)
+                gpuUsecSum += gpuUsecBranch
+                gpusUsedBlock += gpusUsedBranch
+                branchTimeList.append((prevLayer.t[prevCfg][0] - blockStartTime, gpusUsedBranch, prevLayer.id))
+
+            ## GPU packing! Comment out to disable GPU packing.
+            branchTimeList.sort(reverse=True)
+            maxBranchTime = max([x[0] for x in branchTimeList])
+            gpuLocalAssignmentDict = {} # list of lists.
+            #TODO: This is slightly off.. must consider the last activation time.
+            newGpuReadyTimeVec = []
+            for branchTime, gpusNeeded, prevLayerId in branchTimeList:
+                gpuLocalAssignment = []
+                gpusAssigned = 0
+                for i in range(len(newGpuReadyTimeVec)):
+                    if newGpuReadyTimeVec[i] + branchTime <= maxBranchTime:
+                        newGpuReadyTimeVec[i] += branchTime
+                        gpusAssigned += 1
+                        gpuLocalAssignment.append(i)
+                    if gpusAssigned >= gpusNeeded:
+                        break
+                for i in range(len(newGpuReadyTimeVec), len(newGpuReadyTimeVec) + gpusNeeded - gpusAssigned):
+                    gpuLocalAssignment.append(i)
+                    newGpuReadyTimeVec.append(branchTime)
+                gpuLocalAssignmentDict[prevLayerId] = gpuLocalAssignment
+
+            joiningLayer.gpuLocalAssignmentDict = gpuLocalAssignmentDict
+
+            print(" GPU packing at layer %d.. reduced gpusUsedBlock %d -> %d" % (branchStartLayer.id, gpusUsedBlock, len(newGpuReadyTimeVec)))
+            gpusUsedBlock = len(newGpuReadyTimeVec)
             
-            gpuTimeScaling = (initialTimes[i] / timeComposition[2]) if timeComposition[2] > 0 else 0
-            print("   %6.f   %6.f   %6.f   %6.f   %6.f      %6.f    %6.f  %6.f (%4.1fx)  %10s"
-                    % (cumulativeTime, timeComposition[0], timeComposition[1], timeComposition[2], timeComposition[3], bestTimeList[i], bestDataParallelTimeList[i], initialTimes[i], gpuTimeScaling, str(timeComposition[4])))
+            gpusUsed = self.calcGpusNeeded(joiningLayer, joiningLayer.bestCfg, ctx.globalBatch)
+            gpuUsecSum += joiningLayer.t[joiningLayer.bestCfg][1] * gpusUsed
+            gpusUsedBlock = max(gpusUsedBlock, gpusUsed)
+            return gpuUsecSum, gpusUsedBlock
+
+        gpuUsecSum, maxGpusUsed = backwardLinear(finalLayer, bestLastCfg)
         
+        print("Final layer: ", finalLayer.id, " bestCfg:", finalLayer.bestCfg)
+
+        # 2nd backward pass: assign GPUs.
+        def gpuAssignLinear(lastLayer, availableRanks, stopAtLayer=None):
+            gpuUsecSum = 0
+            layer = lastLayer
+            while True:
+                if layer == stopAtLayer:
+                    return
+                
+                gpusUsed = self.calcGpusNeeded(layer, layer.bestCfg, ctx.globalBatch)
+                layer.gpuAssignment = [availableRanks[i] for i in range(gpusUsed)]
+                
+                if layer.prevLayers == None or len(layer.prevLayers) == 0:
+                    return
+                elif len(layer.prevLayers) > 1:
+                    gpuAssignBranch(layer, availableRanks)
+                    layer = layer.branchStartLayer
+                elif len(layer.prevLayers) == 1:
+                    layer = layer.prevLayers[0]
+                else:
+                    assert False
+        
+        def gpuAssignBranch(joiningLayer, availableRanks):
+            for prevLayer in joiningLayer.prevLayers:
+                branchGpuNeeded = joiningLayer.gpuLocalAssignmentDict[prevLayer.id]
+                gpuAssignLinear(prevLayer, [availableRanks[i] for i in branchGpuNeeded], stopAtLayer=joiningLayer.branchStartLayer)
+                        
+            gpusUsed = self.calcGpusNeeded(joiningLayer, joiningLayer.bestCfg, ctx.globalBatch)
+            joiningLayer.gpuAssignment = [availableRanks[i] for i in range(gpusUsed)]
+
+        gpuAssignLinear(finalLayer, list(range(maxGpusUsed)))
+        # gpuAssignLinear(finalLayer, list(range(ctx.totalGpus)))
+
+
+
+        # Print result
+        print("Layer    type       initial configuration          => after split configuration            #GPUs time(us) |   prev inptXfer  gpuTime syncTime bestGpuTime dpGpuTime noParallelTime")
+        finalTime = 0
+        dpTime = 0
+        for layer in self.layers:
+            cumulativeTime, layerTime, prevConfigIndexOfPrev, timeComposition, mpIdleTime = layer.t[layer.bestCfg]
+            dpTime += layerTime
+            nextLayerIds = []
+            for l in layer.nextLayers:
+                nextLayerIds.append(l.id)
+
+            print(" %3d  %25s  " % (layer.id, str(nextLayerIds)), end="")
+            if not hasattr(layer, "bestCfg"):
+                print("no bestCfg")
+                continue
+            if not hasattr(layer, "initCfg"):
+                print("no initCfg", end="")
+                layer.initCfg = self.getInitialConfig(layer, ctx.globalBatch)
+                # continue
+            
+            if layer.name in ["conv2d"]:
+                print("%11s (b=%2d, w=%3d, h=%3d, c=%4d, f=%4d) => " % (layer.name, *layer.initCfg), end="")
+                print("(b=%2d, w=%3d, h=%3d, c=%4d, f=%4d) " % layer.bestCfg, end="")
+            elif layer.name in ["linear", "ReLU1d"]:
+                print("%11s (b=%2d, in=%6d, out=%6d)        => " % (layer.name, *layer.initCfg), end="")
+                print("(b=%2d, in=%6d, out=%6d)        " % layer.bestCfg, end="")
+            elif layer.name in ["flatten", "maxPool2d", "avgPool2d", "adAvgPool2d", "ReLU2d", "concat"]:
+                print("%11s (b=%2d, w=%3d, h=%3d, c=%4d)         => " % (layer.name, *layer.initCfg), end="")
+                print("(b=%2d, w=%3d, h=%3d, c=%4d)         " % layer.bestCfg, end="")
+
+            gpusUsed = self.calcGpusNeeded(layer, layer.bestCfg, ctx.globalBatch)
+            gpuTime = self.benchGpuTime(layer, layer.bestCfg)
+            # gpuUsec = gpusUsed * (cumulativeTime - timeComposition[0])
+            # gpuUsecSum += gpuUsec
+            print(" %4d   %6.f   %6.f   %6.f   " #%6.f   %6.f      %6.f    %6.f  %6.f (%4.1fx) (DP:%4.1fx, MP:%4.1fx)  %6.f  %10s"
+                    % (gpusUsed, cumulativeTime, layer.t[layer.bestCfg][1], gpuTime))#, timeComposition[0], timeComposition[1], timeComposition[2], timeComposition[3])) #, bestTimeList[i], bestDataParallelTimeList[i], initialTimes[i], gpuTimeScaling, gpuTimeScalingDP, gpuTimeScalingMP, gpuUsec, str(timeComposition[4])))
+            finalTime = max(cumulativeTime, finalTime)
         print("-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------")
-        print("  Sum                                                                                      ", end="")
-        print("   %6.f   %6.f   %6.f   %6.f   %6.f      %6.f    %6.f  %6.f (%4.1fx)"
-                % (t[len(bestConfigChain)-1][bestConfigChain[len(bestConfigChain)-1]][1],
-                    0,
-                    sum(t[i][bestConfigChain[i]][3][1] for i in range(len(bestConfigChain))),
-                    sum(t[i][bestConfigChain[i]][3][2] for i in range(len(bestConfigChain))),
-                    sum(t[i][bestConfigChain[i]][3][3] for i in range(len(bestConfigChain))),
-                    sum(bestTimeList),
-                    sum(bestDataParallelTimeList),
-                    sum(initialTimes),
-                    sum(initialTimes) / sum(t[i][bestConfigChain[i]][3][2] for i in range(len(bestConfigChain)))
-                    ))
-        
-        return self.generateModuleDescription([t[i][bestConfigChain[i]][0] for i in range(len(bestConfigChain))], globalBatch)
+        print("  final                                                                %6.3f ms    %6.3f gpuMsec  DPtime: %6.3f ms, maxGpusUsed: %d"
+                 % (finalTime/1000, gpuUsecSum/1000, dpTime/1000, maxGpusUsed))
+
+        # moduleDesc = self.generateModuleDescription([layer.bestCfg for layer in self.layers], ctx.globalBatch)
+        moduleDesc = TrainingJob("test", self.layers, [layer.bestCfg for layer in self.layers], ctx.globalBatch, maxGpusUsed, "na")
+        # moduleDesc = None
+        if ctx.dataParallelBaseline:
+            return (moduleDesc, dpTime / 1000., gpuUsecSum / 1000., ctx.totalGpus)
+        else:
+            return (moduleDesc, finalTime / 1000., gpuUsecSum / 1000., maxGpusUsed)
