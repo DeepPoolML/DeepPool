@@ -425,7 +425,7 @@ def wide_resnet101_2(pretrained: bool = False, progress: bool = True, **kwargs: 
 # profiler.saveProfile()
 
 
-def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=False, netBw=22937, spatialSplit=False, simResultFilename=None):
+def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=False, netBw=2.66E5, spatialSplit=False, simResultFilename=None):
     profiler = GpuProfiler("cuda")
     profiler.loadProfile()
     global cs
