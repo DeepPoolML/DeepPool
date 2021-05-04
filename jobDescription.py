@@ -49,17 +49,18 @@ class Layer:
                 prop["nextLayers"].append(nextLayer.id)
         prop["inputDim"] = self.inputDim
         prop["outputDim"] = self.outputDim
-        # prop["inputDim"] = {"width": self.inputDim[0], "height": self.inputDim[1], "channel": self.inputDim[2]}
-        # prop["outputDim"] = {"width": self.outputDim[0], "height": self.outputDim[1], "channel": self.outputDim[2]}
+        if hasattr(self, 'gpuAssignment'):
+            prop["gpuAssignment"] = self.gpuAssignment
         return prop
 
 
 class TrainingJob:
-    def __init__(self, name: str, layers: List[Layer], layerConfigs: List[tuple], globalBatchSize: int, datasetDir: str):
+    def __init__(self, name: str, layers: List[Layer], layerConfigs: List[tuple], globalBatchSize: int, maxGpusUsed: int, datasetDir: str):
         self.name = name
         self.layers = layers
         self.layerConfigs = layerConfigs
         self.globalBatchSize = globalBatchSize
+        self.maxGpusUsed = maxGpusUsed
         self.datasetDir = datasetDir
         self.bytesPerParam = 4
         self.initialBatchSizes = None
@@ -68,6 +69,7 @@ class TrainingJob:
     def loadJSON(self, jobInJson: str):
         job = json.loads(jobInJson)
         self.globalBatchSize = job["globalBatchSize"]
+        self.maxGpusUsed = job["maxGpusUsed"]
         self.layers = []
         self.layerConfigs = []
         for ldsc in job["layers"]:
@@ -78,17 +80,21 @@ class TrainingJob:
             # l.nextLayers = ldsc["nextLayers"]
             l.inputDim = ldsc["inputDim"]
             l.outputDim = ldsc["outputDim"]
+            if 'gpuAssignment' in ldsc:
+                l.gpuAssignment = ldsc["gpuAssignment"]
+            l.bestCfg = ldsc["config"]
             config = ldsc["config"]
             self.layers.append(l)
             self.layerConfigs.append(config)
     
     def getGpusUsed(self):
-        maxGpusUsed = 0
-        for l, config in zip(self.layers, self.layerConfigs):
-            destGpus = self.calcGpusNeeded(l, config, self.globalBatchSize)
-            maxGpusUsed = max(maxGpusUsed, destGpus)
-            # print("[getGpusUsed] layer: %d, destGpus: %d, maxGpusUsed: %d, config: %s" % (l.id, destGpus, maxGpusUsed, str(config)))
-        return maxGpusUsed
+        return self.maxGpusUsed
+        # maxGpusUsed = 0
+        # for l, config in zip(self.layers, self.layerConfigs):
+        #     destGpus = self.calcGpusNeeded(l, config, self.globalBatchSize)
+        #     maxGpusUsed = max(maxGpusUsed, destGpus)
+        #     # print("[getGpusUsed] layer: %d, destGpus: %d, maxGpusUsed: %d, config: %s" % (l.id, destGpus, maxGpusUsed, str(config)))
+        # return maxGpusUsed
 
     def dumpInJSON(self, layers: List[Layer] = None, layerConfigs: list = None):
         if layers is None:
@@ -100,10 +106,8 @@ class TrainingJob:
         for l, config in zip(layers, layerConfigs):
             prop = l.dumpForJSON()
             prop["config"] = config
-            # prop["tensorTx"] = [{"name": "%d_0" % l.id, "dest": 1, "bytes": 10}]
-            # prop["tensorRx"] = [{"name": "%d_0" % l.id, "src": 2, "bytes": 50}]
             allProps.append(prop)
-        fullDesc = {"globalBatchSize": self.globalBatchSize, "layers": allProps}
+        fullDesc = {"globalBatchSize": self.globalBatchSize, "maxGpusUsed": self.maxGpusUsed, "layers": allProps}
         # return json.dumps(fullDesc, indent=1, sort_keys=False)
         return json.dumps(fullDesc, sort_keys=False)
 
@@ -143,6 +147,99 @@ class TrainingJob:
         return dumpedStr
 
     def dumpSingleRunnableModuleHelper(self, targetRank: int) -> str: # Only supports DP now.
+        # print("[dumpSingleRunnableModule] generating for rank: %d" % targetRank)
+        allProps = []
+        for l in self.layers:
+            prop = l.dumpForJSON()
+            prop["config"] = l.bestCfg
+            
+            if not self.isConfigDataParallelOnly(l, l.bestCfg, self.globalBatchSize):
+                print("[dumpSingleRunnableModule] config was not DP-only.")
+                return None
+            
+            # destGpus = self.calcGpusNeeded(l, config, self.globalBatchSize)
+            # maxGpusUsed = max(maxGpusUsed, len(l.gpuAssignment))
+            if targetRank not in l.gpuAssignment: # Not used for this layer.
+                configInList = list(l.bestCfg)
+                configInList[0] = 0
+                prop["config"] = tuple(configInList)
+
+            if l.prevLayers == None: # 1st layer.
+                allProps.append(prop)
+                continue
+
+            for prevLayer in l.prevLayers:
+                srcSamples = prevLayer.bestCfg[0]
+                dstSamples = l.bestCfg[0]
+                srcSamplesAssigned = {}
+                dstSamplesAssigned = {}
+                for r in prevLayer.gpuAssignment:
+                    srcSamplesAssigned[r] = 0
+                for r in l.gpuAssignment:
+                    dstSamplesAssigned[r] = 0
+
+                commonGpus = set(prevLayer.gpuAssignment).intersection(l.gpuAssignment)
+                for r in commonGpus:
+                    commonSamples = min(srcSamples, dstSamples)
+                    srcSamplesAssigned[r] = commonSamples
+                    dstSamplesAssigned[r] = commonSamples
+
+                # Now fill the missing samples by xfer.
+                xferNum = 0
+                for dstRank in l.gpuAssignment:
+                    for srcRank in prevLayer.gpuAssignment:
+                        samplesLeftAtSrc = srcSamples - srcSamplesAssigned[srcRank]
+                        samplesNeedAtDst = dstSamples - dstSamplesAssigned[dstRank]
+                        xferSamples = min(samplesLeftAtSrc, samplesNeedAtDst)
+
+                        if xferSamples == 0:
+                            continue
+
+                        xferNum += 1
+                        srcSamplesAssigned[srcRank] += xferSamples
+                        dstSamplesAssigned[dstRank] += xferSamples
+                        
+                        xferBytes = xferSamples * self.bytesPerParam
+                        
+                        assert(dstRank != srcRank)
+                        if targetRank == dstRank:
+                            if "tensorRx" not in prop:
+                                prop["tensorRx"] = []    
+                            prop["tensorRx"].append({"name": "%d_from_%d_sample_%d" % (l.id, prevLayer.id, xferNum),
+                                                    "prop": {"xferSamples": xferSamples},
+                                                    "src": srcRank,
+                                                    "bytes": xferBytes})
+                        if targetRank == srcRank:
+                            if "tensorTx" not in allProps[prevLayer.id]:
+                                allProps[prevLayer.id]["tensorTx"] = []
+                            allProps[prevLayer.id]["tensorTx"].append({"name": "%d_from_%d_sample_%d" % (l.id, prevLayer.id, xferNum),
+                                                    "prop": {"xferSamples": xferSamples},
+                                                    "dest": dstRank,
+                                                    "bytes": xferBytes})
+            allProps.append(prop)
+
+        # Compute dataLoaderOffset & worldSize.
+        samplesPerNode = self.layers[0].bestCfg[0]
+        dataLoaderOffset = samplesPerNode * targetRank
+        if dataLoaderOffset >= self.globalBatchSize: # This may happen if first layer uses smaller # of GPUs than later ones.
+            dataLoaderOffset = 0
+            # assert allProps[0]["config"][0] == 0
+            if allProps[0]["config"][0] != 0:
+                raise Exception('allProps[0]["config"][0] != 0')
+            
+
+        fullDesc = {"rank": targetRank,
+                    "maxGpusUsed": self.maxGpusUsed,
+                    "globalBatchSize": self.globalBatchSize,
+                    "dataLoaderOffset": dataLoaderOffset,
+                    "layers": allProps}
+        # dumpedStr = json.dumps(fullDesc, indent=1, sort_keys=False)
+        return fullDesc
+        # dumpedStr = json.dumps(fullDesc, sort_keys=False)
+        # # print(dumpedStr)
+        # return dumpedStr
+
+    def dumpSingleRunnableModuleHelperOld(self, targetRank: int) -> str: # Only supports DP now.
         # print("[dumpSingleRunnableModule] generating for rank: %d" % targetRank)
         allProps = []
         srcGpus = None
