@@ -441,7 +441,7 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     #     print("GPU rank: %d"%rank)
     #     print(job.dumpSingleRunnableModule(rank))
 
-    job2 = TrainingJob("test", None, None, 0, "")
+    job2 = TrainingJob("test", None, None, 0, 0, "")
     job2.loadJSON(jobInJson)
     assert(jobInJson == job2.dumpInJSON())
     print("Load/Dump returned the same output? %s" % ("true" if jobInJson == job2.dumpInJSON() else "false"))

@@ -105,6 +105,7 @@ class CommunicationHandler:
         self.sendFromCpu = sendFromCpu
         self.deviceForComm = deviceForComm
         self.asyncReqs = []
+        self.pendingSendList = [] # (tensor: torch.Tensor, tensorName: str, dest: int)
         # self.commGrpDict = commGrpDict
         self.commGrpHandlerDict = commGrpHandlerDict
         # self.addCommGroups(commGrpDict)
@@ -124,6 +125,18 @@ class CommunicationHandler:
         self.sendAsync(tensor, tensorName, dest)
         self.waitForAll()
 
+    # def sendExecAll(self):
+    #     for pendingSend in self.pendingSendList:
+    #         self.sendAsyncExec(*pendingSend)
+    #     self.pendingSendList = []
+
+    # def sendAsync(self, tensor: torch.Tensor, tensorName: str, dest: int, execImmediately=False):
+    #     if execImmediately:
+    #         self.sendAsyncExec(tensor, tensorName, dest)
+    #     else:
+    #         pendingSend = (tensor, tensorName, dest)
+    #         self.pendingSendList.append(pendingSend)
+
     def sendAsync(self, tensor: torch.Tensor, tensorName: str, dest: int):
         # assert tensor.is_cuda
         if self.sendFromCpu:
@@ -131,19 +144,22 @@ class CommunicationHandler:
 
         dstRank = self.jobRankToGlobalRank[dest]
         tag = self.tensor_tags[tensorName]
+        tensorReqs = []
         if self.shouldSendSizes:
             tensor_shape = torch.tensor(tensor.shape, dtype=torch.int, device=self.deviceForComm)
             tensor_shape_len = torch.tensor(len(tensor.shape), dtype=torch.int, device=self.deviceForComm)
-            Logger.log("dist.send(%s)"%str({"tensor": tensor_shape_len.size(), "dst": dstRank, "tag": tag}), level=0, flush=True)
-            dist.send(tensor=tensor_shape_len, dst=dstRank, tag=tag)
-            Logger.log("dist.send(%s)"%str({"tensor": tensor_shape.size(), "dst": dstRank, "tag": tag}), level=0, flush=True)
-            dist.send(tensor=tensor_shape, dst=dstRank, tag=tag)
-            Logger.log("dist.isend(%s)"%str({"tensor": tensor.size(), "dst": dstRank, "tag": tag, "bytes": tensor.element_size()*tensor.nelement(), "elems": tensor.nelement(), "elemSize": tensor.element_size()}), level=1, flush=True)
+            Logger.log("dist.isend(%s)"%str({"tensor": tensor_shape_len.size(), "dst": dstRank, "tag": tag}), level=0, flush=True)
+            tensorReqs.append(dist.isend(tensor=tensor_shape_len, dst=dstRank, tag=tag))
+            Logger.log("dist.isend(%s)"%str({"tensor": str(tensor_shape), "dst": dstRank, "tag": tag+1}), level=0, flush=True)
+            tensorReqs.append(dist.isend(tensor=tensor_shape, dst=dstRank, tag=tag+1))
+            Logger.log("dist.isend(%s)"%str({"tensor": tensor.size(), "dst": dstRank, "tag": tag+2, "bytes": tensor.element_size()*tensor.nelement(), "elems": tensor.nelement(), "elemSize": tensor.element_size()}), level=1, flush=True)
         # Logger.log("dist.isend(%s)"%str({"tensor": tensor.size(), "dst": dstRank, "tag": tag}), level=0, flush=True)
         # dist.send(tensor=tensor, dst=dstRank, tag=tag)
-        tensorReq = dist.isend(tensor=tensor, dst=dstRank, tag=tag)
-        self.asyncReqs.append(tensorReq)
-        # return tensorReq
+        if not tensor.is_contiguous():
+            Logger.log("         tensor is not contiguous! %s" % str({"tensor": tensor.size(), "dst": dstRank, "tag": tag}), level=0, flush=True)
+        tensor = tensor.contiguous()
+        tensorReqs.append(dist.isend(tensor=tensor, dst=dstRank, tag=tag+2))
+        # self.asyncReqs.extend(tensorReqs)
 
     def waitForAll(self):
         for req in self.asyncReqs:
@@ -159,6 +175,8 @@ class CommunicationHandler:
         return tensor
 
     def recvAsync(self, tensorName: str, src: int, dtype=torch.float32) -> torch.Tensor:
+        # self.sendExecAll()
+
         src_rank = self.jobRankToGlobalRank[src]
         tag = self.tensor_tags[tensorName]
         if self.shouldSendSizes:
@@ -168,8 +186,9 @@ class CommunicationHandler:
             tensor_shape_len = list(map(lambda x: int(x), tensor_shape_len))
             
             tensor_shape = torch.zeros(tensor_shape_len, dtype=torch.int, device=self.deviceForComm)
-            Logger.log("dist.recv(%s)"%str({"tensor": tensor_shape.size(), "src": src_rank, "tag": tag}), level=0, flush=True)
-            dist.recv(tensor=tensor_shape, src=src_rank, tag=tag)
+            Logger.log("dist.recv(%s)"%str({"tensor": tensor_shape.size(), "src": src_rank, "tag": tag+1}), level=0, flush=True)
+            dist.recv(tensor=tensor_shape, src=src_rank, tag=tag+1)
+            Logger.log("          tensor_shape: %s"%str(tensor_shape), level=0, flush=True)
             tensor_shape = list(map(lambda x: int(x), tensor_shape))
 
             self.tensorSizes[tensorName] = tensor_shape
@@ -177,9 +196,9 @@ class CommunicationHandler:
             tensor_shape = self.tensorSizes[tensorName]
         # Receive tensor.
         tensor = torch.empty(tensor_shape, dtype=dtype, device=self.deviceForComm, requires_grad=True)
-        # Logger.log("dist.irecv(%s)"%str({"tensor": tensor.size(), "src": src_rank, "tag": tag, "require_grad": tensor.requires_grad}), level=0, flush=True)
+        # Logger.log("dist.irecv(%s)"%str({"tensor": tensor.size(), "src": src_rank, "tag": tag+2, "require_grad": tensor.requires_grad}), level=0, flush=True)
         # dist.recv(tensor=tensor, src=src_rank, tag=tag)
-        asyncReq = dist.irecv(tensor=tensor, src=src_rank, tag=tag)
+        asyncReq = dist.irecv(tensor=tensor, src=src_rank, tag=tag+2)
         self.asyncReqs.append(asyncReq)
         # Logger.log("dist.irecv(%s)"%str({"require_grad": tensor.requires_grad}), level=0, flush=True)
         return tensor

@@ -135,7 +135,7 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
         return 'Returned from poke at %s' % self.myAddr
 
     def export_scheduleTraining(self, jobName: str, trainingJobInJSON: str):
-        job = TrainingJob("test", None, None, 0, "")
+        job = TrainingJob("test", None, None, 0, 0, "")
         job.loadJSON(trainingJobInJSON)
         print("received job")
         
@@ -219,9 +219,9 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
                 if "tensorRx" in ldsc: # either sender or receiver need to assign tag.
                     for item in ldsc["tensorRx"]:
                         tensorTags[item["name"]] = tag
-                        tag += 1
+                        tag += 3 #tag += 1
                         tensorTags[item["name"] + "_back"] = tag
-                        tag += 1
+                        tag += 3 #tag += 1
         self.nextTagStartOffset = (tag + 99) % 100
         return tensorTags
 
@@ -250,7 +250,8 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
             else:
                 nsysPrefix = ""
             self.processes.append(location.rshAsync(
-                nsysPrefix + "python3 " + self.workDir + "runtime.py" + \
+                # nsysPrefix + "python3 " + self.workDir + "runtime.py" + \
+                "source ~/.profile; " +  nsysPrefix + "python3 " + self.workDir + "runtime.py" + \
                 " --coordinatorAddr %s:%d --myAddr %s:%d --device %d --c10dBackend %s --rank %d --worldSize %d --be_batch_size %d %s" % \
                     (self.myAddr, self.myPort, location.address, location.port, location.device, c10dBackend, i, len(self.locations), self.be_batch_size, "--profile" if profile else "") #+ \
                 , stdout=stdoutFp, stderr=stderrFp))

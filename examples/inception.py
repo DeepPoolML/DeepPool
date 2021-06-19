@@ -12,7 +12,7 @@ currentdir = os.path.dirname(os.path.realpath(__file__))
 parentdir = os.path.dirname(currentdir)
 sys.path.append(parentdir)
 from parallelizationPlanner import CostSim
-from parallelizationPlanner import GpuProfiler
+from gpuProfiler import GpuProfiler
 from clusterClient import ClusterClient
 from jobDescription import TrainingJob
 
@@ -117,9 +117,9 @@ class Inception3(nn.Module):
         self.Mixed_6d = inception_c(768, channels_7x7=160)
         self.Mixed_6e = inception_c(768, channels_7x7=192)
         layerBeforeAux = cs.layers[-1]
-        # self.AuxLogits: Optional[nn.Module] = None
-        # if aux_logits:
-        #     self.AuxLogits = inception_aux(768, num_classes)
+        self.AuxLogits: Optional[nn.Module] = None
+        if aux_logits:
+            self.AuxLogits = inception_aux(768, num_classes)
         self.Mixed_7a = inception_d(768, custom_previous_layer=layerBeforeAux)
         self.Mixed_7b = inception_e(1280)
         self.Mixed_7c = inception_e(2048)
@@ -483,8 +483,9 @@ class InceptionE(nn.Module):
         ]
         branch3x3dbl = torch.cat(branch3x3dbl, 1)
 
-        branch_pool = F.avg_pool2d(x, kernel_size=3, stride=1, padding=1)
-        branch_pool = self.branch_pool(branch_pool)
+        # branch_pool = F.avg_pool2d(x, kernel_size=3, stride=1, padding=1)
+        branch_pool = self.branch_pool_1(x)
+        branch_pool = self.branch_pool_2(branch_pool)
 
         outputs = [branch1x1, branch3x3, branch3x3dbl, branch_pool]
         return outputs
@@ -610,17 +611,23 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     profiler.loadProfile()
     global cs
     cs = CostSim(profiler, netBw=netBw, verbose=True)
-    model = Inception3()
+    model = Inception3(aux_logits=False)
     cs.printAllLayers(slient=True)
     cs.computeInputDimensions((299,299,3))
     # job, iterMs, gpuMs = cs.searchBestSplits(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
-    
+
+    # if dataParallelBaseline:
+    #     dpIterUsec, dpFpUsec, dpBpUsec = profiler.benchModel(model, (3, 299, 299), int(globalBatch / gpuCount))
+    #     print("(DP baseline) whole model bench: %.1f ms (fp: %.1f, bp: %.1f)" % (dpIterUsec / 1000, dpFpUsec / 1000, dpBpUsec / 1000))
+
     job, iterMs, gpuMs, maxGpusUsed = cs.searchBestSplitsV3(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
+    print("  %2d    %2d   %4.1f  %4.1f\n" % (globalBatch, maxGpusUsed, iterMs, gpuMs))
     profiler.saveProfile()
-    cs.to_dot(simResultFilename, globalBatch)
+    # cs.to_dot(simResultFilename, globalBatch)
+    cs.to_gpuTimeline("Inception v3, Burst Parallel", maxGpusUsed, dataParallelBaseline)
     jobInJson = job.dumpInJSON()
 
-    # for rank in range(8):
+    # for rank in range(1):
     #     print("GPU rank: %d"%rank)
     #     print(job.dumpSingleRunnableModule(rank))
 
@@ -651,6 +658,12 @@ def runAllConfigs(modelName: str, clusterType: str, simOnly=True):
         netBw = 22937
     elif clusterType == "A100":
         netBw = 2.66E5
+    elif clusterType == "10Gbps":
+        netBw = 1.25E3
+    elif clusterType == "100Gbps":
+        netBw = 1.25E4
+    elif clusterType == "10Tbps":
+        netBw = 1.25E6
     else:
         print("Wrong cluster type. Put either V100 or A100")
 
@@ -659,7 +672,7 @@ def runAllConfigs(modelName: str, clusterType: str, simOnly=True):
     globalBatchSize = 64
     # globalBatchSize = 16
     # globalBatchSize = 8
-    limitAndBaseline = [(2.0, True, False), (1.0, False, False), (1.5, False, False), (2.0, False, False)]
+    limitAndBaseline = [(2.0, True, False), (1.5, False, False), (2.0, False, False), (5.0, False, False), (10.0, False, False)]
     # limitAndBaseline = [(99, False, True)]
     # limitAndBaseline = []
     for lim, baseline, spatialSplit in limitAndBaseline:
@@ -695,7 +708,7 @@ if __name__ == "__main__":
     if len(sys.argv) == 3:
         main(int(sys.argv[1]), int(sys.argv[2]), dataParallelBaseline=True)
     elif len(sys.argv) == 4:
-        main(int(sys.argv[1]), int(sys.argv[2]), amplificationLimit=float(sys.argv[3]))
+        main(int(sys.argv[1]), int(sys.argv[2]), amplificationLimit=float(sys.argv[3]) )#, netBw = 1.25E4)
     elif len(sys.argv) == 2:
         print("Run all configs")
         runAllConfigs("inceptionV3", sys.argv[1])

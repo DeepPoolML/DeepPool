@@ -206,14 +206,14 @@ class TrainingJob:
                             if "tensorRx" not in prop:
                                 prop["tensorRx"] = []    
                             prop["tensorRx"].append({"name": "%d_from_%d_sample_%d" % (l.id, prevLayer.id, xferNum),
-                                                    "prop": {"xferSamples": xferSamples},
+                                                    "prop": {"xferSamples": xferSamples, "prevLayerId": prevLayer.id}, # prevLayerId is necessary for Concat inputs.
                                                     "src": srcRank,
                                                     "bytes": xferBytes})
                         if targetRank == srcRank:
                             if "tensorTx" not in allProps[prevLayer.id]:
                                 allProps[prevLayer.id]["tensorTx"] = []
                             allProps[prevLayer.id]["tensorTx"].append({"name": "%d_from_%d_sample_%d" % (l.id, prevLayer.id, xferNum),
-                                                    "prop": {"xferSamples": xferSamples},
+                                                    "prop": {"xferSamples": xferSamples, "nextLayerId": l.id},
                                                     "dest": dstRank,
                                                     "bytes": xferBytes})
             allProps.append(prop)

@@ -16,7 +16,7 @@ import time
 import sys
 
 class Logger:
-    logLevel = 1 # 0: verbose, 1: info, 2: error
+    logLevel = 0 # 0: verbose, 1: info, 2: error
     outputFp = sys.stdout
 
     @classmethod

@@ -45,7 +45,7 @@ def generateConfigFile():
         for deviceIdx in range(gpuCount):
             portNum = portPrefix + deviceIdx
             deviceList.append({"port": portNum, "device": deviceIdx})
-        config["serverList"].append({"addr": privateIp, "deviceList": deviceList, "userId": userId, "sshKeyPath": pkeyPath})
+        config["serverList"].append({"addr": privateIp, "deviceList": deviceList, "userId": userId, "sshKeyPath": "~/.ssh/id_rsa"})
     with open('clusterConfig.json', 'w') as outfile:
         json.dump(config, outfile, indent=2, sort_keys=False)
     print("****** Configuration generated for AWS cluster: ")
@@ -55,8 +55,11 @@ def uploadCode():
     # 2. Upload code to AWS servers.
     def upSync(host, localPath, remotePath):
         try:
-            subprocess.check_call(['rsync', '--progress', '-e', 'ssh -i %s -o StrictHostKeyChecking=no' % pkeyPath,
-                '-rh', "--exclude=*__pycache__", "--exclude=be_training/pytorch", "--exclude=be_training/build", "--exclude=results", localPath, "%s@%s:%s" % (userId, host, remotePath)],
+            # subprocess.check_call(['rsync', '--progress', '-e', 'ssh -i %s -o StrictHostKeyChecking=no' % pkeyPath,
+            #     '-rh', "--exclude=*__pycache__", "--exclude=results", localPath, "%s@%s:%s" % (userId, host, remotePath)],
+            #     stderr=subprocess.STDOUT)
+            subprocess.check_call(['rsync', '-e', 'ssh -i %s -o StrictHostKeyChecking=no' % pkeyPath,
+                '-rh', "--exclude=*__pycache__", "--exclude=be_training", "--exclude=be_training/pytorch", "--exclude=be_training/build", "--exclude=results", localPath, "%s@%s:%s" % (userId, host, remotePath)],
                 stderr=subprocess.STDOUT)
         except subprocess.CalledProcessError as e:
             output = e.output
@@ -88,7 +91,7 @@ def downloadResults():
         subprocess.check_call(sh_command, stderr=subprocess.STDOUT)
 
     for host in publicIps:
-        for remotePath in ["~/DeepPoolRuntime/*.data", "~/DeepPoolRuntime/logs/*.out"]: #["~/*.qdrep", "~/DeepPoolRuntime/logs/*.out", "~/net*.qdrep", "~/net*.sqlite", "~/DeepPoolRuntime/logs/*.out"]:
+        for remotePath in ["~/DeepPoolRuntime/*.data", "~/DeepPoolRuntime/logs/*.out"]: #["~/DeepPoolRuntime/*.data.gv.pdf", "~/DeepPoolRuntime/logs/*.out", "~/*.qdrep", "~/DeepPoolRuntime/logs/*.out", "~/net*.qdrep", "~/net*.sqlite", "~/DeepPoolRuntime/logs/*.out"]:
             try:
                 downloadFile(host, remotePath, "results/")
             except subprocess.CalledProcessError as e:

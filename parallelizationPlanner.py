@@ -30,6 +30,7 @@ import numpy
 import graphviz
 from array import array
 from typing import Optional, IO, List, Any
+from gpuProfiler import GpuProfiler
 from jobDescription import TrainingJob
 from jobDescription import Layer
 
@@ -37,253 +38,10 @@ import torch.cuda.profiler as profiler
 import torch.cuda.nvtx as nvtx
 import pyprof
 
-class Perf(object):
-    def __init__(self, eidToStr = {}):
-        super(Perf, self).__init__()
-        self.measurements = []
-        self.sum = []
-        self.count = []
-        self.eidToStr = eidToStr
-        
-    def recordTime(self, eid, elapsedTime):
-        if eid >= len(self.measurements):
-            self.measurements += [[]] * (eid - len(self.measurements) + 1)
-            self.sum += [0.0] * (eid - len(self.sum) + 1)
-            self.count += [0] * (eid - len(self.count) + 1)
-        self.measurements[eid].append(elapsedTime)
-        self.sum[eid] += elapsedTime
-        self.count[eid] += 1
-        
-    def printStats(self):
-        # maxEventStrLen = max([len(eventStr) for eventStr in self.eidToStr.values()])
-        for eid in range(len(self.measurements)):
-            if self.count[eid] == 0:
-                continue
-            median = sorted(self.measurements[eid])[int(len(self.measurements[eid]) / 2)]
-            if eid in self.eidToStr:
-                print("Event %15s ==> avg: %8.1f us,  median: %8.1f us" % (self.eidToStr[eid], self.sum[eid] / self.count[eid], median))
-            else:
-                print("Event %5d ==> avg: %8.1f us,  median: %8.1f us" % (eid, self.sum[eid] / self.count[eid], median))
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
-    def getStat(self, eid):
-        return sorted(self.measurements[eid])[int(len(self.measurements[eid]) / 2)]
-        # return self.sum[eid] / self.count[eid]
-
-    def printHeader(self):
-        print("#BatchSize", end = "")
-        print("     width", end = "")
-        print("   filters", end = "")
-        print("       mults", end = "")
-        print(" |  AVG : ", end = "")
-        for eid in range(len(self.measurements)):
-            if eid in self.eidToStr:
-                print("%10s" % self.eidToStr[eid], end = "")
-            else:
-                print("Event %4d" % eid, end = "")
-        print(" |Median: ", end = "")
-        for eid in range(len(self.measurements)):
-            if eid in self.eidToStr:
-                print("%10s" % self.eidToStr[eid], end = "")
-            else:
-                print("Event %4d" % eid, end = "")
-        print(" | Accuracy", end = "")
-        print(" | Count(eid0)")
-    
-    def printAll(self, batchSize, width, filterCount, accuracy):
-        # Avg.
-        print("%9d " % batchSize, end = "")
-        print("%9d " % width, end = "")
-        print("%9d " % filterCount, end = "")
-        print("%11d " % (batchSize * width * width * filterCount * 9 * 3), end = "")
-        print("%10s"%"", end = "")
-        for eid in range(len(self.measurements)):
-            if self.count[eid] == 0:
-                continue
-            print("%10.1f" % (self.sum[eid] / self.count[eid]), end = "")
-
-        print(" %9s"%"", end = "")
-        for eid in range(len(self.measurements)):
-            if self.count[eid] == 0:
-                continue
-            median = sorted(self.measurements[eid])[int(len(self.measurements[eid]) / 2)]
-            print("%10.1f" % median, end = "")
-        print(" %9.2f" % accuracy, end = "")
-        print(" %10d" % len(self.measurements[0]))
-
-
-class GpuProfiler:
-    def __init__(self, device):
-        self.conv2dBenchCache = {}
-        self.benchCacheHit = 0
-        self.benchCacheMiss = 0
-        self.linearBenchCache = {}
-        self.device = device
-
-    def saveProfile(self, path = "gpuProfile.json"):
-        with open(path, "w") as outfile:
-            data = {"conv2dBenchCache": self.conv2dBenchCache, "linearBenchCache": self.linearBenchCache}
-            planInJson = jsonpickle.encode(data, unpicklable=False)
-            json.dump(json.loads(planInJson), outfile, indent=2, sort_keys=False)
-            print("[GpuProfiler] Saved %d entries." % (len(self.conv2dBenchCache) + len(self.linearBenchCache)))
-            print("[GpuProfiler] Cache hit %3.1f %%" % (100 * self.benchCacheHit / (self.benchCacheHit + self.benchCacheMiss)))
-    
-    def loadProfile(self, path = "gpuProfile.json"):
-        try:
-            with open(path) as f:
-                data = json.load(f)
-                if "conv2dBenchCache" in data:
-                    self.conv2dBenchCache = data["conv2dBenchCache"]
-                if "linearBenchCache" in data:
-                    self.linearBenchCache = data["linearBenchCache"]
-        except IOError:
-            print("[GpuProfiler] No profile file exists at %s." % path)
-
-    def train(self, model, device, train_loader, criterion, optimizer, epoch, perf, profile=False):
-        model.train()
-        iter_to_capture_start = 50
-        iter_to_capture_end = 53
-        with torch.autograd.profiler.emit_nvtx():
-            iterationCount = 0
-            for batch_idx, (data, target) in enumerate(train_loader):        
-                start_time = time.time()
-            
-                ev_zero = torch.cuda.Event(enable_timing=True)
-                ev_fp = torch.cuda.Event(enable_timing=True)
-                ev_loss = torch.cuda.Event(enable_timing=True)
-                ev_bp = torch.cuda.Event(enable_timing=True)
-                
-                # if profile and iterationCount == iter_to_capture_start:
-                #     print("profiler started.")
-                #     profiler.start()
-
-                data, target = data.to(device), target.to(device)
-                optimizer.zero_grad()
-                ev_zero.record()
-                output = model(data)
-                ev_fp.record()
-                output = torch.flatten(output, 1)
-                output = F.log_softmax(output, dim=1)
-                loss = criterion(output, target)
-                
-                # bp_start = time.time()
-                # torch.cuda.synchronize()
-                ev_loss.record()
-                # loss.backward()
-                output.backward(output)
-                ev_bp.record()
-                # torch.cuda.synchronize()
-                # bpTime = (time.time() - bp_start) * 1E6
-
-                optimizer.step()
-                
-                # if profile and iterationCount == iter_to_capture_end:
-                #     print("profiler ended.")
-                #     profiler.stop()
-
-                ev_bp.synchronize()
-            
-                stop_time = time.time()
-                # perf.recordTime(0, 1000 * ev_start.elapsed_time(ev_load))
-                # perf.recordTime(1, 1000 * ev_load.elapsed_time(ev_zero))
-                perf.recordTime(2, 1000 * ev_zero.elapsed_time(ev_fp))
-                # perf.recordTime(3, 1000 * ev_fp.elapsed_time(ev_loss))
-                perf.recordTime(4, 1000 * ev_loss.elapsed_time(ev_bp))
-                # perf.recordTime(4, bpTime)
-                # perf.recordTime(4, 1000 * ev_fp.elapsed_time(ev_bp))
-                # perf.recordTime(5, 1000 * ev_bp.elapsed_time(ev_opt))
-                # perf.recordTime(6, 1000 * ev_start.elapsed_time(ev_opt))
-                perf.recordTime(7, (stop_time - start_time) * 1000 * 1000)
-            
-                iterationCount += 1
-
-    def runConv2dBench(self, config, params, profile=False):
-        if str((config, params)) in self.conv2dBenchCache and profile == False:
-            self.benchCacheHit += 1
-            return self.conv2dBenchCache[str((config, params))]
-        self.benchCacheMiss += 1
-        batchSize = config[0]
-        width = config[1]
-        height = config[2]
-        inChannels = config[3]
-        filterCount = config[4]
-        train_dataset = self.SyntheticDataset((inChannels, width, height), batchSize * 200) # 30) # 
-        train_loader = torch.utils.data.DataLoader(
-                train_dataset, batch_size=batchSize, shuffle=False, pin_memory=True, drop_last=True)
-
-        newParams = params.copy()
-        newParams["in_channels"] = inChannels
-        newParams["out_channels"] = filterCount
-        # model = self.Conv2dOp(inChannels, filterCount).to(self.device)
-        model = nn.Conv2d(**newParams).to(self.device)
-
-        # optimizer = torch.optim.Adadelta(model.parameters())
-        optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
-        criterion = nn.CrossEntropyLoss().cuda(self.device)
-
-        perfStat = Perf({0: 'load', 1: 'zero', 2: 'fp', 3: 'loss', 4: 'bp', 5: 'opt', 6: 'total/bat', 7: 'totalCPU'})
-        # scheduler = StepLR(optimizer, step_size=1)
-        self.train(model, self.device, train_loader, criterion, optimizer, 1, perfStat, profile)
-        # scheduler.step()
-        gpuTime = perfStat.getStat(2) + perfStat.getStat(4)
-        if profile:
-            print("%.f + %.f" % (perfStat.getStat(2), perfStat.getStat(4)))
-        self.conv2dBenchCache[str((config, params))] = gpuTime
-        return gpuTime
-
-    def runLinearBench(self, config, profile=False):
-        if str(config) in self.linearBenchCache and profile == False:
-            self.benchCacheHit += 1
-            return self.linearBenchCache[str(config)]
-        self.benchCacheMiss += 1
-        batchSize = config[0]
-        inFeatures = config[1]
-        outFeatures = config[2]
-        train_dataset = self.SyntheticDataset((inFeatures), batchSize * 200, num_classes=outFeatures)
-        # train_dataset = self.SyntheticDataset((inFeatures), batchSize * 30, num_classes=outFeatures)
-        train_loader = torch.utils.data.DataLoader(
-                train_dataset, batch_size=batchSize, shuffle=False, pin_memory=True, drop_last=True)
-
-        model = self.LinearOp(inFeatures, outFeatures).to(self.device)
-        optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
-        criterion = nn.CrossEntropyLoss().cuda(self.device)
-        
-        perfStat = Perf({0: 'load', 1: 'zero', 2: 'fp', 3: 'loss', 4: 'bp', 5: 'opt', 6: 'total/bat', 7: 'totalCPU'})
-        scheduler = StepLR(optimizer, step_size=1)
-        self.train(model, self.device, train_loader, criterion, optimizer, 1, perfStat, profile)
-        # scheduler.step()
-        if profile:
-            print("%.f + %.f" % (perfStat.getStat(2), perfStat.getStat(4)))
-        gpuTime = perfStat.getStat(2) + perfStat.getStat(4)
-        self.linearBenchCache[str(config)] = gpuTime
-        return gpuTime
-
-
-    class SyntheticDataset(torch.utils.data.dataset.Dataset):
-        def __init__(self, input_size, length, num_classes=1000):
-            self.tensor = Variable(torch.rand(input_size)).type(torch.FloatTensor)
-            self.target = torch.Tensor(1).random_(0, num_classes)[0].type(torch.LongTensor)
-            self.length = length
-        def __getitem__(self, index):
-            return self.tensor, self.target
-        def __len__(self):
-            return self.length
-
-    # class Conv2dOp(nn.Module):
-    #     def __init__(self, inChannels, filterCount, num_classes=1000):
-    #         super(GpuProfiler.Conv2dOp, self).__init__()
-    #         self.num_classes = num_classes
-    #         self.conv1 = nn.Conv2d(inChannels, filterCount, (3, 3), (1, 1), (1, 1))
-    #     def forward(self, x):
-    #         x = self.conv1(x)
-    #         return x
-    
-    class LinearOp(nn.Module):
-        def __init__(self, inFeatures, outFeatures):
-            super(GpuProfiler.LinearOp, self).__init__()
-            self.linear1 = nn.Linear(inFeatures, outFeatures)
-        def forward(self, x):
-            x = self.linear1(x)
-            return x
 
 class SearchContext:
     def __init__(self, totalGpus: int, globalBatch: int, amplificationLimit: float = 2.0,
@@ -392,17 +150,17 @@ class CostSim:
 
             print("%3d %11s %20s %20s %s" % (i, layer.name, str(layer.inputDim), str(layer.outputDim), str(layer.params)) )
     
-    def calcInputXfer(self, srcLayer: Layer, destLayer: Layer, srcConfig: tuple, destConfig: tuple):
+    def calcInputXfer(self, srcLayer: Layer, destLayer: Layer, srcConfig: tuple, destConfig: tuple, noGpuOverlap = False):
         namesIn2d = ["conv2d", "maxPool2d", "avgPool2d", "adAvgPool2d", "ReLU2d", "concat"]
         namesIn1d = ["linear", "ReLU1d"]
 
         if srcLayer.name in namesIn2d and \
                 destLayer.name in namesIn2d + ["flatten"]:
-            return self.calc2dActivationTime(srcLayer, destLayer, srcConfig, destConfig)
+            return self.calc2dActivationTime(srcLayer, destLayer, srcConfig, destConfig, noGpuOverlap)
             #srcConfig, destConfig, destLayer.inputDim)
         elif srcLayer.name in namesIn1d + ["flatten"] and \
                 destLayer.name in namesIn1d:
-            return self.calcLinearActivationTime(srcLayer, destLayer, srcConfig, destConfig)
+            return self.calcLinearActivationTime(srcLayer, destLayer, srcConfig, destConfig, noGpuOverlap)
         else:
             print("Can't compute input transfer time from %s to %s." % (srcLayer.name, destLayer.name))
 
@@ -423,7 +181,7 @@ class CostSim:
         size = params * bytesPerParam
         return size / self.NET_BANDWIDTH # Returns microseconds.
         
-    def calc2dActivationTime(self, srcLayer: Layer, destLayer: Layer, srcConfig: tuple, destConfig: tuple):
+    def calc2dActivationTime(self, srcLayer: Layer, destLayer: Layer, srcConfig: tuple, destConfig: tuple, noGpuOverlap = False):
         bytesPerParam = 4
 
         # Compute output dimension of previous and current layer.
@@ -436,13 +194,32 @@ class CostSim:
         destH = destConfig[2]
         # destInChannel = destConfig[3]
         destInChannel = srcOutChannel # TODO: temporary hack to handle Inception V3's concat.  
-        # Compute "estimated" number of gpus used for src and dest. This is used only for comparing which side might unshared gpus.
-        srcGpus = self.calcGpusNeeded(srcLayer, srcConfig, srcS * destS)
-        destGpus = self.calcGpusNeeded(destLayer, destConfig, srcS * destS)
+        
+        srcNoIndependent = True
+        destNoIndependent = True
+        if hasattr(srcLayer, 'gpuAssignment') and hasattr(destLayer, 'gpuAssignment'):
+            for r in srcLayer.gpuAssignment:
+                if r not in destLayer.gpuAssignment:
+                    srcNoIndependent = False
+                    break
+            for r in destLayer.gpuAssignment:
+                if r not in srcLayer.gpuAssignment:
+                    destNoIndependent = False
+                    break
+        else:
+            # Compute "estimated" number of gpus used for src and dest. This is used only for comparing which side might unshared gpus.
+            srcGpus = self.calcGpusNeeded(srcLayer, srcConfig, srcS * destS)
+            destGpus = self.calcGpusNeeded(destLayer, destConfig, srcS * destS)
+            if srcGpus > destGpus:
+                srcNoIndependent = False # no src node is stopped used in dest.
+            if srcGpus < destGpus:
+                destNoIndependent = False # no dest node is newly used.
         
 
         # Compute common part that doesn't have to move.
         commonSize = bytesPerParam * min(srcS, destS) * min(srcW, destW) * min(srcH, destH) * min(srcOutChannel, destInChannel)
+        if noGpuOverlap:
+            commonSize = 0
 
         # Halo exchange
         if "kernel_size" in destLayer.params: # TODO: hack for adaptive avgPool2D.
@@ -460,8 +237,8 @@ class CostSim:
         haloSize = bytesPerParam * min(srcS, destS) * haloPixels * min(srcOutChannel, destInChannel)
 
         # compute times
-        egressBytes = bytesPerParam * srcS * srcW * srcH * srcOutChannel + (haloSize - commonSize) if srcGpus <= destGpus else 0
-        ingressBytes = bytesPerParam * destS * destW * destH * destInChannel + (haloSize - commonSize) if srcGpus >= destGpus else 0
+        egressBytes = bytesPerParam * srcS * srcW * srcH * srcOutChannel + (haloSize - commonSize) if srcNoIndependent else bytesPerParam * srcS * srcW * srcH * srcOutChannel + haloSize
+        ingressBytes = bytesPerParam * destS * destW * destH * destInChannel + (haloSize - commonSize) if destNoIndependent else bytesPerParam * destS * destW * destH * destInChannel + haloSize
         activationTime = max(egressBytes, ingressBytes) / self.NET_BANDWIDTH
         activationTime += self.NET_LATENCY if activationTime > 0 else 0
         return (2 * activationTime, (egressBytes, ingressBytes, haloSize)) # double to count both forward and backward passes.
@@ -475,7 +252,7 @@ class CostSim:
         size = params * bytesPerParam
         return size / self.NET_BANDWIDTH # Returns microseconds.
         
-    def calcLinearActivationTime(self, srcLayer: Layer, destLayer: Layer, srcConfig: tuple, destConfig: tuple):
+    def calcLinearActivationTime(self, srcLayer: Layer, destLayer: Layer, srcConfig: tuple, destConfig: tuple, noGpuOverlap: bool):
         bytesPerParam = 4
         # Prepare variables.
         prevOutFeatures = 0
@@ -497,6 +274,8 @@ class CostSim:
         destInFeatures = destConfig[1]
 
         commonSize = bytesPerParam * min(srcS, destS) * min(srcOutFeatures, destInFeatures)
+        if noGpuOverlap:
+            commonSize = 0
 
         # compute times
         egressBytes = bytesPerParam * srcS * srcOutFeatures * splitFactor - commonSize
@@ -725,7 +504,7 @@ class CostSim:
         dpOnly = True
         for i in range(1, len(config)):
             if config[i] != initCfg[i]:
-                dpOnly = True
+                dpOnly = False
         return dpOnly
 
     def benchGpuTime(self, layer, config: tuple, profile=False):
@@ -1720,11 +1499,14 @@ class CostSim:
         for layer in self.layers:
             gpusUsed = self.calcGpusNeeded(layer, layer.bestCfg, globalBatch)
             comment = ""
+            # comment = "\n" + str(layer.bestCfg)
             # if hasattr(layer, 'gpuLocalAssignmentDict'):
             #     comment = "\n" + str(layer.gpuLocalAssignmentDict)
+            if hasattr(layer, 'startNoOverlapAdjustment'):
+                comment = "\n+%.2f ms" % (layer.startNoOverlapAdjustment / 1000)
 
-            node_desc = "%d) %s\nt= %.2f ms (+%.2f)\nGPU=%d%s%s" % ( #]\nidle=%.1fms" % (
-                layer.id, layer.name, layer.t[layer.bestCfg][0] / 1000, layer.t[layer.bestCfg][1] / 1000, gpusUsed, layer.gpuAssignment, comment) #, layer.t[layer.bestCfg][4] / 1000) #, str(layer.bestCfg))
+            node_desc = "%d) %s\nt= %.2f ms (+%.2f)\nGPU=%s%s" % ( #]\nidle=%.1fms" % (
+                layer.id, layer.name, layer.t[layer.bestCfg][0] / 1000, layer.t[layer.bestCfg][1] / 1000, layer.gpuAssignment, comment) #, layer.t[layer.bestCfg][4] / 1000) #, str(layer.bestCfg))
             # if node.stage_id is not None:
             #     color = self._colors[node.stage_id % len(self._colors)]
             #     dot.node(node.node_id, node_desc,
@@ -1735,6 +1517,59 @@ class CostSim:
             for l in layer.nextLayers:
                 dot.edge(str(layer.id), str(l.id))
         dot.render()
+
+    def to_gpuTimeline(self, name, totalGpus, dataParallelBaseline=False):
+        gpuTimes = [[] for r in range(totalGpus)]
+        maxT = 0
+        if dataParallelBaseline:
+            dpTime = 0
+            for layer in self.layers:
+                dpTime += layer.t[layer.bestCfg][1] / 1000
+                maxT = max(maxT, layer.t[layer.bestCfg][0] / 1000)
+            for r in layer.gpuAssignment:
+                gpuTimes[r].append( (0, dpTime) )
+        else:
+            for layer in self.layers:
+                maxT = max(maxT, layer.t[layer.bestCfg][0] / 1000)
+                endTime = layer.t[layer.bestCfg][0] / 1000
+                startTime = endTime - layer.t[layer.bestCfg][1] / 1000
+                for r in layer.gpuAssignment:
+                    gpuTimes[r].append( (startTime, endTime) )
+        
+        fig, axs = plt.subplots(nrows=totalGpus, ncols=1, sharex=True)
+        # fig, axs = plt.subplots(nrows=8, ncols=1, sharex=True)
+        plt.xlabel("Time (ms)")
+        plt.ylabel("GPU Rank")
+        fig.set_figheight(2)
+
+        gs1 = matplotlib.gridspec.GridSpec(1, 8)
+        gs1.update(wspace=0.0025, hspace=0.005) # set the spacing between axes. 
+
+        for rank, times in enumerate(gpuTimes):
+            # if rank >= 8:
+            #     break
+            print("rank%d" % (rank))
+            print(times)
+            lastT = 0
+            for start, end in sorted(times):
+                if start == end:
+                    print("skip")
+                    continue
+                idx = totalGpus - rank - 1
+                # idx = 8 - rank - 1
+                if lastT > start:
+                    print("%5.3f %5.3f %5.3f" % (lastT, start, end))
+                # axs[idx].axvspan(lastT, start, facecolor='gray', alpha=0.3)
+                axs[idx].axvspan(start, end, facecolor='red', alpha=1)
+                lastT = end
+            # axs[idx].axvspan(lastT, maxT, facecolor='gray', alpha=0.3)
+            axs[rank].set_ylabel("%d"%rank, rotation=0, y=0.2, labelpad=10)
+            axs[rank].yaxis.set_ticks([])
+            axs[rank].set_xlim(0, 50)
+
+        axs[0].set_title(name)
+        plt.subplots_adjust(wspace=0, hspace=0)
+        plt.savefig("gpuTimeline.pdf")
 
     def searchBestSplitsV3(self, totalGpus: int, globalBatch: int = 16, amplificationLimit: float = 2.0, dataParallelBaseline = False, sampleSplit=True, spatialSplit=False, filterSplit=False):
         """ Parallelization strategy findiing for DeepPool. """
@@ -1757,71 +1592,108 @@ class CostSim:
 
         gpuUsecSum = 0
         # Initial backward pass
-        def backwardLinear(lastLayer, bestLastCfg, stopAtLayer=None):
+        def backwardLinear(lastLayer, bestLastCfg, packGpus=False, stopAtLayer=None):
             gpuUsecSum = 0
             maxGpusUsed = 0
+            startNoOverlapAdjustment = 0
+            sideBranchOvertimeSum = 0
             layer = lastLayer
             bestCfg = bestLastCfg
             while True:
                 layer.bestCfg = bestCfg
                 if layer == stopAtLayer:
                     # gpuUsecSum -= layer.t[bestCfg][1] * self.calcGpusNeeded(layer, bestCfg, ctx.globalBatch) # To avoid double-counting, add startLayer in backwardBranch.
-                    return gpuUsecSum, maxGpusUsed
+                    return gpuUsecSum, maxGpusUsed, startNoOverlapAdjustment, sideBranchOvertimeSum
                 
                 gpusUsed = self.calcGpusNeeded(layer, bestCfg, ctx.globalBatch)
                 gpuUsecSum += layer.t[bestCfg][1] * gpusUsed
                 maxGpusUsed = max(maxGpusUsed, gpusUsed)
                 
                 if layer.prevLayers == None or len(layer.prevLayers) == 0:
-                    return gpuUsecSum, maxGpusUsed
+                    return gpuUsecSum, maxGpusUsed, startNoOverlapAdjustment, sideBranchOvertimeSum
                 elif len(layer.prevLayers) > 1:
                     cumulativeTime, layerTime, prevConfig, bestPrevCfgListByEndCfg, prevMpIdleTime = layer.t[bestCfg]
                     layer.branchStartLayer.bestCfg = prevConfig
                     self.searchBranch(layer.branchStartLayer, ctx)
-                    gpuUsecBlock, gpusUsedBlock = backwardBranch(layer, bestPrevCfgListByEndCfg)
+                    gpuUsecBlock, gpusUsedBlock, sideBranchOvertime = backwardBranch(layer, bestPrevCfgListByEndCfg, packGpus)
                     gpuUsecSum += gpuUsecBlock
                     maxGpusUsed = max(maxGpusUsed, gpusUsedBlock)
+                    sideBranchOvertimeSum += sideBranchOvertime
 
                     layer = layer.branchStartLayer
                     bestCfg = prevConfig
                 elif len(layer.prevLayers) == 1:
                     cumulativeTime, layerTime, prevConfig, timeComposition, prevMpIdleTime = layer.t[bestCfg]
+                    if layer.prevLayers[0] == stopAtLayer:
+                        startActivationTime, actSizes = self.calcInputXfer(layer.prevLayers[0], layer, prevConfig, layer.bestCfg)
+                        startNoOverlapActivationTime, actSizes = self.calcInputXfer(layer.prevLayers[0], layer, prevConfig, layer.bestCfg, True)
+                        startNoOverlapAdjustment = startNoOverlapActivationTime - startActivationTime
+                        layer.startNoOverlapAdjustment = startNoOverlapAdjustment
                     layer = layer.prevLayers[0]
                     bestCfg = prevConfig
                 else:
                     assert False
         
-        def backwardBranch(joiningLayer, bestPrevCfgListByEndCfg: list):
+        def backwardBranch(joiningLayer, bestPrevCfgListByEndCfg: list, packGpus):
             gpuUsecSum = 0
             gpusUsedBlock = 0
             branchStartLayer = joiningLayer.branchStartLayer
             blockStartTime = branchStartLayer.t[branchStartLayer.bestCfg][0]
             branchTimeList = []
             for prevLayer, prevCfg in zip(joiningLayer.prevLayers, bestPrevCfgListByEndCfg):
-                gpuUsecBranch, gpusUsedBranch = backwardLinear(prevLayer, prevCfg, stopAtLayer=joiningLayer.branchStartLayer)
+                gpuUsecBranch, gpusUsedBranch, startNoOverlapAdjustment, sideBranchOvertime = backwardLinear(prevLayer, prevCfg, packGpus, stopAtLayer=joiningLayer.branchStartLayer)
+                endNoOverlapActivationTime, actSizes = self.calcInputXfer(prevLayer, joiningLayer, prevCfg, joiningLayer.bestCfg, True)
+                endActivationTime, actSizes = self.calcInputXfer(prevLayer, joiningLayer, prevCfg, joiningLayer.bestCfg, False)
+                endAdjustment = endActivationTime - endNoOverlapActivationTime
+
                 gpuUsecSum += gpuUsecBranch
                 gpusUsedBlock += gpusUsedBranch
-                branchTimeList.append((prevLayer.t[prevCfg][0] - blockStartTime, gpusUsedBranch, prevLayer.id))
+                if sideBranchOvertime > 0:
+                    print("backward branch, joining layer: %d, prevLayerId: %d, sideBranchOvertime: %d" % (joiningLayer.id, prevLayer.id, sideBranchOvertime))
+                branchTimeList.append((prevLayer.t[prevCfg][0] - blockStartTime + sideBranchOvertime, gpusUsedBranch, prevLayer.id, startNoOverlapAdjustment + endAdjustment))
 
             ## GPU packing! Comment out to disable GPU packing.
             branchTimeList.sort(reverse=True)
             maxBranchTime = max([x[0] for x in branchTimeList])
             gpuLocalAssignmentDict = {} # list of lists.
+            sideBranchOvertime = 0
             #TODO: This is slightly off.. must consider the last activation time.
             newGpuReadyTimeVec = []
-            for branchTime, gpusNeeded, prevLayerId in branchTimeList:
+            for i, (branchTime, gpusNeeded, prevLayerId, newGpuActiviationAdjustment) in enumerate(branchTimeList):
+                if i >= 1:
+                    # Using the same GPU will be cheaper than using new set of GPUs.
+                    if maxBranchTime < newGpuActiviationAdjustment or \
+                            ((newGpuActiviationAdjustment + branchTime) / branchTime if branchTime > 0 else 1) > amplificationLimit: # TODO; revisit this amplificationLimit.
+                        maxBranchTime += branchTime
+                        sideBranchOvertime += branchTime
+                        print("Running side branch on new GPUs will hurt %.2f ms. So run on main branch. lid: %d" % (newGpuActiviationAdjustment / 1000, prevLayerId))
+                    else:
+                        branchTime += newGpuActiviationAdjustment
+                        print("Added %.3f ms to activation time for lid: %d" % (newGpuActiviationAdjustment, prevLayerId))
+                        if branchTime > maxBranchTime:
+                            print("side branch time exceeds the main branch time due to activationTime. lid: %d. Added: %.2f" % (prevLayerId, newGpuActiviationAdjustment * gpusNeeded / 1000))
+                            sideBranchOvertime += branchTime - maxBranchTime
+                            maxBranchTime = branchTime
+                            gpuUsecSum += newGpuActiviationAdjustment * gpusNeeded # TODO: this is a slight overestimation for later blocks.
+
                 gpuLocalAssignment = []
                 gpusAssigned = 0
                 for i in range(len(newGpuReadyTimeVec)):
                     if newGpuReadyTimeVec[i] + branchTime <= maxBranchTime:
-                        newGpuReadyTimeVec[i] += branchTime
+                        if packGpus:
+                            newGpuReadyTimeVec[i] += branchTime
+                        else:
+                            newGpuReadyTimeVec[i] = maxBranchTime   #TODO: remove this hack for disabling GPU packing. 
                         gpusAssigned += 1
                         gpuLocalAssignment.append(i)
                     if gpusAssigned >= gpusNeeded:
                         break
                 for i in range(len(newGpuReadyTimeVec), len(newGpuReadyTimeVec) + gpusNeeded - gpusAssigned):
                     gpuLocalAssignment.append(i)
-                    newGpuReadyTimeVec.append(branchTime)
+                    if packGpus:
+                        newGpuReadyTimeVec.append(branchTime)
+                    else:
+                        newGpuReadyTimeVec.append(maxBranchTime)   #TODO: remove this hack for disabling GPU packing. 
                 gpuLocalAssignmentDict[prevLayerId] = gpuLocalAssignment
 
             joiningLayer.gpuLocalAssignmentDict = gpuLocalAssignmentDict
@@ -1832,11 +1704,11 @@ class CostSim:
             gpusUsed = self.calcGpusNeeded(joiningLayer, joiningLayer.bestCfg, ctx.globalBatch)
             gpuUsecSum += joiningLayer.t[joiningLayer.bestCfg][1] * gpusUsed
             gpusUsedBlock = max(gpusUsedBlock, gpusUsed)
-            return gpuUsecSum, gpusUsedBlock
+            return gpuUsecSum, gpusUsedBlock, sideBranchOvertime
 
-        gpuUsecSum, maxGpusUsed = backwardLinear(finalLayer, bestLastCfg)
+        gpuUsecSum, maxGpusUsed, startNoOverlapAdjustment, sideBranchOvertimeSum = backwardLinear(finalLayer, bestLastCfg, True)
         
-        print("Final layer: ", finalLayer.id, " bestCfg:", finalLayer.bestCfg)
+        print("Final layer: ", finalLayer.id, " bestCfg:", finalLayer.bestCfg, " sideBranchOvertimeSum: ", sideBranchOvertimeSum)
 
         # 2nd backward pass: assign GPUs.
         def gpuAssignLinear(lastLayer, availableRanks, stopAtLayer=None):
@@ -1919,4 +1791,4 @@ class CostSim:
         if ctx.dataParallelBaseline:
             return (moduleDesc, dpTime / 1000., gpuUsecSum / 1000., ctx.totalGpus)
         else:
-            return (moduleDesc, finalTime / 1000., gpuUsecSum / 1000., maxGpusUsed)
+            return (moduleDesc, (finalTime + sideBranchOvertimeSum) / 1000., gpuUsecSum / 1000., maxGpusUsed)

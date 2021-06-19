@@ -24,6 +24,7 @@ import sys
 import time
 import json
 import sys
+import traceback
 from typing import Optional, List, Any
 from datetime import datetime
 from argparse import ArgumentParser, REMAINDER
@@ -329,8 +330,13 @@ class Runtime(xmlrpc.server.SimpleXMLRPCServer):
         optimizer = torch.optim.SGD(module.parameters(), lr=0.1)
         job = JobContext(module, name, loader, commHandler, targetShuffler, optimizer=optimizer, device=self.device, runtime=self)
         
-        # job.limit_iters_to_train(1000)
         job.limit_iters_to_train(1000)
+        # try:
+        #     job.limit_iters_to_train(1)
+        # except Exception as e:
+        #     print(e)
+        #     print(traceback.format_exc())
+
         self.jobs.append(job)
         Logger.log("Scheduled a training job (%s). Total jobs on queue: %d" % (name, len(self.jobs)))
         return "Scheduled a training job. @ %s!"%self.myAddr

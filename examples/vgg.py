@@ -364,14 +364,15 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     # job = cs.searchBestSplits(4, 16, dataParallelBaseline=True)
     # job = cs.searchBestSplits(4, 16)
     # job = cs.searchBestSplits(gpuCount, globalBatch, dataParallelBaseline=True)
-    job, iterMs, gpuMs = cs.searchBestSplits(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
+    # job, iterMs, gpuMs = cs.searchBestSplits(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
+    job, iterMs, gpuMs, maxGpusUsed = cs.searchBestSplitsV3(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
     jobInJson = job.dumpInJSON()
 
     # for rank in range(4):
     #     print("GPU rank: %d"%rank)
     #     print(job.dumpSingleRunnableModule(rank))
 
-    job2 = TrainingJob("test", None, None, 0, "")
+    job2 = TrainingJob("test", None, None, 0, 0, "")
     job2.loadJSON(jobInJson)
     assert(jobInJson == job2.dumpInJSON())
     print("Load/Dump returned the same output? %s" % ("true" if jobInJson == job2.dumpInJSON() else "false"))
