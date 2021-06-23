@@ -297,7 +297,7 @@ def genTestJob(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseli
     cs = CostSim(profiler, netBw=1.25E5, verbose=True)
     model = vgg16(pretrained=False)
     cs.printAllLayers()
-    cs.computeInputDimensions((224,224,3))
+    cs.computeInputDimensions((3,224,224))
     job = cs.searchBestSplits(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline)
     return job
 
@@ -360,7 +360,7 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     # model = vgg11()
     # model = resnet34()
     cs.printAllLayers(slient=True)
-    cs.computeInputDimensions((224,224,3))
+    cs.computeInputDimensions((3,224,224))
     # job = cs.searchBestSplits(4, 16, dataParallelBaseline=True)
     # job = cs.searchBestSplits(4, 16)
     # job = cs.searchBestSplits(gpuCount, globalBatch, dataParallelBaseline=True)
@@ -383,7 +383,7 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     if not spatialSplit:
         cc = ClusterClient()
         jobName = "vgg16_%d_%d_%2.1f%s" % (gpuCount, globalBatch, amplificationLimit, "_DP" if dataParallelBaseline else "")
-        cc.submitTrainingJob(jobName, jobInJson)
+        # cc.submitTrainingJob(jobName, jobInJson)
     
     if simResultFilename != None:
         f = open(simResultFilename, "a")

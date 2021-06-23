@@ -111,10 +111,10 @@ class CostSim:
                     if layer.name == "concat":
                         totalChannels = 0
                         for pl in layer.prevLayers:
-                            totalChannels += pl.outputDim[2]
-                            if prevLayer.outputDim[0] != pl.outputDim[0] or prevLayer.outputDim[1] != pl.outputDim[1]: # width and height must match.
+                            totalChannels += pl.outputDim[0]
+                            if prevLayer.outputDim[1] != pl.outputDim[1] or prevLayer.outputDim[2] != pl.outputDim[2]: # width and height must match.
                                 print("prevLayer.outputDim: %15s, non-matching other input: %15s" % (prevLayer.outputDim, pl.outputDim))
-                        layer.inputDim = (prevLayer.outputDim[0], prevLayer.outputDim[1], totalChannels)
+                        layer.inputDim = (totalChannels, prevLayer.outputDim[1], prevLayer.outputDim[2])
                     if layer.name == "ReLU2d":
                         for pl in layer.prevLayers:
                             if prevLayer.outputDim != pl.outputDim: # this is only correct for additions in Resnet.
@@ -129,16 +129,16 @@ class CostSim:
                 kernelSizeW = layer.params["kernel_size"][0] if type(layer.params["kernel_size"]) is tuple else layer.params["kernel_size"]
                 kernelSizeH = layer.params["kernel_size"][1] if type(layer.params["kernel_size"]) is tuple else layer.params["kernel_size"]
                 
-                outWidth = int((layer.inputDim[0] + paddingW * 2 - kernelSizeW) / strideW + 1)
-                outHeight = int((layer.inputDim[1] + paddingH * 2 - kernelSizeH) / strideH + 1)
+                outWidth = int((layer.inputDim[1] + paddingW * 2 - kernelSizeW) / strideW + 1)
+                outHeight = int((layer.inputDim[2] + paddingH * 2 - kernelSizeH) / strideH + 1)
                 
                 if layer.name == "conv2d":
                     outChannel = layer.params["out_channels"]
                 elif layer.name in ["maxPool2d", "avgPool2d"]:
-                    outChannel = layer.inputDim[2]
-                layer.outputDim = (outWidth, outHeight, outChannel)
+                    outChannel = layer.inputDim[0]
+                layer.outputDim = (outChannel, outWidth, outHeight)
             elif layer.name == "adAvgPool2d":
-                layer.outputDim = (layer.params["output_width"], layer.params["output_height"], layer.inputDim[2])
+                layer.outputDim = (layer.inputDim[0], layer.params["output_width"], layer.params["output_height"])
             elif layer.name == "linear":
                 layer.outputDim = (layer.params["out_features"])
             elif layer.name in ["ReLU2d", "ReLU1d", "ReLU"]:
@@ -186,8 +186,8 @@ class CostSim:
 
         # Compute output dimension of previous and current layer.
         srcS = srcConfig[0]
-        srcW = srcConfig[1] * srcLayer.outputDim[0] // srcLayer.inputDim[0] # Adjusts based on input/output ratio. 
-        srcH = srcConfig[2] * srcLayer.outputDim[1] // srcLayer.inputDim[1] # It's necessary for pool or conv2d with stride > 1
+        srcW = srcConfig[1] * srcLayer.outputDim[1] // srcLayer.inputDim[1] # Adjusts based on input/output ratio. 
+        srcH = srcConfig[2] * srcLayer.outputDim[2] // srcLayer.inputDim[2] # It's necessary for pool or conv2d with stride > 1
         srcOutChannel = srcConfig[4] if len(srcConfig) >= 5 else srcConfig[3] # non-convolutional 2d layers don't have filter.
         destS = destConfig[0]
         destW = destConfig[1]
@@ -232,8 +232,8 @@ class CostSim:
         else:
             haloW = 0
             haloH = 0
-        haloPixels = 2 * haloW * ((destH + haloH) if destW != destLayer.inputDim[0] else 0)\
-                     + 2 * haloH * ((destW + haloW) if destH != destLayer.inputDim[1] else 0)
+        haloPixels = 2 * haloW * ((destH + haloH) if destW != destLayer.inputDim[1] else 0)\
+                     + 2 * haloH * ((destW + haloW) if destH != destLayer.inputDim[2] else 0)
         haloSize = bytesPerParam * min(srcS, destS) * haloPixels * min(srcOutChannel, destInChannel)
 
         # compute times
@@ -259,8 +259,8 @@ class CostSim:
         if len(srcConfig) >= 4: # prev layer was conv2d.
             # print("%s to %s" % (srcLayer.name, destLayer.name))
             srcS = srcConfig[0]
-            srcW = srcConfig[1] * 1 if srcLayer.name == "flatten" else (srcLayer.outputDim[0] // srcLayer.inputDim[0]) # Adjusts based on input/output ratio. 
-            srcH = srcConfig[2] * 1 if srcLayer.name == "flatten" else (srcLayer.outputDim[1] // srcLayer.inputDim[1]) # It's necessary for pool or conv2d with stride > 1
+            srcW = srcConfig[1] * 1 if srcLayer.name == "flatten" else (srcLayer.outputDim[1] // srcLayer.inputDim[1]) # Adjusts based on input/output ratio. 
+            srcH = srcConfig[2] * 1 if srcLayer.name == "flatten" else (srcLayer.outputDim[2] // srcLayer.inputDim[2]) # It's necessary for pool or conv2d with stride > 1
             srcOutChannel = srcConfig[4] if len(srcConfig) >= 5 else srcConfig[3] # non-convolutional 2d layers don't have filter.
             srcOutFeatures = srcW * srcH * srcOutChannel
             splitFactor = 1
@@ -401,11 +401,11 @@ class CostSim:
 
     def getInitialConfig(self, layer, globalBatch: int):
         if layer.name in ["conv2d"]:
-            initCfg = (globalBatch, layer.inputDim[0], layer.inputDim[1], layer.inputDim[2], layer.outputDim[2]) # (batch, width, height, channel, filter)
+            initCfg = (globalBatch, layer.inputDim[1], layer.inputDim[2], layer.inputDim[0], layer.outputDim[2]) # (batch, width, height, channel, filter)
         elif layer.name in ["linear", "ReLU1d"]:
             initCfg = (globalBatch, layer.inputDim, layer.outputDim)
         elif layer.name in ["flatten", "maxPool2d", "avgPool2d", "adAvgPool2d", "ReLU2d", "concat"]:
-            initCfg = (globalBatch, layer.inputDim[0], layer.inputDim[1], layer.inputDim[2]) # (batch, width, height, channel, filter)
+            initCfg = (globalBatch, layer.inputDim[1], layer.inputDim[2], layer.inputDim[0]) # (batch, width, height, channel, filter)
         return initCfg
 
     def listConfigOptions(self, layer, globalBatch: int, totalGpus: int, samplePo2=True, sampleSplit=True, spatialSplit=True, filterSplit=False, pruneHeuristics=False, dataParallelBaseline=False):

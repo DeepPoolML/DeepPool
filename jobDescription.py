@@ -13,7 +13,8 @@
 # OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 import json
-# import torch
+import torch
+import io
 # import torch.nn as nn
 from typing import Optional, IO, List, Any
 
@@ -28,8 +29,9 @@ class Layer:
                 prevLayer.nextLayers.append(self)
         self.nextLayers = []
         self.module = module
-        self.inputDim = (0, 0, 0)   # (Width, Height, Channel) for 2d convolution
-        self.outputDim = (0, 0, 0)  # (Width, Height, Channel)
+        self.moduleScript = None
+        self.inputDim = (0, 0, 0)   # (Channel, Width, Height) for 2d convolution
+        self.outputDim = (0, 0, 0)  # (Channel, Width, Height)
     
     def dumpForJSON(self):
         prop = {}
@@ -51,6 +53,20 @@ class Layer:
         prop["outputDim"] = self.outputDim
         if hasattr(self, 'gpuAssignment'):
             prop["gpuAssignment"] = self.gpuAssignment
+
+        if self.module != None:
+            fakeInput = torch.zeros(self.inputDim)
+            traced = torch.jit.script(self.module, fakeInput)
+            saveLocation = "modules/scriptmodule_%d.pt"%self.id
+            torch.jit.save(traced, saveLocation)
+            prop["moduleSavedLocation"] = saveLocation
+
+            buffer = io.BytesIO()
+            torch.jit.save(traced, buffer)
+            self.moduleScript = buffer.getvalue()
+            print("Layer%2d written %5d bytes." % (self.id, len(self.moduleScript)))
+            print(" *** Code ***\n%s" % (traced.code))
+
         return prop
 
 
@@ -418,11 +434,11 @@ class TrainingJob:
     # - config to gpu count.
     def getInitialConfig(self, layer: Layer, globalBatch: int):
         if layer.name in ["conv2d"]:
-            initCfg = (globalBatch, layer.inputDim[0], layer.inputDim[1], layer.inputDim[2], layer.outputDim[2]) # (batch, width, height, channel, filter)
+            initCfg = (globalBatch, layer.inputDim[1], layer.inputDim[2], layer.inputDim[0], layer.outputDim[2]) # (batch, width, height, channel, filter)
         elif layer.name in ["linear", "ReLU1d"]:
             initCfg = (globalBatch, layer.inputDim, layer.outputDim)
         elif layer.name in ["flatten", "maxPool2d", "avgPool2d", "adAvgPool2d", "ReLU2d", "concat"]:
-            initCfg = (globalBatch, layer.inputDim[0], layer.inputDim[1], layer.inputDim[2]) # (batch, width, height, channel, filter)
+            initCfg = (globalBatch, layer.inputDim[1], layer.inputDim[2], layer.inputDim[0]) # (batch, width, height, channel, filter)
         return initCfg
 
     def calcGpusNeeded(self, layer: Layer, config: tuple, globalBatch: int):

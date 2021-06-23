@@ -100,25 +100,14 @@ class VisionDataLoaderGenerator:
         sampleOffset = jobInJson["dataLoaderOffset"]
         localBatch = jobInJson["layers"][0]["config"][0]
         inputDim = jobInJson["layers"][0]["inputDim"]
-        # {"globalBatchSize": 16,
-        # "rank": 0,
-        # "dataLoaderOffset": 2
-        # "dataLoaderTargetTx": [{"name": "target_0", "dest": 1, "prop": {"xferSamples": 1}, "bytes": 56}]}, # TODO: implement in dump.
-        # "layers": [{"id": 0,
-        #             "name": "conv2d",
-        #             "params": {"in_channels": 3, "out_channels": 64, "kernel_size": 3, "stride": 1, "padding": 1},
-        #             "prevLayers": [], "nextLayers": [1],
-        #             "inputDim": [224, 224, 3], "outputDim": [224, 224, 64],
-        #             "config": [16, 224, 224, 3, 64],
-        #             "tensorTx": [{"name": "0_sample_1_0", "dest": 1, "prop": {"xferSamples": 1}, "bytes": 56}]},
-        
+   
         if dataDir is None:
-            inputSize = (inputDim[2], inputDim[0], inputDim[1]) # (C, W, H)
+            inputSize = (inputDim[0], inputDim[1], inputDim[2]) # (C, W, H)
             dataset = SyntheticDataset(inputSize, syntheticDataLength)
         else:
             normalize = torchvision.transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                             std=[0.229, 0.224, 0.225])
-            cropSize = (inputDim[1], inputDim[0]) # (H, W)
+            cropSize = (inputDim[2], inputDim[1]) # (H, W)
             dataset = torchvision.datasets.ImageFolder(
                 dataDir,
                 torchvision.transforms.Compose([
@@ -740,7 +729,7 @@ def testUnevenSampler():
                     "name": "conv2d",
                     "params": {"in_channels": 1, "out_channels": 2, "kernel_size": 3, "stride": 1, "padding": 1},
                     "prevLayers": [], "nextLayers": [1],
-                    "inputDim": [2, 2, 1], "outputDim": [2, 2, 2],
+                    "inputDim": [1, 2, 2], "outputDim": [2, 2, 2],
                     "config": [2, 2, 2, 1, 2]} 
                     ]}""",
         r"""{"globalBatchSize": 16,
@@ -750,7 +739,7 @@ def testUnevenSampler():
                     "name": "conv2d",
                     "params": {"in_channels": 1, "out_channels": 2, "kernel_size": 3, "stride": 1, "padding": 1},
                     "prevLayers": [], "nextLayers": [1],
-                    "inputDim": [2, 2, 1], "outputDim": [2, 2, 2],
+                    "inputDim": [1, 2, 2], "outputDim": [2, 2, 2],
                     "config": [14, 2, 2, 1, 2]} 
                     ]}"""]
     loaders = [VisionDataLoaderGenerator.genDataLoader(jobInJson, dataDir=None, workers=4, syntheticDataLength=1600)
@@ -771,7 +760,7 @@ def testRunnableModuleBasic():
                                 "name": "conv2d",
                                 "params": {"in_channels": 1, "out_channels": 2, "kernel_size": 3, "stride": 1, "padding": 1},
                                 "prevLayers": [], "nextLayers": [1],
-                                "inputDim": [2, 2, 1], "outputDim": [2, 2, 2],
+                                "inputDim": [1, 2, 2], "outputDim": [2, 2, 2],
                                 "config": [2, 2, 2, 1, 2]},
                                 {"id": 1,
                                 "name": "ReLU2d",
@@ -814,20 +803,20 @@ def testExpandingGpuUsed():
                                 "name": "conv2d",
                                 "params": {"in_channels": 3, "out_channels": 64, "kernel_size": 3, "stride": 1, "padding": 1},
                                 "prevLayers": [], "nextLayers": [1],
-                                "inputDim": [224, 224, 3], "outputDim": [224, 224, 64],
+                                "inputDim": [3, 224, 224], "outputDim": [64, 224, 224],
                                 "config": [16, 224, 224, 3, 64],
                                 "tensorTx": [{"name": "0_sample_1_0", "dest": 1, "prop": {"xferSamples": 1}, "bytes": 56}]},
                                 {"id": 1,
                                 "name": "ReLU2d",
                                 "params": {"inplace": true, "kernel_size": 1, "stride": 1, "padding": 0},
                                 "prevLayers": [0], "nextLayers": [2],
-                                "inputDim": [224, 224, 64], "outputDim": [224, 224, 64],
+                                "inputDim": [64, 224, 224], "outputDim": [64, 224, 224],
                                 "config": [15, 224, 224, 64]},
                                 {"id": 2,
                                 "name": "conv2d",
                                 "params": {"in_channels": 64, "out_channels": 64, "kernel_size": 3, "stride": 1, "padding": 1},
                                 "prevLayers": [1], "nextLayers": [],
-                                "inputDim": [224, 224, 64], "outputDim": [224, 224, 64],
+                                "inputDim": [64, 224, 224], "outputDim": [64, 224, 224],
                                 "config": [15, 224, 224, 64, 64],
                                 "tensorTx": [{"name": "2_sample_1_0", "dest": 1, "prop": {"xferSamples": 1}, "bytes": 56},
                                              {"name": "2_sample_1_1", "dest": 2, "prop": {"xferSamples": 1}, "bytes": 56}

@@ -96,7 +96,7 @@ totalGpus = 4
 
 model = TestModelHeavyHead(k=2)
 cs.printAllLayers()
-cs.computeInputDimensions((224,224,3))
+cs.computeInputDimensions((3,224,224))
 
 cs.displayConfigSizeGrowth(cs.layers[0],64)
 

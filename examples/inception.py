@@ -559,7 +559,7 @@ class BasicConv2d(nn.Module):
 # model = Inception3()
 
 # cs.printAllLayers()
-# cs.computeInputDimensions((299,299,3))
+# cs.computeInputDimensions((3, 299,299))
 
 # globalBatch = 16
 # totalGpus = 4
@@ -613,7 +613,7 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     cs = CostSim(profiler, netBw=netBw, verbose=True)
     model = Inception3(aux_logits=False)
     cs.printAllLayers(slient=True)
-    cs.computeInputDimensions((299,299,3))
+    cs.computeInputDimensions((3,299,299))
     # job, iterMs, gpuMs = cs.searchBestSplits(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
 
     # if dataParallelBaseline:
