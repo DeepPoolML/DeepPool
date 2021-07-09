@@ -64,8 +64,10 @@ class Layer:
             buffer = io.BytesIO()
             torch.jit.save(traced, buffer)
             self.moduleScript = buffer.getvalue()
-            print("Layer%2d written %5d bytes." % (self.id, len(self.moduleScript)))
-            print(" *** Code ***\n%s" % (traced.code))
+            # print("Layer%2d written %5d bytes." % (self.id, len(self.moduleScript)))
+            # print(" *** Code ***\n%s" % (traced.code))
+        elif hasattr(self, 'moduleSavedLocation'):
+            prop["moduleSavedLocation"] = self.moduleSavedLocation
 
         return prop
 
@@ -99,6 +101,8 @@ class TrainingJob:
             if 'gpuAssignment' in ldsc:
                 l.gpuAssignment = ldsc["gpuAssignment"]
             l.bestCfg = ldsc["config"]
+            if 'moduleSavedLocation' in ldsc:
+                l.moduleSavedLocation = ldsc["moduleSavedLocation"]
             config = ldsc["config"]
             self.layers.append(l)
             self.layerConfigs.append(config)

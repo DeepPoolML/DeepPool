@@ -386,9 +386,11 @@ class CostSim:
         return module
     
     def Flatten(self, custom_previous_layers: list = None):
+        module = nn.Flatten(start_dim=1)
+
         if custom_previous_layers == None and len(self.layers) > 0:
             custom_previous_layers = [self.layers[-1]]
-        layer = Layer(None, "flatten", {"kernel_size": 1}, prevLayers = custom_previous_layers)
+        layer = Layer(module, "flatten", {"kernel_size": 1}, prevLayers = custom_previous_layers)
         self.layers.append(layer)
         return
     

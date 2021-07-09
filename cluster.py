@@ -24,10 +24,43 @@ import threading
 from argparse import ArgumentParser, REMAINDER
 from typing import Optional, IO, List, Any
 from jobDescription import TrainingJob
+import grpc
+import runtime_pb2
+import runtime_pb2_grpc
+
 # import examples.vgg as vgg  # TODO: this is used for debugging. Remove this later.
 
+class CppRuntimeProxy:
+    def __init__(self, addressWithPort: str):
+        self.channel = grpc.insecure_channel(addressWithPort) # ex) 'localhost:50051'
+        self.stub = runtime_pb2_grpc.RuntimeStub(self.channel)
+
+    def scheduleTraining(self, name, jobInJson, dataDir, tensorTagsInJson, jobRankToGlobalRankInJson):
+        response = self.stub.ScheduleTraining(runtime_pb2.ScheduleTrainingRequest(
+            name=name, job_in_json=jobInJson, data_dir=dataDir,
+            tensor_tags_in_json=tensorTagsInJson,
+            job_rank_to_global_rank_in_json=jobRankToGlobalRankInJson))
+        print("received: " + response.message)
+    
+    def poke(self):
+        response = self.stub.Poke(runtime_pb2.Empty())
+        print("received: " + response.message)
+
+    def shutdown(self):
+        response = self.stub.Shutdown(runtime_pb2.Empty())
+        print("received: " + response.message)
+
+    def initCommBackend(self):
+        # response = self.stub.(runtime_pb2.Empty())
+        # print("received: " + response.message)
+        print("initCommBackend() not implemented")
+    
+    def initCommGroups(self, jobName, commGroupsInJson):
+        print("initCommGroups not implemented")
+
+
 class Location:
-    def __init__(self, address: str, port: int, device: int, userId: str, sshKeyPath: str):
+    def __init__(self, address: str, port: int, device: int, userId: str, sshKeyPath: str, isCpp: bool):
         self.address = address
         self.port = port
         self.device = device
@@ -35,18 +68,26 @@ class Location:
         self.sshKeyPath = sshKeyPath
         self.serverId = None
         self.proxy = None
+        self.isCpp = isCpp
         
-    def getProxy(self, maxRetry = 8):
-        if self.proxy != None:
+    def getProxy(self, maxRetry = 8, reuseCached = True):
+        if reuseCached and self.proxy != None:
+            print("getProxy() returned from cached proxy value.")
             return self.proxy
+
+        # Python runtime
         retryGap = 1
         retryCount = 0
         while retryCount < maxRetry:
             try:
-                self.proxy = xmlrpc.client.ServerProxy("http://%s:%d/"%(self.address, self.port))
+                if self.isCpp: # CPP runtime
+                    self.proxy = CppRuntimeProxy("%s:%d"%(self.address, self.port))
+                    print("cppProxy created for %s:%d"%(self.address, self.port))
+                else:
+                    self.proxy = xmlrpc.client.ServerProxy("http://%s:%d/"%(self.address, self.port))
                 self.proxy.poke()
                 return self.proxy
-            except ConnectionRefusedError:
+            except (ConnectionRefusedError, grpc.RpcError): # ConnectionRefusedError is for xmlrpc.
                 print("Cannot connect to %s:%d. Will retry in %d sec." %
                     (self.address, self.port, retryGap))
                 time.sleep(retryGap)
@@ -156,7 +197,6 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
 
         threadList = []
         def requestScheduleTraining(proxy, name, jobInJson, dataDir, tensorTagsInJson, jobRankToGlobalRankInJson):
-            # print(proxy.scheduleTraining(name, jobInJson, dataDir, tensorTagsInJson, jobRankToGlobalRankInJson))
             proxy.scheduleTraining(name, jobInJson, dataDir, tensorTagsInJson, jobRankToGlobalRankInJson)
         for rank in range(gpusUsed):
             location = self.locations[rank]
@@ -236,11 +276,13 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
             for pipPackage in pipPackages:
                 location.rsh("pip install %s" % pipPackage)
         
-    def launchRuntimeAll(self, c10dBackend: str, profile: bool):
+    def launchRuntimeAll(self, c10dBackend: str, profile: bool, cppRuntime: bool):
         """ Launch runtime at all remote locations. Also registers the sighandler
             that cleanly shuts down all remote runtime servers.
         """
         for i, location in enumerate(self.locations):
+            # logdir = "logs/"
+            logdir = "/home/ubuntu/DeepPoolRuntime/logs/"
             location.upSync(".", self.workDir)
             # pass master ip and port.
             stdoutFp = open("logs/runtime%d.out"%i, "w", buffering=1)
@@ -249,12 +291,19 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
                 nsysPrefix = "nsys profile -f true -o net%d -c cudaProfilerApi --stop-on-range-end true -t cuda,nvtx --export sqlite " % i # -s none
             else:
                 nsysPrefix = ""
-            self.processes.append(location.rshAsync(
-                # nsysPrefix + "python3 " + self.workDir + "runtime.py" + \
-                "source ~/.profile; " +  nsysPrefix + "python3 " + self.workDir + "runtime.py" + \
-                " --coordinatorAddr %s:%d --myAddr %s:%d --device %d --c10dBackend %s --rank %d --worldSize %d --be_batch_size %d %s" % \
-                    (self.myAddr, self.myPort, location.address, location.port, location.device, c10dBackend, i, len(self.locations), self.be_batch_size, "--profile" if profile else "") #+ \
-                , stdout=stdoutFp, stderr=stderrFp))
+            if cppRuntime:
+                self.processes.append(location.rshAsync(
+                    self.workDir + "csrc/build/runtime" + \
+                    " --coordinatorAddr %s:%d --myAddr %s:%d --device %d --c10dBackend %s --rank %d --worldSize %d --logdir %s --be_batch_size %d %s" % \
+                        (self.myAddr, self.myPort, location.address, location.port, location.device, c10dBackend, i, len(self.locations), logdir, self.be_batch_size, "--profile" if profile else "") #+ \
+                    , stdout=stdoutFp, stderr=stderrFp))
+            else:
+                self.processes.append(location.rshAsync(
+                    # nsysPrefix + "python3 " + self.workDir + "runtime.py" + \
+                    "source ~/.profile; " +  nsysPrefix + "python3 " + self.workDir + "runtime.py" + \
+                    " --coordinatorAddr %s:%d --myAddr %s:%d --device %d --c10dBackend %s --rank %d --worldSize %d --be_batch_size %d %s" % \
+                        (self.myAddr, self.myPort, location.address, location.port, location.device, c10dBackend, i, len(self.locations), self.be_batch_size, "--profile" if profile else "") #+ \
+                    , stdout=stdoutFp, stderr=stderrFp))
 
             sig_names = {2: "SIGINT", 15: "SIGTERM"}
             last_return_code = None
@@ -279,8 +328,8 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
         
         time.sleep(5 + (15 if profile else 0))
         for location in self.locations:
-            print(location.getProxy().poke())
-
+            proxy = location.getProxy(reuseCached=False)
+            print(proxy.poke())
 
     def shutdownRuntimeAll(self):
         """ Ask all remote runtime servers to stop. Returns after all servers ack the shutdown request. """
@@ -292,6 +341,8 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
                 # print(location.getProxy(maxRetry=1).shutdown())
             except xmlrpc.client.Fault:
                 print("pipe broken while shuting down %s" % location.address)
+            except grpc.RpcError:
+                print("GRPC error while shuting down %s" % location.address)
 
     def initCommBackendAll(self):
         threadList = []
@@ -370,6 +421,8 @@ def parse_args():
                         help="To launch runtimes with night system profiling.")
     parser.add_argument("--be_batch_size", type=int, default=0,
                         help="launch runtimes with be beatch size")
+    parser.add_argument('--cpp', default=False, action='store_true',
+                        help="To launch CPP version runtimes.")
     # For installing nsys.. (with other cuda toolkit..)
     # wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu1804/x86_64/cuda-ubuntu1804.pin
     # sudo mv cuda-ubuntu1804.pin /etc/apt/preferences.d/cuda-repository-pin-600
@@ -387,7 +440,7 @@ def main():
     for serverConfig in clusterConfig["serverList"]:
         print("Found %s" % str(serverConfig))
         for deviceConfig in serverConfig["deviceList"]:
-            locations.append(Location(serverConfig["addr"], deviceConfig["port"], deviceConfig["device"], serverConfig["userId"], serverConfig["sshKeyPath"]))
+            locations.append(Location(serverConfig["addr"], deviceConfig["port"], deviceConfig["device"], serverConfig["userId"], serverConfig["sshKeyPath"], args.cpp))
     addrToBindCombo = re.split('[-:]', args.addrToBind)
     addrToBind = addrToBindCombo[0]
     portToBind = int(addrToBindCombo[1])
@@ -395,12 +448,15 @@ def main():
     coordinator = ClusterCoordinator(addrToBind, portToBind, locations, clusterConfig["workDir"], args.be_batch_size)
     if args.install:
         coordinator.installPackages()
+    
     # Just make sure there's no previously left runtimes.
-    print("Cleaning up potentially leftover runtime servers from previous experiment.")
-    coordinator.shutdownRuntimeAll()
-    time.sleep(10)
+    # CPP runtimes seem to terminate appropriately. So, there's no need to shutdown leftovers.
+    if not args.cpp:
+        print("Cleaning up potentially leftover runtime servers from previous experiment.")
+        coordinator.shutdownRuntimeAll()
+        time.sleep(10)
 
-    coordinator.launchRuntimeAll(args.c10dBackend, profile=args.profile)
+    coordinator.launchRuntimeAll(args.c10dBackend, profile=args.profile, cppRuntime=args.cpp)
     print("All runtime nodes are up and running. Now, initializing communication backend..")
     time.sleep(5)
     coordinator.initCommBackendAll()

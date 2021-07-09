@@ -367,6 +367,13 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     # job, iterMs, gpuMs = cs.searchBestSplits(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
     job, iterMs, gpuMs, maxGpusUsed = cs.searchBestSplitsV3(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
     jobInJson = job.dumpInJSON()
+    print("\n*** General description ***\n")
+    print(jobInJson)
+    print("\n\n")
+
+    print("\n*** GPU specific description for rank:0 ***\n")
+    print(job.dumpSingleRunnableModule(0))
+    print("\n\n")
 
     # for rank in range(4):
     #     print("GPU rank: %d"%rank)
@@ -383,7 +390,7 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     if not spatialSplit:
         cc = ClusterClient()
         jobName = "vgg16_%d_%d_%2.1f%s" % (gpuCount, globalBatch, amplificationLimit, "_DP" if dataParallelBaseline else "")
-        # cc.submitTrainingJob(jobName, jobInJson)
+        cc.submitTrainingJob(jobName, jobInJson)
     
     if simResultFilename != None:
         f = open(simResultFilename, "a")

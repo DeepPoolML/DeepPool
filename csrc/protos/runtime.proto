@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+// option objc_class_prefix = "RT";
+// package Runtime;
+
+// Interface exported by the server.
+service Runtime {
+  // rpc InitCommBackend(Empty) returns (StandardReply) {}
+  // rpc initCommGroups() returns (string) {}
+  rpc ScheduleTraining(ScheduleTrainingRequest) returns (StandardReply) {}
+  rpc Poke(Empty) returns (StandardReply) {}
+  rpc Shutdown(Empty) returns (StandardReply) {}
+}
+
+message Empty {}
+
+message ScheduleTrainingRequest {
+  string name = 1;
+  string job_in_json = 2;
+  string data_dir = 3;
+  string tensor_tags_in_json = 4;
+  string job_rank_to_global_rank_in_json = 5;
+}
+
+message StandardReply {
+  string message = 1;
+}
