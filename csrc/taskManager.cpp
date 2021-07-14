@@ -44,7 +44,7 @@ JobContext::JobContext(std::unique_ptr<RunnableModule> model, std::string name,
   , device(device)
   , epoch(0)
   , iter(0)
-  , itersToTrain(1) // = len(dataLoader) if dataLoader != None else None #TODO: this is a temporary hack..
+  , itersToTrain(20) // = len(dataLoader) if dataLoader != None else None #TODO: this is a temporary hack..
   , state(JobState::INIT)
 {
   // self.dataLoaderIt = iter(self.dataLoader) if dataLoader != None else None
@@ -85,7 +85,7 @@ int
 TaskManager::poll()
 {
   std::lock_guard<std::mutex> lock(_mutex);
-  Cycles::sleep(1000000);
+  // Cycles::sleep(1000000);
   if (jobList.empty()) {
     return 0;
   }
@@ -130,12 +130,14 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
     x.to(job->device);
     job->model->iterInit(x);
     job->state = JobState::FORWARD;
+    DP_LOG(NOTICE, "Foward pass is starting soon.");
   } else if (job->state == JobState::FORWARD) {
     DP_LOG(DEBUG, "JobState::FORWARD.");
     bool completed = job->model->forwardAStep();
     if (completed) {
       // TODO: add a loss calculation here? or as another state?
       job->state = JobState::BACKWARD;
+      DP_LOG(NOTICE, "Foward pass is completed. Moving to backward pass.");
     }
   } else if (job->state == JobState::BACKWARD) {
     DP_LOG(DEBUG, "JobState::BACKWARD.");

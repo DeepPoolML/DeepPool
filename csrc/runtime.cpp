@@ -82,7 +82,9 @@ class RuntimeServiceImpl final : public Runtime::Service {
     DP_LOG(DEBUG, "dev constructed.");
     auto runnableModule = std::make_unique<RunnableModule>(jobSpec, commHandler.get(), dev);
     DP_LOG(DEBUG, "runnableModule constructed.");
-    auto optimizer = std::make_unique<torch::optim::SGD>(runnableModule->parameters(), /*lr=*/0.01);
+    std::vector<torch::Tensor> parameters;
+    runnableModule->getParameters(&parameters);
+    auto optimizer = std::make_unique<torch::optim::SGD>(parameters, /*lr=*/0.01);
     DP_LOG(DEBUG, "optimizer constructed.");
 
     
@@ -240,6 +242,7 @@ int main(int argc, char** argv) {
   std::string logFilePath = format("%scpprt%d.out", ctx.logdir, ctx.rank);
   Logger::get().setLogFile(logFilePath.c_str(), true);
   Logger::get().setLogLevel(DEBUG);
+  // Logger::get().setLogLevel(NOTICE);
   TaskManager taskMngr(&ctx);
 
   std::cout << "myAddr: " << ctx.myAddr << " rank: " << ctx.rank << std::endl;

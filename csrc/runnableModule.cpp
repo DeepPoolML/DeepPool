@@ -17,6 +17,7 @@
 #include "json.hpp"
 #include "runnableModule.h"
 #include "logger.h"
+#include "utils.h"
 
 /**
  * Constructs RunnableModule
@@ -51,9 +52,32 @@ RunnableModule::RunnableModule(json spec,
     } else {
       DP_LOG(DEBUG, " layer is not concat.");
     }
+
+    module.to(device);
+    DP_LOG(DEBUG, " layer's module is moved to device.");
+    module.train();
+    DP_LOG(DEBUG, " layer's module is set for train mode.");
+
+    // std::string moduleName = format("%d:%s", ldsc["id"].get<int>(), name);
+    // register_module(moduleName, module);
+    // DP_LOG(DEBUG, "registered module as a submodule.");
+    
     // std::shared_ptr<torch::nn::Module> modulePtr(std::move(module));
     moduleList.push_back(module);
     DP_LOG(DEBUG, " layer's module is pushed back.");
+  }
+}
+
+/**
+ * Dumps the entire model parameters into the given vector.
+ */
+void
+RunnableModule::getParameters(std::vector<torch::Tensor>* parameters)
+{
+  for (const auto& module : moduleList) {
+    for (const auto& params : module.parameters()) {
+      parameters->push_back(params);
+    }
   }
 }
 
@@ -64,7 +88,7 @@ bool
 RunnableModule::iterInit(torch::Tensor x)
 {
   fpCtx.clear();
-  fpCtx.fpInput = x;
+  fpCtx.fpInput = x.to(device);
   return true;
 }
 
@@ -76,8 +100,10 @@ RunnableModule::iterInit(torch::Tensor x)
 bool
 RunnableModule::forwardAStep()
 {
+  // DP_LOG(DEBUG, "layersToProcess size: %d", (int)fpCtx.layersToProcess.size());
   int lid = fpCtx.layersToProcess.front();
   fpCtx.layersToProcess.pop_front();
+  // DP_LOG(DEBUG, "poped %d, layersToProcess size: %d", lid, (int)fpCtx.layersToProcess.size());
   torch::jit::Module& module = moduleList[lid];
   json& ldsc = layersInJson[lid];
   bool skipSinceNotReady = false;
@@ -155,14 +181,17 @@ RunnableModule::forwardAStep()
   DP_LOG(DEBUG, "layersProcessed is inserted.");
   for (auto& nlidjson : ldsc["nextLayers"]) {
     int nlid = nlidjson.get<int>();
+    DP_LOG(DEBUG, "nextLayer candidate: %d", nlid);
     if (fpCtx.layersProcessed.find(nlid) == fpCtx.layersProcessed.end()) {
       fpCtx.layersToProcess.push_back(nlid);
+    } else {
+      DP_LOG(DEBUG, "nextLayer %d is already processed.", nlid);
     }
   }
-  DP_LOG(DEBUG, "layersToProcess is inserted.");
 
   // Forward pass is completed.
   if (fpCtx.layersToProcess.empty()) {
+    DP_LOG(DEBUG, "no more layers to process.");
     return true;
   }
   return false;

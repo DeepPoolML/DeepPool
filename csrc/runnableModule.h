@@ -54,6 +54,7 @@ struct ForwardPassContext {
     fpOutputs.clear();
     leafIds.clear(); // Maybe not necessary?
     layersToProcess.clear();
+    layersToProcess.push_back(0);
     layersProcessed.clear();
   }
 
@@ -76,6 +77,7 @@ class RunnableModule : public torch::nn::Module {
   // RunnableModule();
   RunnableModule(json specInJson, CommunicationHandler* commHandler, c10::Device device);
 
+  void getParameters(std::vector<torch::Tensor>* parameters);
   bool iterInit(torch::Tensor x);
   bool forwardAStep();
   // torch::Tensor forward(torch::Tensor x);
