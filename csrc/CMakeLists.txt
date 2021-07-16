@@ -1,12 +1,19 @@
 cmake_minimum_required(VERSION 3.11 FATAL_ERROR)
 project(DeepPool)
 
-list(APPEND CMAKE_PREFIX_PATH "/home/ubuntu/libtorch")
-# include(../common.cmake)
+list(APPEND CMAKE_PREFIX_PATH "$ENV{HOME}/libtorch")
+find_package(Torch REQUIRED)
 
-# Another way is to use CMake's FetchContent module to clone gRPC at
-# configure time. This makes gRPC's source code available to your project,
-# similar to a git submodule.
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release)
+endif()
+
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS} -std=c++14 -Wall -Wextra")
+set(CMAKE_CXX_FLAGS_DEBUG "-g")
+set(CMAKE_CXX_FLAGS_RELEASE "-O3")
+
+
+# cloning gRPC at configure time.
 message(STATUS "Using gRPC via add_subdirectory (FetchContent).")
 include(FetchContent)
 FetchContent_Declare(
@@ -27,26 +34,7 @@ else()
   set(_GRPC_CPP_PLUGIN_EXECUTABLE $<TARGET_FILE:grpc_cpp_plugin>)
 endif()
 
-
-
-
-find_package(Torch REQUIRED)
-# find_package(gRPC CONFIG REQUIRED)
-# find_package(Protobuf REQUIRED)
-
-if(NOT CMAKE_BUILD_TYPE)
-  set(CMAKE_BUILD_TYPE Release)
-endif()
-
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}") # -Wall -Wextra")
-set(CMAKE_CXX_FLAGS_DEBUG "-g")
-set(CMAKE_CXX_FLAGS_RELEASE "-O3")
-
-# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
-
-
 # Proto file
-# get_filename_component(dp_proto "../runtime.proto" ABSOLUTE)
 get_filename_component(dp_proto "protos/runtime.proto" ABSOLUTE)
 get_filename_component(dp_proto_path "${dp_proto}" PATH)
 
@@ -79,29 +67,15 @@ target_link_libraries(dp_grpc_proto
   ${_GRPC_GRPCPP}
   ${_PROTOBUF_LIBPROTOBUF})
 
-# foreach(_target
-#   runtime)
-#   add_executable(${_target}
-#     "${_target}.cpp")
-#   target_link_libraries(${_target}
-#     dp_grpc_proto
-#     ${_REFLECTION}
-#     ${_GRPC_GRPCPP}
-#     ${_PROTOBUF_LIBPROTOBUF}
-#     ${TORCH_LIBRARIES})
-# endforeach()
-
-
-# set(rc_srcs "CodeLocation.cpp" "Cycles.cpp" "SpinLock.cpp" "ThreadId.cpp")
-
-
+# Linking info for runtime.
 add_executable(runtime
-  "runtime.cpp" "runnableModule.cpp" "taskManager.cpp" "logger.cpp"
-  "CodeLocation.cpp" "Cycles.cpp" "SpinLock.cpp" "ThreadId.cpp")
+  "runtime.cpp" "runnableModule.cpp" "taskManager.cpp" "logger.cpp" 
+  "CodeLocation.cpp" "Cycles.cpp" "SpinLock.cpp" "ThreadId.cpp" )
 target_link_libraries(runtime
   dp_grpc_proto
   ${_REFLECTION}
   ${_GRPC_GRPCPP}
   ${_PROTOBUF_LIBPROTOBUF}
   ${TORCH_LIBRARIES})
+
 set_property(TARGET runtime PROPERTY CXX_STANDARD 14)
