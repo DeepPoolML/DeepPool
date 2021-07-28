@@ -39,9 +39,10 @@ static const char* logLevelNames[] = {"(none)", "ERROR", "WARNING",
  * Constructs a logger.
  */
 Logger::Logger(LogLevel level)
-  : fd(2)
+  : mutex("Logger::mutex")
+  , fd(2)
   , mustCloseFd(false)
-  , mutex("Logger::mutex")
+  , logLevel(level)
   , logDataAvailable()
   , bufferSpaceFreed()
   , bufferSize(1000000)
@@ -53,8 +54,6 @@ Logger::Logger(LogLevel level)
   , printThreadExit(false)
   , testingBufferSize(0)
 {
-  setLogLevel(level);
-
   // Touch every page in the buffer
   for (int i = 0; i < bufferSize; i += 1000) {
     messageBuffer[i] = 'x';

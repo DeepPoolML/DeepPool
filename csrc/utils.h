@@ -12,12 +12,17 @@
 // ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 // OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
+#ifndef UTILS_H
+#define UTILS_H
+
 #include <memory>
 #include <string>
 #include <stdexcept>
+#include <torch/torch.h>
 
 template<typename ... Args>
-std::string format(const std::string& format, Args ... args)
+std::string
+format(const std::string& format, Args ... args)
 {
   int size_s = std::snprintf(nullptr, 0, format.c_str(), args ...) + 1; // Extra space for '\0'
   if (size_s <= 0) {
@@ -28,3 +33,13 @@ std::string format(const std::string& format, Args ... args)
   std::snprintf(buf.get(), size, format.c_str(), args ...);
   return std::string(buf.get(), buf.get() + size - 1); // We don't want the '\0' inside
 }
+
+static inline
+std::string tsrToStr(torch::Tensor tensor)
+{
+  std::ostringstream stream;
+  stream << tensor;
+  return stream.str();
+}
+
+#endif

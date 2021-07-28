@@ -17,6 +17,7 @@
 #include <memory>
 #include <string>
 #include "Cycles.h"
+#include "utils.h"
 #include "runnableModule.h"
 #include "runtime.h"
 #include "communication.h"
@@ -44,7 +45,7 @@ JobContext::JobContext(std::unique_ptr<RunnableModule> model, std::string name,
   , device(device)
   , epoch(0)
   , iter(0)
-  , itersToTrain(20) // = len(dataLoader) if dataLoader != None else None #TODO: this is a temporary hack..
+  , itersToTrain(1) // = len(dataLoader) if dataLoader != None else None #TODO: this is a temporary hack..
   , state(JobState::INIT)
 {
   // self.dataLoaderIt = iter(self.dataLoader) if dataLoader != None else None
@@ -122,6 +123,7 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
   if (job->epoch >= job->epochsToTrain) {
     DP_LOG(DEBUG, "training is completed.");
     *jobCompleted = true;
+    return 0;
   }
   if (job->state == JobState::INIT) {
     DP_LOG(DEBUG, "JobState::INIT.");
@@ -134,19 +136,39 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
   } else if (job->state == JobState::FORWARD) {
     DP_LOG(DEBUG, "JobState::FORWARD.");
     bool completed = job->model->forwardAStep();
+
     if (completed) {
       // TODO: add a loss calculation here? or as another state?
+      DP_LOG(NOTICE, "Foward pass is completed. Calculating loss.");
       job->state = JobState::BACKWARD;
-      DP_LOG(NOTICE, "Foward pass is completed. Moving to backward pass.");
+
+      // TODO: replace this fake targets with real ones.
+      // auto targets = torch::ones({16}).random_(/* from */ 0, /* to */ 1000);
+      auto targetOpts = torch::TensorOptions().dtype(torch::kInt64);
+      auto targets = torch::randint(/*low=*/0, /*high=*/1000, {16}, targetOpts);
+      targets = targets.to(job->device);
+
+      DP_LOG(DEBUG, "targets: %s dim: %d sizes: %d", tsrToStr(targets).c_str(),
+          (int)targets.dim(), (int)targets.sizes().size());
+
+      job->model->loss(targets);
+      assert(job->model->layerQ.empty());
+      job->model->layerQ.push_back(&job->model->layers.back());
+      DP_LOG(NOTICE, "Moving to backward pass.");
     }
   } else if (job->state == JobState::BACKWARD) {
     DP_LOG(DEBUG, "JobState::BACKWARD.");
-    DP_LOG(WARNING, "Backward pass is not implemented yet.");
-    job->state = JobState::SYNC;
+    // DP_LOG(WARNING, "Backward pass is not implemented yet.");
+    bool completed = job->model->backwardAStep();
+    if (completed) {
+      job->state = JobState::SYNC;
+      DP_LOG(NOTICE, "Backward pass is completed. Moving to gradient all-reduce.");
+    }
   } else if (job->state == JobState::SYNC) {
     DP_LOG(DEBUG, "JobState::SYNC.");
     job->iter++;
     DP_LOG(WARNING, "All-reduce parameter sync is not implemented yet.");
     job->state = JobState::INIT;
   }
+  return 1;
 }

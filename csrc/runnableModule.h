@@ -26,6 +26,53 @@ using json = nlohmann::json;
 
 class CommunicationHandler;
 
+
+/**
+ * Flipping status flag. This variable tracks the execution of the layer.
+ * Specifically, it is used to (1) prevent duplicate execution and (2) ensure
+ * the previous layer is executed so that its output tensor is valid.
+ */
+enum class LayerStatus {
+  PENDING_FP = 0, // pending forward pass (last done job was backward).
+  PENDING_BP      // pending backward pass (last done job was forward).
+};
+
+/**
+ * Description / context of a layer for training.
+ */
+struct Layer {
+  Layer(torch::jit::Module module, int id, bool active, bool detachInput,
+      std::vector<Layer*>& prevLayerVec)
+    : module(module)
+    , id(id)
+    , active(active)
+    , detachInput(detachInput)
+    , prevLayers()
+    , nextLayers()
+    , output()
+    // , gradOut()
+    , detachedInput()
+    , status(LayerStatus::PENDING_FP)
+  {
+    for (auto prevLayerPtr : prevLayerVec) {
+      prevLayers.push_back(prevLayerPtr);
+      prevLayerPtr->nextLayers.push_back(this);
+    }
+  }
+  
+  torch::jit::Module module;
+  const int id;
+  const bool active; // Inactive means no samples assigned for this runtime.
+  const bool detachInput; // Detach input before running this layer.
+  std::vector<Layer*> prevLayers;
+  std::vector<Layer*> nextLayers;
+  torch::Tensor output;  // Used during forward pass.
+  // torch::Tensor gradOut; // Used during backward pass.
+  torch::Tensor detachedInput; // Used during backward pass.
+  LayerStatus status;
+};
+
+#if 0
 /**
  * A context that tracks the progress of a forward pass of a signle iteration.
  */
@@ -67,6 +114,8 @@ struct ForwardPassContext {
   std::set<int> layersProcessed;
   bool runCriterionAndLoss;
 };
+#endif
+
 
 /**
  * A module that holds parameters (or submodules) and
@@ -78,9 +127,11 @@ class RunnableModule : public torch::nn::Module {
   RunnableModule(json specInJson, CommunicationHandler* commHandler, c10::Device device);
 
   void getParameters(std::vector<torch::Tensor>* parameters);
-  bool iterInit(torch::Tensor x);
+  void iterInit(torch::Tensor x);
   bool forwardAStep();
-  // torch::Tensor forward(torch::Tensor x);
+  // bool forwardAStepOld();
+  bool backwardAStep();
+  void loss(torch::Tensor targets);
 
   int rank;
   int globalBatchSize;
@@ -89,8 +140,18 @@ class RunnableModule : public torch::nn::Module {
   int initialBatchSize;
   CommunicationHandler* commHandler;
   c10::Device device;
-  std::vector< std::pair<int, torch::Tensor> > leavesForBackward;
-  ForwardPassContext fpCtx;
+  // std::vector< std::pair<int, torch::Tensor> > leavesForBackward;
+  // ForwardPassContext fpCtx;
+  std::vector<Layer> layers; // Topologically sorted list of layers.
+
+  ////////////////////////////////////////////
+  // Context for tracking particial progress.
+  ////////////////////////////////////////////
+  std::deque<Layer*> layerQ;
+  torch::Tensor fpInput;
+  torch::Tensor fpOutput;
+  torch::Tensor fpLoss;
+  // bool runCriterionAndLoss;
 };
 
 #endif
