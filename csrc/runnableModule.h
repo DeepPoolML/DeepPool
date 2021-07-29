@@ -24,8 +24,11 @@
 
 using json = nlohmann::json;
 
+/**
+ * Forward declarations. Do not include headers unless necessary.
+ */
 class CommunicationHandler;
-
+class RuntimeContext;
 
 /**
  * Flipping status flag. This variable tracks the execution of the layer.
@@ -124,7 +127,8 @@ struct ForwardPassContext {
 class RunnableModule : public torch::nn::Module {
  public:
   // RunnableModule();
-  RunnableModule(json specInJson, CommunicationHandler* commHandler, c10::Device device);
+  RunnableModule(RuntimeContext* rtctx, json specInJson,
+      CommunicationHandler* commHandler, c10::Device device);
 
   void getParameters(std::vector<torch::Tensor>* parameters);
   void iterInit(torch::Tensor x);
@@ -133,6 +137,10 @@ class RunnableModule : public torch::nn::Module {
   bool backwardAStep();
   void loss(torch::Tensor targets);
 
+  ////////////////////////////////////////////
+  // Internal data structure.
+  ////////////////////////////////////////////
+  RuntimeContext* rtctx;
   int rank;
   int globalBatchSize;
   std::vector<torch::jit::Module> moduleList;

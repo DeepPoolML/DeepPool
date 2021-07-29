@@ -15,6 +15,7 @@
 #include <torch/script.h>
 #include <torch/torch.h>
 #include "json.hpp"
+#include "runtime.h"
 #include "runnableModule.h"
 #include "logger.h"
 #include "utils.h"
@@ -22,10 +23,12 @@
 /**
  * Constructs RunnableModule
  */
-RunnableModule::RunnableModule(json spec,
+RunnableModule::RunnableModule(RuntimeContext* rtctx,
+                               json spec,
                                CommunicationHandler* commHandler,
                                c10::Device device)
-  : rank(spec["rank"].get<int>())
+  : rtctx(rtctx)
+  , rank(spec["rank"].get<int>())
   , globalBatchSize(spec["globalBatchSize"].get<int>())
   , moduleList()
   , layersInJson(spec["layers"])
@@ -53,9 +56,11 @@ RunnableModule::RunnableModule(json spec,
     int id = ldsc["id"].get<int>();
     std::string name = ldsc["name"].get<std::string>();
     std::string moduleLoc = ldsc["moduleSavedLocation"].get<std::string>();
-    DP_LOG(DEBUG, " %d-th layer's name: %s, moduleLoc: %s", id, name.c_str(), moduleLoc.c_str());
+    DP_LOG(DEBUG, " %d-th layer's name: %s, moduleLoc: %s", id, name.c_str(),
+        moduleLoc.c_str());
     
-    torch::jit::Module module = torch::jit::load("/home/ubuntu/DeepPoolRuntime/" + moduleLoc);
+    torch::jit::Module module = torch::jit::load(std::string(rtctx->homedir) +
+        "/DeepPoolRuntime/" + moduleLoc);
     DP_LOG(DEBUG, " layer's module is loaded.");
     if (name == "concat") {
       DP_LOG(DEBUG, " layer is concat.");

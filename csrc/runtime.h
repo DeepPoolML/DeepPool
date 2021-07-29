@@ -54,6 +54,7 @@ struct RuntimeContext {
   int be_batch_size;
   bool profile;
   bool debug;
+  char *homedir;
 
   /**
    *  additional variables.

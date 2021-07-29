@@ -18,6 +18,9 @@
 #include <memory>
 #include <string>
 #include <getopt.h>
+#include <unistd.h>    // For homedir
+#include <sys/types.h> // For homedir
+#include <pwd.h>       // For homedir
 #include "json.hpp"
 #include "runtime.h"
 #include "runnableModule.h"
@@ -80,7 +83,7 @@ class RuntimeServiceImpl final : public Runtime::Service {
     DP_LOG(DEBUG, "commHandler constructed.");
     c10::Device dev(c10::DeviceType::CUDA, rtctx->device);
     DP_LOG(DEBUG, "dev constructed.");
-    auto runnableModule = std::make_unique<RunnableModule>(jobSpec, commHandler.get(), dev);
+    auto runnableModule = std::make_unique<RunnableModule>(rtctx, jobSpec, commHandler.get(), dev);
     DP_LOG(DEBUG, "runnableModule constructed.");
     std::vector<torch::Tensor> parameters;
     runnableModule->getParameters(&parameters);
@@ -144,8 +147,8 @@ void debugging(RuntimeContext* ctx) {
   ServerContext serverCtx;
   ScheduleTrainingRequest req;
   StandardReply reply;
-
-  std::ifstream ifs("/home/ubuntu/ScheduleTrainingRequest_vgg16.txt");
+  std::string path = std::string(ctx->homedir) + "/DeepPoolRuntime/ScheduleTrainingRequest_vgg16.txt";
+  std::ifstream ifs(path.c_str());
   req.ParseFromIstream(&ifs);
   ifs.close();
   DP_LOG(DEBUG, "parsed from saved request.");
@@ -243,6 +246,14 @@ int main(int argc, char** argv) {
   Logger::get().setLogFile(logFilePath.c_str(), true);
   Logger::get().setLogLevel(DEBUG);
   // Logger::get().setLogLevel(NOTICE);
+
+  // Retrieve homedir path.
+  if ((ctx.homedir = getenv("HOME")) == NULL) {
+    ctx.homedir = getpwuid(getuid())->pw_dir;
+  }
+  DP_LOG(NOTICE, "The home dir path: %s", ctx.homedir);
+  DP_LOG(NOTICE, "Current file path: %s", argv[0]);
+
   TaskManager taskMngr(&ctx);
 
   std::cout << "myAddr: " << ctx.myAddr << " rank: " << ctx.rank << std::endl;

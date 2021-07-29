@@ -21,6 +21,7 @@ import xmlrpc.server
 import xmlrpc.client
 import re
 import threading
+from os.path import expanduser
 from argparse import ArgumentParser, REMAINDER
 from typing import Optional, IO, List, Any
 from jobDescription import TrainingJob
@@ -280,9 +281,12 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
         """ Launch runtime at all remote locations. Also registers the sighandler
             that cleanly shuts down all remote runtime servers.
         """
+        
+        # Using the absolute path for compatibility with C++ runtime.
+        homedir = expanduser("~")
+        logdir = homedir + "/DeepPoolRuntime/logs/"
+
         for i, location in enumerate(self.locations):
-            # logdir = "logs/"
-            logdir = "/home/ubuntu/DeepPoolRuntime/logs/"
             location.upSync(".", self.workDir)
             # pass master ip and port.
             stdoutFp = open("logs/runtime%d.out"%i, "w", buffering=1)
