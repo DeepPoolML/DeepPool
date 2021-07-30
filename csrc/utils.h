@@ -20,6 +20,8 @@
 #include <stdexcept>
 #include <torch/torch.h>
 
+#define UNUSED(expr) (void)(expr)
+
 template<typename ... Args>
 std::string
 format(const std::string& format, Args ... args)

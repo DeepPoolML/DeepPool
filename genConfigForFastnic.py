@@ -35,8 +35,8 @@ ipAddresses = ["172.31.112.33"] # g1lmd3
 pkeyPath = '~/.ssh/fastnic.pem'
 userId = "seojin"
 workDir = "~/DeepPoolRuntime/"
-# gpuCount = 1
-gpuCount = 4
+gpuCount = 1
+# gpuCount = 4
 portPrefix = 11140 # prefix + Device# is used for port.
 coordinatorPort = 12345
 
@@ -119,7 +119,7 @@ def main():
     print("*** To start coordinator, execute following commands ***")
     print("ssh -i %s %s@%s" % (pkeyPath, userId, ipAddresses[0]))
     print("cd %s" % workDir)
-    print("python3 cluster.py --addrToBind %s:%d --c10dBackend nccl" % (ipAddresses[0], coordinatorPort) )
+    print("python3 cluster.py --addrToBind %s:%d --c10dBackend nccl --be_batch_size=0 --cpp" % (ipAddresses[0], coordinatorPort) )
 
 if __name__ == "__main__":
     if len(sys.argv) == 1:

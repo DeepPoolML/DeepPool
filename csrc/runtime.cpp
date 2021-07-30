@@ -55,17 +55,20 @@ class RuntimeServiceImpl final : public Runtime::Service {
   Status ScheduleTraining(ServerContext* context,
                           const ScheduleTrainingRequest* request,
                           StandardReply* reply) override {
+    UNUSED(context);
+
     //TODO(seojin): currently ignoring request->data_dir();
 
     DP_LOG(DEBUG, "Received ScheduleTraining().");
 
-    // if (!DEBUGGING_MODE) {
-    //   std::ofstream ofs;
-    //   ofs.open("ScheduleTrainingRequest_vgg16.txt");
-    //   request->SerializeToOstream(&ofs);
-    //   ofs.close();
-    //   DP_LOG(DEBUG, "Saved the serialized ScheduleTrainingRequest.");
-    // }
+    if (!DEBUGGING_MODE) {
+      std::ofstream ofs;
+      auto path = std::string(rtctx->homedir) + "/DeepPoolRuntime/lastReq.txt";
+      ofs.open(path.c_str());
+      request->SerializeToOstream(&ofs);
+      ofs.close();
+      DP_LOG(DEBUG, "Saved the serialized ScheduleTrainingRequest.");
+    }
     
     std::string name = request->name();
     DP_LOG(DEBUG, "retrieved name. %s", name.c_str());
@@ -108,6 +111,9 @@ class RuntimeServiceImpl final : public Runtime::Service {
 
   Status Poke(ServerContext* context, const Empty* request,
               StandardReply* reply) override {
+    UNUSED(context);
+    UNUSED(request);
+
     DP_LOG(NOTICE, "poked.");
     std::string replyMsg("Poke invoked.");
     reply->set_message(replyMsg);
@@ -116,6 +122,9 @@ class RuntimeServiceImpl final : public Runtime::Service {
 
   Status Shutdown(ServerContext* context, const Empty* request,
                   StandardReply* reply) override {
+    UNUSED(context);
+    UNUSED(request);
+
     DP_LOG(NOTICE, "Shutdown requested.");
     rtctx->shutdownRequested = true;
     std::cout << "shutdownRequested " << rtctx->shutdownRequested.load() << std::endl;
@@ -147,7 +156,7 @@ void debugging(RuntimeContext* ctx) {
   ServerContext serverCtx;
   ScheduleTrainingRequest req;
   StandardReply reply;
-  std::string path = std::string(ctx->homedir) + "/DeepPoolRuntime/ScheduleTrainingRequest_vgg16.txt";
+  std::string path = std::string(ctx->homedir) + "/DeepPoolRuntime/lastReq.txt";
   std::ifstream ifs(path.c_str());
   req.ParseFromIstream(&ifs);
   ifs.close();
