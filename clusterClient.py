@@ -23,12 +23,15 @@ class ClusterClient:
 
     def __init__(self, coordinatorAddr: str = None, coordinatorPort: int = None, maxRetries = 5):
         if coordinatorAddr == None:
-            with open(PRIVATE_ADDR_FILENAME, "r") as f:
-                privateIps = []
-                for line in f:
-                    privateIps.extend(line.split())
-                coordinatorAddr = privateIps[0]
-                print("[ClusterClient] auto filled coodinator address: ", coordinatorAddr)
+            coordinatorAddr = "127.0.0.1"
+            print("[ClusterClient] auto filled coodinator address: ", coordinatorAddr)
+
+            # with open(PRIVATE_ADDR_FILENAME, "r") as f:
+            #     privateIps = []
+            #     for line in f:
+            #         privateIps.extend(line.split())
+            #     coordinatorAddr = privateIps[0]
+            #     print("[ClusterClient] auto filled coodinator address: ", coordinatorAddr)
         if coordinatorPort == None:
             coordinatorPort = COORD_PORT
             print("[ClusterClient] auto filled coodinator port: ", coordinatorPort)
