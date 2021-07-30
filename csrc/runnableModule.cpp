@@ -266,17 +266,18 @@ RunnableModule::backwardAStep()
   bool shouldInvokeBackward = layer->nextLayers.size() > 0;
   std::vector<torch::Tensor> gradInputs;
   if (layer->nextLayers.size() == 0) {
-    // gradInputs.push_back(fpLoss);
-    // DP_LOG(DEBUG, "added to gradInputs: %s", tsrToStr(fpLoss).c_str());
+    DP_LOG(DEBUG, "No nextLayers.");
   } else if (layer->nextLayers.size() >= 1) {
     for (auto nextLayerPtr : layer->nextLayers) {
-      gradInputs.push_back(nextLayerPtr->detachedInput.grad());
-      // DP_LOG(DEBUG, "nextLayer detachedInput? %d, added to gradInputs: %s",
-      //     nextLayerPtr->detachInput,
-      //     tsrToStr(nextLayerPtr->detachedInput.grad()).c_str());
-      shouldInvokeBackward = shouldInvokeBackward && nextLayerPtr->detachInput;
-      // WARNING! this is a bit hacky... it assumes all children layers detach or not
-      // together.
+      if (nextLayerPtr->detachInput) {
+        gradInputs.push_back(nextLayerPtr->detachedInput.grad());
+        // DP_LOG(DEBUG, "nextLayer detachedInput? %d, added to gradInputs: %s",
+        //     nextLayerPtr->detachInput,
+        //     tsrToStr(nextLayerPtr->detachedInput.grad()).c_str());
+        shouldInvokeBackward = shouldInvokeBackward && nextLayerPtr->detachInput;
+        // WARNING! this is a bit hacky... it assumes all children layers detach or not
+        // together.
+      }
     }
     // gradInputs.push_back(layer->nextLayers[0]->gradOut);
   }
@@ -298,6 +299,8 @@ RunnableModule::backwardAStep()
 
     if (shouldInvokeBackward) {
       for (auto gradIn : gradInputs) {
+        DP_LOG(DEBUG, "output:%s gradIn:%s", 
+            layer->output.toString().c_str(), gradIn.toString().c_str());
         layer->output.backward(gradIn);
         DP_LOG(DEBUG, "layer->output.backward is called.");
       }
