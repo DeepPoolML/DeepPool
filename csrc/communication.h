@@ -15,21 +15,23 @@
 #ifndef COMMUNICATION_H
 #define COMMUNICATION_H
 
+#include <torch/torch.h>
+#include "json.hpp"
+#include "rpcService.h"
 
+using json = nlohmann::json;
+
+/**
+ * Forward declarations. Do not include headers unless necessary.
+ */
+class RuntimeContext;
 
 class CommunicationHandler {
  public:
-  /**
-   * Constructs communicationHandler base class.
-   * 
-   * \param worldSize   Number of ranks.
-   * \param tensorTags  Mapping from xferName to p2p communication tag.
-   * \param rank        Rank of the current node.
-   * \param jobRankToGlobalRank   Mapping from job's internal rank to cluster rank.
-   * \param tensorInCuda  tensor given to send/recv methods are cuda tensors (false if CPU tensor).
-   */
+  
   CommunicationHandler(int worldSize, json tensorTags, int rank,
       json jobRankToGlobalRank, bool tensorInCuda = true);
+  virtual ~CommunicationHandler() { }
 
   /**
    * Changes from Python runtime.
@@ -41,9 +43,9 @@ class CommunicationHandler {
    * that difficult to save the tag in runnableModule's layer..?
    */
   virtual void send(const torch::Tensor& tensor, int tag, int dest,
-                    bool async = false);
+                    bool async = false) = 0;
   virtual void recv(torch::Tensor& tensor, int tag, int src,
-                    bool async = false);
+                    bool async = false) = 0;
   
   /**
    * Returns the tag for p2p communication send/recv.
@@ -52,9 +54,36 @@ class CommunicationHandler {
    *                  should use the same xferName.
    */
   int getTag(const std::string& xferName);
+
+ protected:
+  int worldSize;
+  json tensorTags;
+  int rank;
+  json jobRankToGlobalRank;
+  bool tensorInCuda;
 };
 
 class CommunicationHandlerNCCL : public CommunicationHandler {
+};
+
+class CommunicationHandlerGRPC : public CommunicationHandler {
+ public:
+  CommunicationHandlerGRPC(RuntimeContext* rtctx, std::string taskName,
+      int worldSize, json tensorTags, int rank, json jobRankToGlobalRank,
+      bool tensorInCuda = true);
+  
+  void saveData(const std::string& tensorData, int tag);
+  void send(const torch::Tensor& tensor, int tag, int dest,
+            bool async = false);
+  void recv(torch::Tensor& tensor, int tag, int src,
+            bool async = false);
+
+ private:
+  RuntimeContext* rtctx;
+  std::string taskName;
+  std::mutex _mutex;                // Monitor lock.
+  std::unordered_map<int, std::string> receivedData;
+  std::unordered_map<int, std::unique_ptr<RuntimeClient> > clientPool;
 };
 
 #endif

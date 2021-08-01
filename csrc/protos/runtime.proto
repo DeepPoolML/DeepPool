@@ -7,12 +7,18 @@ syntax = "proto3";
 service Runtime {
   // rpc InitCommBackend(Empty) returns (StandardReply) {}
   // rpc initCommGroups() returns (string) {}
+  rpc InitCommGRPC(InitCommGRPCRequest) returns (StandardReply) {}
   rpc ScheduleTraining(ScheduleTrainingRequest) returns (StandardReply) {}
   rpc Poke(Empty) returns (StandardReply) {}
   rpc Shutdown(Empty) returns (StandardReply) {}
+  rpc P2PCommunication(P2PCommunicationRequest) returns (StandardReply) {}
 }
 
 message Empty {}
+
+message InitCommGRPCRequest {
+  string rank_to_ip_map_in_json = 1;
+}
 
 message ScheduleTrainingRequest {
   string name = 1;
@@ -24,4 +30,10 @@ message ScheduleTrainingRequest {
 
 message StandardReply {
   string message = 1;
+}
+
+message P2PCommunicationRequest {
+  string task_name = 1;
+  bytes tensor_data = 2;
+  int32 tag = 3;
 }

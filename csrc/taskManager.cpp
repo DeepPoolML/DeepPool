@@ -53,6 +53,13 @@ JobContext::JobContext(std::unique_ptr<RunnableModule> model, std::string name,
 }
 
 /**
+ * Destructs context for a training job.
+ * Defined here to avoid incomplete type destruction in 'taskManager.h' of
+ * some unique_ptr members.
+ */
+JobContext::~JobContext() {}
+
+/**
  * Constructs a TaskManager.
  */
 TaskManager::TaskManager(RuntimeContext* rtctx)

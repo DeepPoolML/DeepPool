@@ -21,137 +21,46 @@
 #include <unistd.h>    // For homedir
 #include <sys/types.h> // For homedir
 #include <pwd.h>       // For homedir
-#include "json.hpp"
 #include "runtime.h"
-#include "runnableModule.h"
 #include "taskManager.h"
-#include "communication.h"
 #include "utils.h"
 #include "logger.h"
+#include "rpcService.h"
 
 #include <grpcpp/ext/proto_server_reflection_plugin.h>
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/health_check_service_interface.h>
 #include "runtime.grpc.pb.h"
 
-using json = nlohmann::json;
 using grpc::Server;
 using grpc::ServerBuilder;
 using grpc::ServerContext;
 using grpc::Status;
 
-bool DEBUGGING_MODE = false;
-
 /**
- * GRPC service implementation for runtime.
+ * Destructing RuntimeContext.
  */
-class RuntimeServiceImpl final : public Runtime::Service {
- public:
-  RuntimeServiceImpl(RuntimeContext* ctx)
-    : Runtime::Service(), rtctx(ctx) {}
-
-//  private:
- public:
-  Status ScheduleTraining(ServerContext* context,
-                          const ScheduleTrainingRequest* request,
-                          StandardReply* reply) override {
-    UNUSED(context);
-
-    //TODO(seojin): currently ignoring request->data_dir();
-
-    DP_LOG(DEBUG, "Received ScheduleTraining().");
-
-    if (!DEBUGGING_MODE) {
-      std::ofstream ofs;
-      auto path = std::string(rtctx->homedir) + "/DeepPoolRuntime/lastReq.txt";
-      ofs.open(path.c_str());
-      request->SerializeToOstream(&ofs);
-      ofs.close();
-      DP_LOG(DEBUG, "Saved the serialized ScheduleTrainingRequest.");
-    }
-    
-    std::string name = request->name();
-    DP_LOG(DEBUG, "retrieved name. %s", name.c_str());
-    json jobSpec = json::parse(request->job_in_json());
-    DP_LOG(DEBUG, "parsed jobSpec into json");
-    int worldSize = jobSpec["maxGpusUsed"].get<int>();
-    DP_LOG(DEBUG, "worldSize: %d", worldSize);
-    json tensorTags = json::parse(request->tensor_tags_in_json());
-    DP_LOG(DEBUG, "parsed tensorTags %s", tensorTags.dump().c_str());
-    json jobRankToGlobalRank = json::parse(request->job_rank_to_global_rank_in_json());
-    DP_LOG(DEBUG, "parsed jobRankToGlobalRank %s", jobRankToGlobalRank.dump().c_str());
-    
-    // commHandler = self.commBackend.makeCommunicationHandler(name, worldSize, tensorTags, jobRankToGlobalRank);
-    std::unique_ptr<CommunicationHandler> commHandler;
-    DP_LOG(DEBUG, "commHandler constructed.");
-    c10::Device dev(c10::DeviceType::CUDA, rtctx->device);
-    DP_LOG(DEBUG, "dev constructed.");
-    auto runnableModule = std::make_unique<RunnableModule>(rtctx, jobSpec, commHandler.get(), dev);
-    DP_LOG(DEBUG, "runnableModule constructed.");
-    std::vector<torch::Tensor> parameters;
-    runnableModule->getParameters(&parameters);
-    auto optimizer = std::make_unique<torch::optim::SGD>(parameters, /*lr=*/0.01);
-    DP_LOG(DEBUG, "optimizer constructed.");
-
-    
-    auto job = std::make_unique<JobContext>(std::move(runnableModule), name,
-        nullptr, std::move(commHandler), nullptr, std::move(dev), 1, std::move(optimizer));
-    DP_LOG(DEBUG, "job constructed.");
-
-    rtctx->taskManager->addTrainingJob(std::move(job));
-    DP_LOG(DEBUG, "added the training job.");
-
-    std::cout << request->name() << " " << request->job_rank_to_global_rank_in_json()
-              << " this job's worldSize: " << worldSize << std::endl << std::flush;
-
-    std::string replyMsg("ScheduleTraining invoked.");
-    reply->set_message(replyMsg);
-    return Status::OK;
-  }
-
-  Status Poke(ServerContext* context, const Empty* request,
-              StandardReply* reply) override {
-    UNUSED(context);
-    UNUSED(request);
-
-    DP_LOG(NOTICE, "poked.");
-    std::string replyMsg("Poke invoked.");
-    reply->set_message(replyMsg);
-    return Status::OK;
-  }
-
-  Status Shutdown(ServerContext* context, const Empty* request,
-                  StandardReply* reply) override {
-    UNUSED(context);
-    UNUSED(request);
-
-    DP_LOG(NOTICE, "Shutdown requested.");
-    rtctx->shutdownRequested = true;
-    std::cout << "shutdownRequested " << rtctx->shutdownRequested.load() << std::endl;
-    std::string replyMsg("Shutdown invoked.");
-    reply->set_message(replyMsg);
-    return Status::OK;
-  }
-
-  RuntimeContext* rtctx;
-};
+RuntimeContext::~RuntimeContext()
+{
+  delete grpcService;
+  delete grpcServer;
+}
 
 void initGrpcServer(RuntimeContext* ctx) {
   std::string server_address(ctx->myAddr);
-  ctx->grpcService.reset(new RuntimeServiceImpl(ctx));
+  ctx->grpcService = new RuntimeServiceImpl(ctx);
   grpc::EnableDefaultHealthCheckService(true);
   grpc::reflection::InitProtoReflectionServerBuilderPlugin();
   ServerBuilder builder;
   builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
-  builder.RegisterService(ctx->grpcService.get());
-  ctx->grpcServer = builder.BuildAndStart();
+  builder.RegisterService(ctx->grpcService);
+  ctx->grpcServer = builder.BuildAndStart().release();
   std::cout << "Server listening on " << server_address << std::endl;
   // server->Wait();  
 }
 
 void debugging(RuntimeContext* ctx) {
   DP_LOG(DEBUG, "runtime debugging function.");
-  DEBUGGING_MODE = true;
 
   ServerContext serverCtx;
   ScheduleTrainingRequest req;
@@ -186,8 +95,6 @@ void parse_args(RuntimeContext* ctx, int argc, char** argv) {
   // parser.add_argument("--logdir", default=None, type=str)
   // parser.add_argument("--be_batch_size", default=16, type=int, help="best effort batch size, 0 for disabled")
   // parser.add_argument("--profile", default=False, action='store_true', help="runtime will be profiled")
-
-  memset(ctx, 0, sizeof(*ctx));
 
   static struct option long_options[] = {
       {"coordinatorAddr", required_argument, NULL, 'c'},

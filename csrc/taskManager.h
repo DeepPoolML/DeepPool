@@ -64,6 +64,7 @@ struct JobContext {
       std::unique_ptr<torch::optim::Optimizer> optimizer = nullptr
       // std::unique_ptr<torch::optim::SGD> optimizer = nullptr
       );
+  ~JobContext();
 
   std::unique_ptr<RunnableModule> model;
   std::string name;

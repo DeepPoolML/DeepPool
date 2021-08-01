@@ -19,17 +19,19 @@
 #include <memory>
 #include <mutex>
 #include <vector>
+#include <map>
 
 
 /**
  * Forward declarations
  */
+class CommunicationHandler;
 class RuntimeServiceImpl;
+class RunnableModule;
 class TaskManager;
 namespace grpc {
   class Server;
 };
-class RunnableModule;
 namespace torch {
   namespace optim {
     class Optimizer;
@@ -40,6 +42,14 @@ namespace torch {
  * Context holding data for Runtime.
  */
 struct RuntimeContext {
+  RuntimeContext() : coordinatorAddr(0), myAddr(0), device(0), c10dBackend(0),
+      c10dMasterPort(0), rank(), worldSize(), logdir(), be_batch_size(0),
+      profile(false), debug(false), homedir(0),
+      grpcService(), grpcServer(), taskManager(), shutdownRequested(),
+      commHandlerMap(), rankToIpAndPort() { }
+
+  ~RuntimeContext(); // Defined in cpp file because of incomplete unique_ptrs.
+
   /**
    * Populated by commandline arguments
    */
@@ -55,14 +65,17 @@ struct RuntimeContext {
   bool profile;
   bool debug;
   char *homedir;
+  // bool DEBUGGING_MODE;
 
   /**
    *  additional variables.
    */
-  std::unique_ptr<RuntimeServiceImpl> grpcService;
-  std::unique_ptr<grpc::Server> grpcServer;
+  RuntimeServiceImpl* grpcService;
+  grpc::Server* grpcServer;
   TaskManager* taskManager;
   std::atomic<bool> shutdownRequested;           // Set to true when coordinator shuts down.
+  std::map< std::string, CommunicationHandler* > commHandlerMap;
+  std::vector<std::string> rankToIpAndPort;
 };
 
 
