@@ -56,6 +56,14 @@ class CppRuntimeProxy:
         # print("received: " + response.message)
         print("initCommBackend() not implemented")
     
+    def initCommGRPC(self, rankToIpMap):
+        rankToIpMapInJson = json.dumps(rankToIpMap)
+        print("In initCommGRPC, rankToIpMapInJson: " + rankToIpMapInJson)
+        response = self.stub.InitCommGRPC(runtime_pb2.InitCommGRPCRequest(
+            rank_to_ip_map_in_json = rankToIpMapInJson
+        ))
+        print("received: " + response.message)
+    
     def initCommGroups(self, jobName, commGroupsInJson):
         print("initCommGroups not implemented")
 
@@ -348,10 +356,12 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
             except grpc.RpcError:
                 print("GRPC error while shuting down %s" % location.address)
 
-    def initCommBackendAll(self):
+    def initCommBackendAll(self, c10dBackend, rankToIpMap):
         threadList = []
         def requestInitCommBackend(proxy):
             print(proxy.initCommBackend())
+            if c10dBackend == "grpc":
+                print(proxy.initCommGRPC(rankToIpMap))
         for i, location in enumerate(self.locations):
             thread = threading.Thread(name='init_comm%d'%i, target=requestInitCommBackend, args=(location.getProxy(),))
             threadList.append(thread)
@@ -440,10 +450,12 @@ def parse_args():
 def main():
     args = parse_args()
     clusterConfig = json.load(open(args.pathToConfig))
+    rankToIpMap = {}
     locations = []
     for serverConfig in clusterConfig["serverList"]:
         print("Found %s" % str(serverConfig))
         for deviceConfig in serverConfig["deviceList"]:
+            rankToIpMap[str(len(locations))] = serverConfig["addr"] + ":" + str(deviceConfig["port"])
             locations.append(Location(serverConfig["addr"], deviceConfig["port"], deviceConfig["device"], serverConfig["userId"], serverConfig["sshKeyPath"], args.cpp))
     addrToBindCombo = re.split('[-:]', args.addrToBind)
     addrToBind = addrToBindCombo[0]
@@ -463,7 +475,7 @@ def main():
     coordinator.launchRuntimeAll(args.c10dBackend, profile=args.profile, cppRuntime=args.cpp)
     print("All runtime nodes are up and running. Now, initializing communication backend..")
     time.sleep(5)
-    coordinator.initCommBackendAll()
+    coordinator.initCommBackendAll(args.c10dBackend, rankToIpMap)
     print("Communication backends are ready at all locations.")
     print("Now, cluster is ready to accept training jobs.")
 

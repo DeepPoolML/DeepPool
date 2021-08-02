@@ -26,12 +26,15 @@
 #include "utils.h"
 #include "logger.h"
 #include "rpcService.h"
+#include "json.hpp"
+#include "communication.h"
 
 #include <grpcpp/ext/proto_server_reflection_plugin.h>
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/health_check_service_interface.h>
 #include "runtime.grpc.pb.h"
 
+using json = nlohmann::json;
 using grpc::Server;
 using grpc::ServerBuilder;
 using grpc::ServerContext;
@@ -74,6 +77,23 @@ void debugging(RuntimeContext* ctx) {
   ctx->grpcService->ScheduleTraining(&serverCtx, &req, &reply);
 
   DP_LOG(DEBUG, "runtime debugging function exits.");
+}
+
+void debuggingGrpcComm(RuntimeContext* rtctx) {
+  rtctx->rankToIpAndPort.resize(2);
+  rtctx->rankToIpAndPort[0] = std::string("172.31.112.33:11140");
+  rtctx->rankToIpAndPort[1] = std::string("172.31.112.33:11141");
+  rtctx->grpcCommReady = true;
+}
+
+void grpcCommTest(RuntimeContext* rtctx) {
+  json tensorTags;
+  json jobRankToGlobalRank;
+  auto commHandler = std::make_unique<CommunicationHandlerGRPC>(
+      rtctx, "default", rtctx->worldSize, tensorTags, rtctx->rank, jobRankToGlobalRank);
+  DP_LOG(DEBUG, "a default commHandler created for testing.");
+  sleep(5);
+  commHandler->testRingP2P();
 }
 
 void parse_args(RuntimeContext* ctx, int argc, char** argv) {
@@ -177,6 +197,14 @@ int main(int argc, char** argv) {
 
   if (ctx.debug) {
     debugging(&ctx);
+    // debuggingGrpcComm(&ctx);
+  }
+
+  if (strcmp(ctx.c10dBackend, "grpc") == 0) {
+    DP_LOG(DEBUG, "GRPC commBackend is used. Waiting for InitCommGRPC.");
+    while (!ctx.grpcCommReady.load(std::memory_order_relaxed)) {}
+    DP_LOG(DEBUG, "InitCommGRPC done. Running test now.");
+    grpcCommTest(&ctx);
   }
 
   std::cout << "poller is starting." << std::endl;

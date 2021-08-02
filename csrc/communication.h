@@ -77,6 +77,7 @@ class CommunicationHandlerGRPC : public CommunicationHandler {
             bool async = false);
   void recv(torch::Tensor& tensor, int tag, int src,
             bool async = false);
+  void testRingP2P();
 
  private:
   RuntimeContext* rtctx;

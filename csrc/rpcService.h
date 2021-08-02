@@ -64,8 +64,9 @@ class RuntimeClient {
   RuntimeClient(std::shared_ptr<grpc::ChannelInterface> channel)
     : stub_(Runtime::NewStub(channel)) {}
   
+  std::string Poke();
   std::string P2PCommunication(const std::string& taskName,
-                               const torch::Tensor& tensor, int tag);
+                               const std::string& tsrData, int tag);
 
  private:
   std::unique_ptr<Runtime::Stub> stub_;

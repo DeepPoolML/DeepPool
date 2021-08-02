@@ -96,9 +96,21 @@ CommunicationHandlerGRPC::send(const torch::Tensor& tensor, int tag, int dest,
   auto search = clientPool.find(dest);
   if (search == clientPool.end()) {
     std::string ipAndPort = rtctx->rankToIpAndPort[dest];
+    DP_LOG(DEBUG, "Dest:%d(%s) isn't in clientPool yet.", dest, ipAndPort.c_str());
+
     auto channel = grpc::CreateChannel(ipAndPort, grpc::InsecureChannelCredentials());
+    auto client = std::make_unique<RuntimeClient>(channel);
+    clientPool[dest] = std::move(client);
+    clientPool[dest]->Poke();
+    DP_LOG(DEBUG, "Poked dest:%d", dest);
   }
-  clientPool[dest]->P2PCommunication(taskName, tensor, tag);
+
+  std::string tsrData;
+  tsrData.resize(tensor.nbytes());
+  CUDACHECK(cudaMemcpy(&tsrData[0], tensor.data_ptr(),
+                       tensor.nbytes(), cudaMemcpyDefault));
+  DP_LOG(DEBUG, "Copied tensor data (potentially CUDA) to CPU.");
+  clientPool[dest]->P2PCommunication(taskName, tsrData, tag);
 }
 
 /**
@@ -117,8 +129,7 @@ CommunicationHandlerGRPC::recv(torch::Tensor& tensor, int tag, int src,
       // tensor.data_ptr()
       assert(tensor.nbytes() == tensorData.size());
       CUDACHECK(cudaMemcpy(tensor.data_ptr(), tensorData.data(),
-                          tensorData.size(), cudaMemcpyHostToDevice));
-                          //TODO: try cudaMemcpyDefault.
+                           tensorData.size(), cudaMemcpyDefault)); //cudaMemcpyHostToDevice));
       receivedData.erase(search);
       found = true;
     } else {
@@ -128,4 +139,20 @@ CommunicationHandlerGRPC::recv(torch::Tensor& tensor, int tag, int src,
       lock.lock();
     }
   }
+}
+
+void
+CommunicationHandlerGRPC::testRingP2P()
+{
+  torch::Tensor tsr2Send = torch::ones({2}, torch::Device(torch::kCUDA, rtctx->device));
+  // DP_LOG(DEBUG, "Created tensor [%s] in dev.", tsrToStr(tsr2Send).c_str());
+  int dest = (rtctx->rank + 1) % rtctx->worldSize;
+  send(tsr2Send, 1, dest, false);
+  DP_LOG(DEBUG, "Sent tensor [%s] to %d.", tsrToStr(tsr2Send).c_str(), dest);
+  
+  torch::Tensor tsr2Recv = torch::zeros({2}, torch::Device(torch::kCUDA, rtctx->device));
+  // DP_LOG(DEBUG, "Created tensor [%s] in dev.", tsrToStr(tsr2Recv).c_str());
+  int src = (rtctx->worldSize + rtctx->rank - 1) % rtctx->worldSize;
+  recv(tsr2Recv, 1, src, false);
+  DP_LOG(DEBUG, "Rcvd tensor [%s] from %d.", tsrToStr(tsr2Recv).c_str(), src);
 }

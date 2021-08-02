@@ -35,8 +35,8 @@ ipAddresses = ["172.31.112.33"] # g1lmd3
 pkeyPath = '~/.ssh/fastnic.pem'
 userId = "seojin"
 workDir = "~/DeepPoolRuntime/"
-gpuCount = 1
-# gpuCount = 4
+# gpuCount = 1
+gpuCount = 4
 portPrefix = 11140 # prefix + Device# is used for port.
 coordinatorPort = 12345
 
@@ -105,7 +105,8 @@ def downloadResults():
         subprocess.check_call(sh_command, stderr=subprocess.STDOUT)
 
     for host in ipAddresses:
-        for remotePath in ["~/DeepPoolRuntime/*.data", "~/DeepPoolRuntime/logs/*.out"]: #["~/DeepPoolRuntime/*.data.gv.pdf", "~/DeepPoolRuntime/logs/*.out", "~/*.qdrep", "~/DeepPoolRuntime/logs/*.out", "~/net*.qdrep", "~/net*.sqlite", "~/DeepPoolRuntime/logs/*.out"]:
+        for remotePath in ["~/DeepPoolRuntime/*.data"]: #, "~/DeepPoolRuntime/logs/*.out"]: 
+            #["~/DeepPoolRuntime/*.data.gv.pdf", "~/DeepPoolRuntime/logs/*.out", "~/*.qdrep", "~/DeepPoolRuntime/logs/*.out", "~/net*.qdrep", "~/net*.sqlite", "~/DeepPoolRuntime/logs/*.out"]:
             try:
                 downloadFile(host, remotePath, "results/")
             except subprocess.CalledProcessError as e:
@@ -125,6 +126,10 @@ if __name__ == "__main__":
     if len(sys.argv) == 1:
         main()
     elif len(sys.argv) == 2:
-        executeCommand(sys.argv[1])
+        # executeCommand(sys.argv[1])
+        gpuCount = int(sys.argv[1])
+        main()
+        print("GPU count: %d" % gpuCount)
+
     else:
         print("Too many arguments.\nUsage: no args ==> regular cluster setup.\n       one arg ==> execute command to all servers.")

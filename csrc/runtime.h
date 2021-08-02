@@ -46,7 +46,7 @@ struct RuntimeContext {
       c10dMasterPort(0), rank(), worldSize(), logdir(), be_batch_size(0),
       profile(false), debug(false), homedir(0),
       grpcService(), grpcServer(), taskManager(), shutdownRequested(),
-      commHandlerMap(), rankToIpAndPort() { }
+      commHandlerMap(), rankToIpAndPort(), grpcCommReady() { }
 
   ~RuntimeContext(); // Defined in cpp file because of incomplete unique_ptrs.
 
@@ -73,9 +73,10 @@ struct RuntimeContext {
   RuntimeServiceImpl* grpcService;
   grpc::Server* grpcServer;
   TaskManager* taskManager;
-  std::atomic<bool> shutdownRequested;           // Set to true when coordinator shuts down.
+  std::atomic<bool> shutdownRequested;  // Set to true when coordinator shuts down.
   std::map< std::string, CommunicationHandler* > commHandlerMap;
   std::vector<std::string> rankToIpAndPort;
+  std::atomic<bool> grpcCommReady;
 };
 
 

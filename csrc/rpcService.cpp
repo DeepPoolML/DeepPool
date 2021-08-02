@@ -39,15 +39,18 @@ RuntimeServiceImpl::InitCommGRPC(ServerContext* context,
     StandardReply* reply)
 {
   UNUSED(context);
+  DP_LOG(DEBUG, "Received InitCommGRPC().");
+
   json rankToIpMapJson = json::parse(request->rank_to_ip_map_in_json());
   
-  rtctx->rankToIpAndPort.resize(rankToIpMapJson.size() + 1);
+  rtctx->rankToIpAndPort.resize(rankToIpMapJson.size());
   for (auto& el : rankToIpMapJson.items()) {
     int rank = atoi(el.key().c_str());
     std::string ipAndPort = el.value().get<std::string>();
     rtctx->rankToIpAndPort[rank] = ipAndPort;
     DP_LOG(DEBUG, "Rank %d 's address: %s", rank, ipAndPort.c_str());
   }
+  rtctx->grpcCommReady = true;
 
   std::string replyMsg("InitCommGRPC invoked.");
   reply->set_message(replyMsg);
@@ -154,7 +157,14 @@ RuntimeServiceImpl::P2PCommunication(ServerContext* context,
   DP_LOG(NOTICE, "P2PCommunication requested.");
   std::string taskName = request->task_name();
   std::string tsrData = request->tensor_data();
+  DP_LOG(NOTICE, "P2PCommunication requested. TaskName: %s", taskName.c_str());
   int tag = request->tag();
+
+  auto search = rtctx->commHandlerMap.find(taskName);
+  if (search == rtctx->commHandlerMap.end()) {
+    DP_LOG(ERROR, "No commHandler for taskName: %s", taskName.c_str());
+  }
+
   CommunicationHandlerGRPC* commHandler =
       reinterpret_cast<CommunicationHandlerGRPC*>(
           rtctx->commHandlerMap[taskName]);
@@ -165,15 +175,34 @@ RuntimeServiceImpl::P2PCommunication(ServerContext* context,
   return Status::OK;
 }
 
+
+////////////////////////////////////////////////////////
+// GRPC Client code.
+////////////////////////////////////////////////////////
+
+std::string
+RuntimeClient::Poke() {
+  Empty request;
+  grpc::ClientContext context;
+  StandardReply reply;
+  Status status = stub_->Poke(&context, request, &reply);
+  if (status.ok()) {
+    return reply.message();
+  } else {
+    DP_LOG(ERROR, "Failed to invoke Poke. code: %d, msg: %s.",
+          status.error_code(), status.error_message().c_str());
+    return "Failed to invoke Poke.";
+  }
+}
+
 std::string
 RuntimeClient::P2PCommunication(const std::string& taskName,
-                               const torch::Tensor& tensor, int tag) {
+                                const std::string& tsrData, int tag) {
   P2PCommunicationRequest request;
   request.set_task_name(taskName);
-  std::string tsrData(reinterpret_cast<char*>(tensor.data_ptr()),
-                      tensor.nbytes());
-  request.set_tensor_data(std::move(tsrData));
+  request.set_tensor_data(tsrData);
   request.set_tag(tag);
+  DP_LOG(DEBUG, "P2PCommunicationRequest prepared.");
 
   grpc::ClientContext context;
   StandardReply reply;
