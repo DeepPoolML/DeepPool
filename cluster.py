@@ -55,7 +55,13 @@ class CppRuntimeProxy:
         # response = self.stub.(runtime_pb2.Empty())
         # print("received: " + response.message)
         print("initCommBackend() not implemented")
-    
+
+    def initCommNCCL(self, message, msgType, groupId, groupSize, idSize):
+        response = self.stub.InitCommNCCL(runtime_pb2.InitCommNCCLMsg(
+            message=message, msg_type=msgType, group_id=groupId, group_size=groupSize, id_size=idSize))
+        print("received: " + response.message)
+        return response.group_id;
+
     def initCommGRPC(self, rankToIpMap):
         rankToIpMapInJson = json.dumps(rankToIpMap)
         print("In initCommGRPC, rankToIpMapInJson: " + rankToIpMapInJson)
@@ -357,11 +363,15 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
                 print("GRPC error while shuting down %s" % location.address)
 
     def initCommBackendAll(self, c10dBackend, rankToIpMap):
+        if c10dBackend == "nccl":
+            group_id = self.locations[0].getProxy().initCommNCCL("Generate comm group ID", 0, bytes(128), len(self.locations), 128)
         threadList = []
         def requestInitCommBackend(proxy):
             print(proxy.initCommBackend())
             if c10dBackend == "grpc":
                 print(proxy.initCommGRPC(rankToIpMap))
+            if c10dBackend == "nccl":
+                proxy.initCommNCCL("Join comm group", 1, group_id, len(self.locations), 128);
         for i, location in enumerate(self.locations):
             thread = threading.Thread(name='init_comm%d'%i, target=requestInitCommBackend, args=(location.getProxy(),))
             threadList.append(thread)

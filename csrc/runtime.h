@@ -20,6 +20,8 @@
 #include <mutex>
 #include <vector>
 #include <map>
+#include "nccl.h"
+#include "cuda_runtime.h"
 
 /**
  * Forward declarations
@@ -45,7 +47,8 @@ struct RuntimeContext {
       c10dMasterPort(0), rank(), worldSize(), logdir(), be_batch_size(0),
       profile(false), debug(false), homedir(0),
       grpcService(), grpcServer(), taskManager(), shutdownRequested(),
-      commHandlerMap(), rankToIpAndPort(), grpcCommReady() { }
+      commHandlerMap(), rankToIpAndPort(), grpcCommReady(),
+      ncclGroupId(), ncclGroupSize(), ranks(), ncclCommReady(), ncclCommObj() { }
 
   ~RuntimeContext(); // Defined in cpp file because of incomplete unique_ptrs.
 
@@ -75,6 +78,17 @@ struct RuntimeContext {
   std::map< std::string, CommunicationHandler* > commHandlerMap;
   std::vector<std::string> rankToIpAndPort;
   std::atomic<bool> grpcCommReady;
+
+  /**
+   * variables to maintain per NCCL comm group
+   * need to be expanded if one node participates in more than one comm group
+   */
+  ncclUniqueId* ncclGroupId;
+  int ncclGroupSize;
+  std::vector<int> ranks;
+  std::atomic<bool> ncclCommReady;
+  ncclComm_t* ncclCommObj;
+  cudaStream_t* cudaStream;
 };
 
 

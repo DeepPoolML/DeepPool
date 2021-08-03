@@ -8,6 +8,7 @@ service Runtime {
   // rpc InitCommBackend(Empty) returns (StandardReply) {}
   // rpc initCommGroups() returns (string) {}
   rpc InitCommGRPC(InitCommGRPCRequest) returns (StandardReply) {}
+  rpc InitCommNCCL (InitCommNCCLMsg) returns (InitCommNCCLMsg) {}
   rpc ScheduleTraining(ScheduleTrainingRequest) returns (StandardReply) {}
   rpc Poke(Empty) returns (StandardReply) {}
   rpc Shutdown(Empty) returns (StandardReply) {}
@@ -18,6 +19,14 @@ message Empty {}
 
 message InitCommGRPCRequest {
   string rank_to_ip_map_in_json = 1;
+}
+
+message InitCommNCCLMsg {
+  string message = 1;
+  int32 msg_type = 2;
+  bytes group_id = 3;
+  int32 group_size = 4;
+  int32 id_size = 5;
 }
 
 message ScheduleTrainingRequest {

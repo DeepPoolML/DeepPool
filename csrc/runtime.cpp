@@ -97,6 +97,16 @@ void grpcCommTest(RuntimeContext* rtctx) {
   commHandler->testRingP2P();
 }
 
+void ncclCommTest(RuntimeContext* rtctx) {
+  json tensorTags;
+  json jobRankToGlobalRank;
+  auto commHandler = std::make_unique<CommunicationHandlerNCCL>(
+      rtctx, "default", rtctx->worldSize, tensorTags, rtctx->rank, jobRankToGlobalRank);
+  DP_LOG(DEBUG, "a default commHandler created for testing.");
+  sleep(5);
+  commHandler->testRingP2P();
+}
+
 void parse_args(RuntimeContext* ctx, int argc, char** argv) {
   // parser.add_argument("--coordinatorAddr", type=str, default="localhost:12340",
   //                     help="IP:port to the cluster coordinator")
@@ -207,6 +217,13 @@ int main(int argc, char** argv) {
     while (!ctx.grpcCommReady.load(std::memory_order_relaxed)) {}
     DP_LOG(DEBUG, "InitCommGRPC done. Running test now.");
     grpcCommTest(&ctx);
+  }
+
+  if (strcmp(ctx.c10dBackend, "nccl") == 0) {
+    DP_LOG(DEBUG, "NCCL commBackend is used. Waiting for InitCommNCCL.");
+    while (!ctx.ncclCommReady.load(std::memory_order_relaxed)) {}
+    DP_LOG(DEBUG, "InitCommNCCL done. Running test now.");
+    ncclCommTest(&ctx);
   }
 
   std::cout << "poller is starting." << std::endl;

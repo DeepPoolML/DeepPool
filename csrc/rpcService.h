@@ -40,6 +40,9 @@ class RuntimeServiceImpl final : public Runtime::Service {
   Status InitCommGRPC(ServerContext* context,
                       const InitCommGRPCRequest* request,
                       StandardReply* reply) override;
+  Status InitCommNCCL(ServerContext* context,
+                      const InitCommNCCLMsg* request,
+                      InitCommNCCLMsg* reply) override;
   Status ScheduleTraining(ServerContext* context,
                           const ScheduleTrainingRequest* request,
                           StandardReply* reply) override;

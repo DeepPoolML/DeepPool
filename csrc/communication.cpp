@@ -23,6 +23,7 @@
 #include "logger.h"
 #include "runtime.h"
 #include "json.hpp"
+#include "nccl.h"
 
 using Cycles = RAMCloud::Cycles;
 using json = nlohmann::json;
@@ -162,4 +163,58 @@ CommunicationHandlerGRPC::testRingP2P()
   int src = (rtctx->worldSize + rtctx->rank - 1) % rtctx->worldSize;
   recv(tsr2Recv, 1, src, false);
   DP_LOG(DEBUG, "Rcvd tensor [%s] from %d.", tsrToStr(tsr2Recv).c_str(), src);
+}
+
+///////////////////////////////////////////////////////////////////////
+// CommunicationHandlerNCCL
+///////////////////////////////////////////////////////////////////////
+
+CommunicationHandlerNCCL::CommunicationHandlerNCCL(RuntimeContext* rtctx,
+    std::string taskName, int worldSize, json tensorTags, int rank,
+    json jobRankToGlobalRank, bool tensorInCuda)
+  : CommunicationHandler(worldSize, tensorTags, rank, jobRankToGlobalRank,
+                         tensorInCuda)
+  , rtctx(rtctx)
+  , taskName(taskName)
+  , _mutex()
+  , receivedData()
+  , clientPool()
+{
+  DP_LOG(DEBUG, "Constructing CommunicationHandlerNCCL for %s", taskName.c_str());
+  rtctx->commHandlerMap[taskName] = this;
+  DP_LOG(DEBUG, "set CommunicationHandlerNCCL to commHandlerMap.");
+}
+
+void
+CommunicationHandlerNCCL::send(const torch::Tensor& tensor, int tag, int dest,
+    bool async) // device 0 needs to be generalized later.
+{
+  ncclSend((void*)tensor.data_ptr(), tensor.nbytes()/sizeof(ncclFloat), ncclFloat, dest, *rtctx->ncclCommObj, *rtctx->cudaStream);
+  cudaSetDevice(0);
+  cudaStreamSynchronize(*rtctx->cudaStream);
+}
+
+void
+CommunicationHandlerNCCL::recv(torch::Tensor& tensor, int tag, int src,
+    bool async) // device 0 needs to be generalized later.
+{
+  ncclRecv((void*)tensor.data_ptr(), tensor.nbytes()/sizeof(ncclFloat), ncclFloat, src, *rtctx->ncclCommObj, *rtctx->cudaStream);
+  cudaSetDevice(0);
+  cudaStreamSynchronize(*rtctx->cudaStream);
+}
+
+void
+CommunicationHandlerNCCL::testRingP2P() // device 0 needs to be generalized later.
+{
+  torch::Tensor send_tensor = torch::ones({3,3}, torch::Device(torch::kCUDA, 0));
+  torch::Tensor recv_tensor = torch::zeros({1,9}, torch::Device(torch::kCUDA, 0));
+
+  int dest = (rtctx->rank + 1) % rtctx->worldSize;
+  int src = (rtctx->rank + rtctx->worldSize - 1) % rtctx->worldSize;
+
+  send(send_tensor, 1, dest, false);
+  DP_LOG(DEBUG, "Sent tensor [%s] to %d.", tsrToStr(send_tensor).c_str(), dest);
+
+  recv(recv_tensor, 1, src, false);
+  DP_LOG(DEBUG, "Rcvd tensor [%s] to %d.", tsrToStr(recv_tensor).c_str(), src);
 }

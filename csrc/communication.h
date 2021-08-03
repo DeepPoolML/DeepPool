@@ -67,6 +67,23 @@ class CommunicationHandler {
 };
 
 class CommunicationHandlerNCCL : public CommunicationHandler {
+ public:
+  CommunicationHandlerNCCL(RuntimeContext* rtctx, std::string taskName,
+      int worldSize, json tensorTags, int rank, json jobRankToGlobalRank,
+      bool tensorInCuda = true);
+
+  void send(const torch::Tensor& tensor, int tag, int dest,
+            bool async = false);
+  void recv(torch::Tensor& tensor, int tag, int src,
+            bool async = false);
+  void testRingP2P();
+
+ private:
+  RuntimeContext* rtctx;
+  std::string taskName;
+  std::mutex _mutex;                // Monitor lock.
+  std::unordered_map<int, std::string> receivedData;
+  std::unordered_map<int, std::unique_ptr<RuntimeClient> > clientPool;
 };
 
 class CommunicationHandlerGRPC : public CommunicationHandler {
