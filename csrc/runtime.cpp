@@ -100,8 +100,9 @@ void grpcCommTest(RuntimeContext* rtctx) {
 void ncclCommTest(RuntimeContext* rtctx) {
   json tensorTags;
   json jobRankToGlobalRank;
+  c10::Device dev(c10::DeviceType::CUDA, rtctx->device);
   auto commHandler = std::make_unique<CommunicationHandlerNCCL>(
-      rtctx, "default", rtctx->worldSize, tensorTags, rtctx->rank, jobRankToGlobalRank);
+      rtctx, "default", rtctx->worldSize, tensorTags, rtctx->rank, jobRankToGlobalRank, dev);
   DP_LOG(DEBUG, "a default commHandler created for testing.");
   sleep(5);
   commHandler->testRingP2P();

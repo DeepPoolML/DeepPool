@@ -171,9 +171,9 @@ CommunicationHandlerGRPC::testRingP2P()
 
 CommunicationHandlerNCCL::CommunicationHandlerNCCL(RuntimeContext* rtctx,
     std::string taskName, int worldSize, json tensorTags, int rank,
-    json jobRankToGlobalRank, bool tensorInCuda)
+    json jobRankToGlobalRank, c10::Device dev, bool tensorInCuda)
   : CommunicationHandler(worldSize, tensorTags, rank, jobRankToGlobalRank,
-                         tensorInCuda)
+                         dev, tensorInCuda)
   , rtctx(rtctx)
   , taskName(taskName)
   , _mutex()
@@ -187,27 +187,27 @@ CommunicationHandlerNCCL::CommunicationHandlerNCCL(RuntimeContext* rtctx,
 
 void
 CommunicationHandlerNCCL::send(const torch::Tensor& tensor, int tag, int dest,
-    bool async) // device 0 needs to be generalized later.
+    bool async)
 {
-  ncclSend((void*)tensor.data_ptr(), tensor.nbytes()/sizeof(ncclFloat), ncclFloat, dest, *rtctx->ncclCommObj, *rtctx->cudaStream);
-  cudaSetDevice(0);
+  ncclSend((void*)tensor.data_ptr(), tensor.nbytes()/tensor.itemsize(), ncclFloat, dest, *rtctx->ncclCommObj, *rtctx->cudaStream);
+  cudaSetDevice(rtctx->device);
   cudaStreamSynchronize(*rtctx->cudaStream);
 }
 
 void
 CommunicationHandlerNCCL::recv(torch::Tensor& tensor, int tag, int src,
-    bool async) // device 0 needs to be generalized later.
+    bool async)
 {
-  ncclRecv((void*)tensor.data_ptr(), tensor.nbytes()/sizeof(ncclFloat), ncclFloat, src, *rtctx->ncclCommObj, *rtctx->cudaStream);
-  cudaSetDevice(0);
+  ncclRecv((void*)tensor.data_ptr(), tensor.nbytes()/tensor.itemsize(), ncclFloat, src, *rtctx->ncclCommObj, *rtctx->cudaStream);
+  cudaSetDevice(rtctx->device);
   cudaStreamSynchronize(*rtctx->cudaStream);
 }
 
 void
-CommunicationHandlerNCCL::testRingP2P() // device 0 needs to be generalized later.
+CommunicationHandlerNCCL::testRingP2P()
 {
-  torch::Tensor send_tensor = torch::ones({3,3}, torch::Device(torch::kCUDA, 0));
-  torch::Tensor recv_tensor = torch::zeros({1,9}, torch::Device(torch::kCUDA, 0));
+  torch::Tensor send_tensor = torch::ones({3,3}, torch::Device(torch::kCUDA, rtctx->device));
+  torch::Tensor recv_tensor = torch::zeros({1,9}, torch::Device(torch::kCUDA, rtctx->device));
 
   int dest = (rtctx->rank + 1) % rtctx->worldSize;
   int src = (rtctx->rank + rtctx->worldSize - 1) % rtctx->worldSize;

@@ -56,7 +56,8 @@ class CppRuntimeProxy:
         # print("received: " + response.message)
         print("initCommBackend() not implemented")
 
-    def initCommNCCL(self, message, msgType, groupId, groupSize, idSize):
+    def initCommNCCL(self, message, msgType, groupId, groupsDict, idSize):
+        groupSize = len(groupsDict["world"])
         response = self.stub.InitCommNCCL(runtime_pb2.InitCommNCCLMsg(
             message=message, msg_type=msgType, group_id=groupId, group_size=groupSize, id_size=idSize))
         print("received: " + response.message)
@@ -362,16 +363,16 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
             except grpc.RpcError:
                 print("GRPC error while shuting down %s" % location.address)
 
-    def initCommBackendAll(self, c10dBackend, rankToIpMap):
+    def initCommBackendAll(self, c10dBackend, rankToIpMap, commGrpRanksDict):
         if c10dBackend == "nccl":
-            group_id = self.locations[0].getProxy().initCommNCCL("Generate comm group ID", 0, bytes(128), len(self.locations), 128)
+            group_id = self.locations[0].getProxy().initCommNCCL("Generate comm group ID", 0, bytes(128), commGrpRanksDict, 128)
         threadList = []
         def requestInitCommBackend(proxy):
             print(proxy.initCommBackend())
             if c10dBackend == "grpc":
                 print(proxy.initCommGRPC(rankToIpMap))
             if c10dBackend == "nccl":
-                proxy.initCommNCCL("Join comm group", 1, group_id, len(self.locations), 128);
+                proxy.initCommNCCL("Join comm group", 1, group_id, commGrpRanksDict, 128);
         for i, location in enumerate(self.locations):
             thread = threading.Thread(name='init_comm%d'%i, target=requestInitCommBackend, args=(location.getProxy(),))
             threadList.append(thread)
@@ -461,15 +462,20 @@ def main():
     args = parse_args()
     clusterConfig = json.load(open(args.pathToConfig))
     rankToIpMap = {}
+    commGrpRanksDict = {}
+    commGrpRanksWorld = []
     locations = []
     for serverConfig in clusterConfig["serverList"]:
         print("Found %s" % str(serverConfig))
         for deviceConfig in serverConfig["deviceList"]:
             rankToIpMap[str(len(locations))] = serverConfig["addr"] + ":" + str(deviceConfig["port"])
+            commGrpRanksWorld.append(len(locations))
             locations.append(Location(serverConfig["addr"], deviceConfig["port"], deviceConfig["device"], serverConfig["userId"], serverConfig["sshKeyPath"], args.cpp))
     addrToBindCombo = re.split('[-:]', args.addrToBind)
     addrToBind = addrToBindCombo[0]
     portToBind = int(addrToBindCombo[1])
+    commGrpRanksDict["world"] = commGrpRanksWorld
+    print(commGrpRanksDict)
 
     coordinator = ClusterCoordinator(addrToBind, portToBind, locations, clusterConfig["workDir"], args.be_batch_size)
     if args.install:
@@ -485,7 +491,7 @@ def main():
     coordinator.launchRuntimeAll(args.c10dBackend, profile=args.profile, cppRuntime=args.cpp)
     print("All runtime nodes are up and running. Now, initializing communication backend..")
     time.sleep(5)
-    coordinator.initCommBackendAll(args.c10dBackend, rankToIpMap)
+    coordinator.initCommBackendAll(args.c10dBackend, rankToIpMap, commGrpRanksDict)
     print("Communication backends are ready at all locations.")
     print("Now, cluster is ready to accept training jobs.")
 

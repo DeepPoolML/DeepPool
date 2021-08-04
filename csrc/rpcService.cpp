@@ -72,7 +72,7 @@ RuntimeServiceImpl::InitCommNCCL(ServerContext* context,
   int id_size = request->id_size();
 
   if (msg_type == 0) { // Generate comm group ID
-    if (rtctx->rank == 0) {
+    if (rtctx->rank == 0) { // Only rank 0 generates ID
       rtctx->ncclGroupId = (ncclUniqueId *)malloc(sizeof(ncclUniqueId));
       rtctx->ncclGroupSize = group_size;
       ncclGetUniqueId(rtctx->ncclGroupId);
@@ -83,7 +83,7 @@ RuntimeServiceImpl::InitCommNCCL(ServerContext* context,
     }
   }
   else if (msg_type == 1) { // Join comm group specified by ID
-    if (rtctx->rank != 0) {
+    if (rtctx->rank != 0) { // Ranks 1+ need to receive ID before joining
       rtctx->ncclGroupId = (ncclUniqueId *)malloc(sizeof(ncclUniqueId));
       rtctx->ncclGroupSize = group_size;
       memcpy((*rtctx->ncclGroupId).internal, request->group_id().c_str(), id_size);

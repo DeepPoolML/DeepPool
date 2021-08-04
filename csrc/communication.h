@@ -70,7 +70,7 @@ class CommunicationHandlerNCCL : public CommunicationHandler {
  public:
   CommunicationHandlerNCCL(RuntimeContext* rtctx, std::string taskName,
       int worldSize, json tensorTags, int rank, json jobRankToGlobalRank,
-      bool tensorInCuda = true);
+      c10::Device dev, bool tensorInCuda = true);
 
   void send(const torch::Tensor& tensor, int tag, int dest,
             bool async = false);
