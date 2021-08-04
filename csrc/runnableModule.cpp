@@ -19,6 +19,103 @@
 #include "runnableModule.h"
 #include "logger.h"
 #include "utils.h"
+#include "communication.h"
+
+using torch::autograd::Variable;
+using torch::autograd::AutogradContext;
+using torch::autograd::variable_list;
+
+////////////////////////////////////////////////
+// TsrXferFunc
+////////////////////////////////////////////////
+Variable
+TsrXferFunc::forward(AutogradContext* ctx, Variable x, TsrXfer* xfer)
+{
+  ctx->saved_data["xfer"] = reinterpret_cast<int64_t>(xfer);
+
+  if (xfer->type == TsrXfer::Send) {
+    std::vector<torch::Tensor> splittedTsrs =
+        x.split_with_sizes(xfer->splitSizes, xfer->splitCatDim);
+    assert(splittedTsrs.size() == xfer->xferTagAndRank.size() + 1);
+    size_t i;
+    for (i = 0; i < xfer->xferTagAndRank.size(); ++i) {
+      Tag tag = xfer->xferTagAndRank[i].first;
+      Rank dest = xfer->xferTagAndRank[i].second;
+      torch::Tensor tsr = splittedTsrs[i];
+      DP_LOG(DEBUG, "Sending tag:%d to R:%d with %s", tag, dest,
+          tsrToStr(tsr).c_str());
+      xfer->commHandler->send(tsr, tag, dest, /*async*/ false);
+    }
+    return splittedTsrs[i];
+  }
+  else if (xfer->type == TsrXfer::Recv) {
+    std::vector<int64_t> inputSizes = x.sizes().vec();
+    std::vector<torch::Tensor> tsrList;
+    size_t i;
+    for (i = 0; i < xfer->xferTagAndRank.size(); ++i) {
+      Tag tag = xfer->xferTagAndRank[i].first;
+      Rank src = xfer->xferTagAndRank[i].second;
+      inputSizes[xfer->splitCatDim] = xfer->splitSizes[i];
+      torch::Tensor tsr = torch::empty(inputSizes);
+      tsr.to(xfer->commHandler->getDev());
+      DP_LOG(DEBUG, "Receiving tag:%d from R:%d with tensor: %s", tag, src,
+          tsr.toString().c_str());
+      xfer->commHandler->recv(tsr, tag, src, /*async*/ false);
+      tsrList.push_back(tsr);
+    }
+    tsrList.push_back(x);
+    return torch::cat(tsrList, xfer->splitCatDim);
+  } else {
+    DP_LOG(ERROR, "xfer type is %d, which is not supported.", xfer->type);
+    return x;
+  }
+}
+
+variable_list
+TsrXferFunc::backward(AutogradContext* ctx, variable_list grad_output)
+{
+  TsrXfer* xfer = reinterpret_cast<TsrXfer*>(ctx->saved_data["xfer"].toInt());
+  Variable x = grad_output[0];
+
+  if (xfer->type == TsrXfer::Recv) {
+    std::vector<torch::Tensor> splittedTsrs =
+        x.split_with_sizes(xfer->splitSizes, xfer->splitCatDim);
+    assert(splittedTsrs.size() == xfer->xferTagAndRank.size() + 1);
+    size_t i;
+    for (i = 0; i < xfer->xferTagAndRankBack.size(); ++i) {
+      Tag tag = xfer->xferTagAndRankBack[i].first;
+      Rank dest = xfer->xferTagAndRankBack[i].second;
+      torch::Tensor tsr = splittedTsrs[i];
+      DP_LOG(DEBUG, "Sending tag:%d to R:%d with %s", tag, dest,
+          tsrToStr(tsr).c_str());
+      xfer->commHandler->send(tsr, tag, dest, /*async*/ false);
+    }
+    return { splittedTsrs[i] };
+  }
+  else if (xfer->type == TsrXfer::Send) {
+    std::vector<int64_t> inputSizes = x.sizes().vec();
+    std::vector<torch::Tensor> tsrList;
+    size_t i;
+    for (i = 0; i < xfer->xferTagAndRankBack.size(); ++i) {
+      Tag tag = xfer->xferTagAndRankBack[i].first;
+      Rank src = xfer->xferTagAndRankBack[i].second;
+      inputSizes[xfer->splitCatDim] = xfer->splitSizes[i];
+      torch::Tensor tsr = torch::empty(inputSizes);
+      tsr.to(xfer->commHandler->getDev());
+      DP_LOG(DEBUG, "Receiving tag:%d from R:%d with tensor: %s", tag, src,
+          tsr.toString().c_str());
+      xfer->commHandler->recv(tsr, tag, src, /*async*/ false);
+      tsrList.push_back(tsr);
+    }
+    tsrList.push_back(x);
+    return { torch::cat(tsrList, xfer->splitCatDim) };
+  }
+  else {
+    DP_LOG(ERROR, "xfer type is %d, which is not supported.", xfer->type);
+    return grad_output;
+  }
+}
+
 
 /**
  * Constructs RunnableModule
@@ -85,6 +182,65 @@ RunnableModule::RunnableModule(RuntimeContext* rtctx,
     }
     layers.emplace_back(module, id, layerIsActive, detachInput, prevLayers);
     DP_LOG(DEBUG, " layer's module is moved to device and set for train mode.");
+
+    // Communications.
+    if (layerIsActive && ldsc.contains("tensorTx")) {
+      std::map<int, std::vector<json> > sendListDict;
+      for (auto& item : ldsc["tensorTx"]) {
+        int nextLayerId = item["prop"]["nextLayerId"].get<int>();
+        if (sendListDict.find(nextLayerId) == sendListDict.end()) {
+          sendListDict[nextLayerId] = std::vector<json>();
+        }
+        sendListDict[nextLayerId].push_back(item);
+      }
+      for (const auto& kv : sendListDict) {
+        const std::vector<json>& sendList = kv.second;
+
+        TsrXfer xfer(commHandler);
+        xfer.type = TsrXfer::Send;
+        xfer.splitCatDim = 0; // Sample dimension.
+        int xferSampleSum = 0;
+        for (const json& item : sendList) {
+          int xferSamples = item["prop"]["xferSamples"].get<int>();
+          xfer.splitSizes.push_back(xferSamples);
+          xferSampleSum += xferSamples;
+
+          auto xferName = item["name"].get<std::string>();
+          Tag tag = commHandler->getTag(xferName);
+          Tag tagB = commHandler->getTag(xferName + "_back");
+          Rank dest = item["dest"].get<Rank>();
+          xfer.xferTagAndRank.push_back(std::make_pair(tag, dest));
+          xfer.xferTagAndRankBack.push_back(std::make_pair(tagB, dest));
+        }
+        int remainder = ldsc["outputDim"][xfer.splitCatDim].get<int>() - xferSampleSum;
+        DP_LOG(DEBUG, "remainder: %d, sum: %d", remainder, xferSampleSum);
+        xfer.splitSizes.push_back(remainder);
+        layers.end()->xferOuts.push_back(std::move(xfer));
+      }
+    }
+
+    if (layerIsActive && ldsc.contains("tensorRx")) {
+      TsrXfer xfer(commHandler);
+      xfer.type = TsrXfer::Recv;
+      xfer.splitCatDim = 0;
+      int xferSampleSum = 0;
+      for (const json& item : ldsc["tensorRx"]) {
+        int xferSamples = item["prop"]["xferSamples"].get<int>();
+        xfer.splitSizes.push_back(xferSamples);
+        xferSampleSum += xferSamples;
+
+        auto xferName = item["name"].get<std::string>();
+        Tag tag = commHandler->getTag(xferName);
+        Tag tagB = commHandler->getTag(xferName + "_back");
+        Rank src = item["src"].get<Rank>();
+        xfer.xferTagAndRank.push_back(std::make_pair(tag, src));
+        xfer.xferTagAndRankBack.push_back(std::make_pair(tagB, src));
+      }
+      int remainder = ldsc["inputDim"][xfer.splitCatDim].get<int>() - xferSampleSum;
+      DP_LOG(DEBUG, "remainder: %d, sum: %d", remainder, xferSampleSum);
+      xfer.splitSizes.push_back(remainder);
+      layers.end()->xferIns.push_back(std::move(xfer));
+    }
 
     // std::string moduleName = format("%d:%s", ldsc["id"].get<int>(), name);
     // register_module(moduleName, module);
@@ -328,109 +484,3 @@ RunnableModule::backwardAStep()
   }
   return false;
 }
-
-
-// /**
-//  * Execute a forward pass of this model.
-//  * 
-//  * \return Returns true if forward pass is completed.
-//  */
-// bool
-// RunnableModule::forwardAStepOld()
-// {
-//   // DP_LOG(DEBUG, "layersToProcess size: %d", (int)fpCtx.layersToProcess.size());
-//   int lid = fpCtx.layersToProcess.front();
-//   fpCtx.layersToProcess.pop_front();
-//   // DP_LOG(DEBUG, "poped %d, layersToProcess size: %d", lid, (int)fpCtx.layersToProcess.size());
-//   torch::jit::Module& module = moduleList[lid];
-//   json& ldsc = layersInJson[lid];
-//   bool skipSinceNotReady = false;
-//   if (fpCtx.layersProcessed.find(lid) != fpCtx.layersProcessed.end()) {
-//     DIE("%d-th layer is processed again.", lid);
-//   }
-//   DP_LOG(DEBUG, "lid:%d.", lid);
-
-//   torch::Tensor input;
-//   if (ldsc["prevLayers"].size() == 0) {
-//     input = fpCtx.fpInput;
-//   } else if (ldsc["prevLayers"].size() == 1) {
-//     int prevLayerId = ldsc["prevLayers"][0].get<int>();
-//     input = fpCtx.fpOutputs[prevLayerId];
-//   } else if (ldsc["name"].get<std::string>() == std::string("concat")) {
-//     DIE("%d-th layer is concat, which is not implemented.", lid);
-//     //TODO: implement.
-//     // skipSinceNotReady should be updated here.
-//   } else {
-//     DIE("%d-th layer has more than 2 previous layers (except concat), which is not supported.", lid);
-//   }
-
-//   DP_LOG(DEBUG, "input:%s.", input.toString().c_str());
-
-//   if (skipSinceNotReady) {
-//     return false;
-//   }
-
-//   torch::Tensor output;
-//   if (fpCtx.layerIsActive[lid]) {
-//     DP_LOG(DEBUG, "Layer %d is active.", lid);
-//     if (!input.defined()) {
-//       DP_LOG(DEBUG, "input is not defined. Using empty tensor.");
-//       input = torch::empty(0);
-//       input.to(device, /*non_blocking*/ true, /*copy*/ false);
-//     }
-
-//     std::vector<torch::jit::IValue> inputVec;
-//     inputVec.push_back(input);
-//     DP_LOG(DEBUG, "inputVec is prepared.");
-//     output = module.forward(inputVec).toTensor();
-//     DP_LOG(DEBUG, "module.forward called.");
-
-//     fpCtx.fpTensorToReturn = output;
-//     fpCtx.runCriterionAndLoss = true;
-//     DP_LOG(DEBUG, "return values are set.");
-    
-//     bool isOutputLeaf = ldsc["nextLayers"].size() > 0;
-//     for (auto& nlidjson : ldsc["nextLayers"]) {
-//       int nlid = nlidjson.get<int>();
-//       if (fpCtx.layerIsActive[nlid]) {
-//         isOutputLeaf = false;
-//       }
-//     }
-//     DP_LOG(DEBUG, "isOutputLeaf: %d", (int)isOutputLeaf);
-//     if (isOutputLeaf) {
-//       // TODO: maybe no need for this check? Preserve this set structure across iterations?
-//       if (fpCtx.leafIds.find(lid) != fpCtx.leafIds.end()) {
-//         DIE("visited a node that was tagged as a leaf."); 
-//       }
-//       leavesForBackward.emplace_back(lid, output);
-//       fpCtx.leafIds.insert(lid);
-//     }
-//   } else { // This rank doesn't participate for this layer.
-//     DP_LOG(DEBUG, "Layer %d is not active.", lid);
-//     output = torch::empty(0);
-//     output.to(device, /*non_blocking*/ true, /*copy*/ false);
-//     fpCtx.runCriterionAndLoss = false;
-//     fpCtx.fpTensorToReturn.reset();
-//   }
-//   DP_LOG(DEBUG, "Preparing output.");
-//   fpCtx.fpOutputs[lid] = output;
-//   DP_LOG(DEBUG, "Output is set.");
-//   fpCtx.layersProcessed.insert(lid);
-//   DP_LOG(DEBUG, "layersProcessed is inserted.");
-//   for (auto& nlidjson : ldsc["nextLayers"]) {
-//     int nlid = nlidjson.get<int>();
-//     DP_LOG(DEBUG, "nextLayer candidate: %d", nlid);
-//     if (fpCtx.layersProcessed.find(nlid) == fpCtx.layersProcessed.end()) {
-//       fpCtx.layersToProcess.push_back(nlid);
-//     } else {
-//       DP_LOG(DEBUG, "nextLayer %d is already processed.", nlid);
-//     }
-//   }
-
-//   // Forward pass is completed.
-//   if (fpCtx.layersToProcess.empty()) {
-//     DP_LOG(DEBUG, "no more layers to process.");
-//     return true;
-//   }
-//   return false;
-// }

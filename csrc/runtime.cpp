@@ -89,8 +89,9 @@ void debuggingGrpcComm(RuntimeContext* rtctx) {
 void grpcCommTest(RuntimeContext* rtctx) {
   json tensorTags;
   json jobRankToGlobalRank;
+  c10::Device dev(c10::DeviceType::CUDA, rtctx->device);
   auto commHandler = std::make_unique<CommunicationHandlerGRPC>(
-      rtctx, "default", rtctx->worldSize, tensorTags, rtctx->rank, jobRankToGlobalRank);
+      rtctx, "default", rtctx->worldSize, tensorTags, rtctx->rank, jobRankToGlobalRank, dev);
   DP_LOG(DEBUG, "a default commHandler created for testing.");
   sleep(5);
   commHandler->testRingP2P();
@@ -178,6 +179,7 @@ int main(int argc, char** argv) {
   RuntimeContext ctx;
   ctx.shutdownRequested = false;
   parse_args(&ctx, argc, argv);
+  
   std::string logFilePath = format("%scpprt%d.out", ctx.logdir, ctx.rank);
   Logger::get().setLogFile(logFilePath.c_str(), true);
   Logger::get().setLogLevel(DEBUG);

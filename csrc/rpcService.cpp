@@ -90,13 +90,12 @@ RuntimeServiceImpl::ScheduleTraining(ServerContext* context,
   json jobRankToGlobalRank = json::parse(request->job_rank_to_global_rank_in_json());
   DP_LOG(DEBUG, "parsed jobRankToGlobalRank %s", jobRankToGlobalRank.dump().c_str());
   
-  // commHandler = self.commBackend.makeCommunicationHandler(name, worldSize, tensorTags, jobRankToGlobalRank);
-  std::unique_ptr<CommunicationHandler> commHandler =
-      std::make_unique<CommunicationHandlerGRPC>(
-          rtctx, name, worldSize, tensorTags, rank, jobRankToGlobalRank);
-  DP_LOG(DEBUG, "commHandler constructed.");
   c10::Device dev(c10::DeviceType::CUDA, rtctx->device);
   DP_LOG(DEBUG, "dev constructed.");
+  std::unique_ptr<CommunicationHandler> commHandler =
+      std::make_unique<CommunicationHandlerGRPC>(
+          rtctx, name, worldSize, tensorTags, rank, jobRankToGlobalRank, dev);
+  DP_LOG(DEBUG, "commHandler constructed.");
   auto runnableModule = std::make_unique<RunnableModule>(rtctx, jobSpec, commHandler.get(), dev);
   DP_LOG(DEBUG, "runnableModule constructed.");
   std::vector<torch::Tensor> parameters;

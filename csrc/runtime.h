@@ -21,7 +21,6 @@
 #include <vector>
 #include <map>
 
-
 /**
  * Forward declarations
  */
@@ -65,7 +64,6 @@ struct RuntimeContext {
   bool profile;
   bool debug;
   char *homedir;
-  // bool DEBUGGING_MODE;
 
   /**
    *  additional variables.

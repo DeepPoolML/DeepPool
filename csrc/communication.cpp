@@ -46,13 +46,20 @@ using json = nlohmann::json;
  * \param tensorInCuda  tensor given to send/recv methods are cuda tensors (false if CPU tensor).
  */
 CommunicationHandler::CommunicationHandler(int worldSize, json tensorTags,
-    int rank, json jobRankToGlobalRank, bool tensorInCuda)
+    int rank, json jobRankToGlobalRank, c10::Device device, bool tensorInCuda)
   : worldSize(worldSize)
   , tensorTags(tensorTags)
   , rank(rank)
   , jobRankToGlobalRank(jobRankToGlobalRank)
+  , device(device)
   , tensorInCuda(tensorInCuda)
 {
+}
+
+int
+CommunicationHandler::getTag(const std::string& xferName)
+{
+  return tensorTags[xferName].get<int>();
 }
 
 ///////////////////////////////////////////////////////////////////////
@@ -61,9 +68,9 @@ CommunicationHandler::CommunicationHandler(int worldSize, json tensorTags,
 
 CommunicationHandlerGRPC::CommunicationHandlerGRPC(RuntimeContext* rtctx,
     std::string taskName, int worldSize, json tensorTags, int rank,
-    json jobRankToGlobalRank, bool tensorInCuda)
+    json jobRankToGlobalRank, c10::Device dev, bool tensorInCuda)
   : CommunicationHandler(worldSize, tensorTags, rank, jobRankToGlobalRank,
-                         tensorInCuda)
+                         dev, tensorInCuda)
   , rtctx(rtctx)
   , taskName(taskName)
   , _mutex()

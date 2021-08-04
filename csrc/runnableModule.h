@@ -23,12 +23,40 @@
 #include "json.hpp"
 
 using json = nlohmann::json;
+using torch::autograd::Variable;
+using torch::autograd::AutogradContext;
+using torch::autograd::variable_list;
 
 /**
  * Forward declarations. Do not include headers unless necessary.
  */
 class CommunicationHandler;
 class RuntimeContext;
+
+
+typedef int Tag;
+typedef int Rank;
+
+struct TsrXfer {
+  TsrXfer(CommunicationHandler* comm) : commHandler(comm), type(None),
+      splitSizes(), splitCatDim(0), xferTagAndRank(), xferTagAndRankBack() {}
+  
+  CommunicationHandler* commHandler;
+  enum Type {
+    None, Send, Recv
+  };
+  Type type;
+  std::vector<int64_t> splitSizes; // used only for send's forward or recv's backward.
+  int splitCatDim;
+  std::vector<std::pair<Tag, Rank> > xferTagAndRank;
+  std::vector<std::pair<Tag, Rank> > xferTagAndRankBack;
+};
+
+class TsrXferFunc : public torch::autograd::Function<TsrXferFunc> {
+ public:
+  static Variable forward(AutogradContext* ctx, Variable x, TsrXfer* xfer);
+  static variable_list backward(AutogradContext* ctx, variable_list grad_output);
+};
 
 /**
  * Flipping status flag. This variable tracks the execution of the layer.
@@ -53,9 +81,10 @@ struct Layer {
     , prevLayers()
     , nextLayers()
     , output()
-    // , gradOut()
     , detachedInput()
     , status(LayerStatus::PENDING_FP)
+    , xferIns()
+    , xferOuts()
   {
     for (auto prevLayerPtr : prevLayerVec) {
       prevLayers.push_back(prevLayerPtr);
@@ -70,55 +99,11 @@ struct Layer {
   std::vector<Layer*> prevLayers;
   std::vector<Layer*> nextLayers;
   torch::Tensor output;  // Used during forward pass.
-  // torch::Tensor gradOut; // Used during backward pass.
   torch::Tensor detachedInput; // Used during backward pass.
   LayerStatus status;
+  std::vector<TsrXfer> xferIns;
+  std::vector<TsrXfer> xferOuts;
 };
-
-#if 0
-/**
- * A context that tracks the progress of a forward pass of a signle iteration.
- */
-struct ForwardPassContext {
-  ForwardPassContext(json layersInJson)
-    : fpInput()
-    , fpTensorToReturn()
-    , fpOutputs()
-    , layerIsActive()
-    , leafIds()
-    , layersToProcess()
-    , layersProcessed()
-    , runCriterionAndLoss()
-  {
-    size_t numLayers = layersInJson.size();
-    fpOutputs.resize(numLayers + 2);
-    layerIsActive.reserve(numLayers + 2);
-    for (auto ldsc : layersInJson) {
-      int layerLocalBatch = ldsc["config"][0].get<int>();
-      layerIsActive.push_back(layerLocalBatch > 0);
-    }
-    layersToProcess.push_back(0);
-  }
-
-  void clear() {
-    fpOutputs.clear();
-    leafIds.clear(); // Maybe not necessary?
-    layersToProcess.clear();
-    layersToProcess.push_back(0);
-    layersProcessed.clear();
-  }
-
-  torch::Tensor fpInput;
-  torch::Tensor fpTensorToReturn;
-  std::vector<torch::Tensor> fpOutputs;
-  std::vector<bool> layerIsActive;
-  std::set<int> leafIds;
-  std::deque<int> layersToProcess;
-  std::set<int> layersProcessed;
-  bool runCriterionAndLoss;
-};
-#endif
-
 
 /**
  * A module that holds parameters (or submodules) and
@@ -148,8 +133,6 @@ class RunnableModule : public torch::nn::Module {
   int initialBatchSize;
   CommunicationHandler* commHandler;
   c10::Device device;
-  // std::vector< std::pair<int, torch::Tensor> > leavesForBackward;
-  // ForwardPassContext fpCtx;
   std::vector<Layer> layers; // Topologically sorted list of layers.
 
   ////////////////////////////////////////////

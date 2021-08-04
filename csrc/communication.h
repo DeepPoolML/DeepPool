@@ -30,7 +30,7 @@ class CommunicationHandler {
  public:
   
   CommunicationHandler(int worldSize, json tensorTags, int rank,
-      json jobRankToGlobalRank, bool tensorInCuda = true);
+      json jobRankToGlobalRank, c10::Device device, bool tensorInCuda = true);
   virtual ~CommunicationHandler() { }
 
   /**
@@ -55,11 +55,14 @@ class CommunicationHandler {
    */
   int getTag(const std::string& xferName);
 
+  inline c10::Device getDev() { return device; }
+  
  protected:
   int worldSize;
   json tensorTags;
   int rank;
   json jobRankToGlobalRank;
+  c10::Device device;
   bool tensorInCuda;
 };
 
@@ -70,7 +73,7 @@ class CommunicationHandlerGRPC : public CommunicationHandler {
  public:
   CommunicationHandlerGRPC(RuntimeContext* rtctx, std::string taskName,
       int worldSize, json tensorTags, int rank, json jobRankToGlobalRank,
-      bool tensorInCuda = true);
+      c10::Device dev, bool tensorInCuda = true);
   
   void saveData(const std::string& tensorData, int tag);
   void send(const torch::Tensor& tensor, int tag, int dest,
