@@ -97,6 +97,12 @@ def downloadResults():
             except subprocess.CalledProcessError as e:
                 print(e.output)
             print("Downloaded \"%s\" from %s"%(remotePath, host))
+        
+        # try:
+        #     downloadFile(host, "~/DeepPoolRuntime/modules/*.pt", "modules/")
+        # except subprocess.CalledProcessError as e:
+        #     print(e.output)
+        # print("Downloaded ~/DeepPoolRuntime/modules/*.pt from %s"%(host))
 
 def main():
     downloadResults()
@@ -105,7 +111,7 @@ def main():
     print("*** To start coordinator, execute following commands ***")
     print("ssh -i %s %s@%s" % (pkeyPath, userId, publicIps[0]))
     print("cd %s" % workDir)
-    print("python3 cluster.py --addrToBind %s:%d --c10dBackend nccl" % (privateIps[0], coordinatorPort) )
+    print("python3 cluster.py --addrToBind 0.0.0.0:%d --c10dBackend nccl" % (coordinatorPort))
 
 if __name__ == "__main__":
     if len(sys.argv) == 1:
