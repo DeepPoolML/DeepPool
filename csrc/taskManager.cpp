@@ -45,11 +45,22 @@ JobContext::JobContext(std::unique_ptr<RunnableModule> model, std::string name,
   , device(device)
   , epoch(0)
   , iter(0)
-  , itersToTrain(1) // = len(dataLoader) if dataLoader != None else None #TODO: this is a temporary hack..
+  , itersToTrain(1000) // = len(dataLoader) if dataLoader != None else None #TODO: this is a temporary hack..
   , state(JobState::INIT)
+  , timers()
 {
   // self.dataLoaderIt = iter(self.dataLoader) if dataLoader != None else None
   // self.criterion = nn.CrossEntropyLoss().cuda(device) if criterion == None else criterion
+  
+  timers.reserve(CT_NUM_OF_EVENTS);
+  timers.emplace_back();
+  CudaTimer* startTimer = &timers.back();
+  CudaTimer* lastTimer = startTimer;
+  for (int i = 1; i < CT_NUM_OF_EVENTS - 1; ++i) {
+    timers.emplace_back(lastTimer);
+    lastTimer = &timers.back();
+  }
+  timers.emplace_back(startTimer); // CT_STOP measures from CT_START to CT_STOP;
 }
 
 /**
@@ -103,9 +114,22 @@ TaskManager::poll()
   bool jobCompleted = false;
   trainSingleStep(mainJob, &jobCompleted);
   if (jobCompleted) {
+    size_t warmupIters = 100;
+    DP_LOG(NOTICE, "A training job %s is completed."
+        " AverageTiming (ms) => fp:%.1f, loss:%.1f, bp:%.1f, iter:%.1f"
+        " P50 (ms) => fp:%.1f, loss:%.1f, bp:%.1f, iter:%.1f",
+        mainJob->name.c_str(), mainJob->timers[CT_FP].getAvg(warmupIters),
+        mainJob->timers[CT_LOSS].getAvg(warmupIters),
+        mainJob->timers[CT_BP].getAvg(warmupIters),
+        mainJob->timers[CT_STOP].getAvg(warmupIters),
+        mainJob->timers[CT_FP].getP50(),
+        mainJob->timers[CT_LOSS].getP50(),
+        mainJob->timers[CT_BP].getP50(),
+        mainJob->timers[CT_STOP].getP50());
+
     jobList.erase(jobList.begin());
-    DP_LOG(NOTICE, "A training job %s is completed. Remaining: %d",
-        mainJob->name.c_str(), static_cast<int>(jobList.size()));
+    DP_LOG(NOTICE, "Removed the completed job. Remaining: %d",
+        static_cast<int>(jobList.size()));
   }
   jobsScheduled++;
   return jobsScheduled;
@@ -133,18 +157,27 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
     return 0;
   }
   if (job->state == JobState::INIT) {
+    for (int tpIdx = CT_NUM_OF_EVENTS - 1; tpIdx >= CT_START; --tpIdx) {
+      DP_LOG(DEBUG, "timer.saveAndReset() for %d. recorded:%d", tpIdx, job->timers[tpIdx].isRecorded());
+      job->timers[tpIdx].saveAndReset();
+    }
+
     DP_LOG(DEBUG, "JobState::INIT.");
     // TODO: load data from real data loader.
     auto x = torch::randn({16, 3, 224, 224});
     x.to(job->device);
     job->model->iterInit(x);
     job->state = JobState::FORWARD;
+    cudaDeviceSynchronize();
+
+    job->timers[CT_START].record();
     DP_LOG(NOTICE, "Foward pass is starting soon.");
   } else if (job->state == JobState::FORWARD) {
     DP_LOG(DEBUG, "JobState::FORWARD.");
     bool completed = job->model->forwardAStep();
 
     if (completed) {
+      job->timers[CT_FP].record();
       // TODO: add a loss calculation here? or as another state?
       DP_LOG(NOTICE, "Foward pass is completed. Calculating loss.");
       job->state = JobState::BACKWARD;
@@ -159,6 +192,7 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
           (int)targets.dim(), (int)targets.sizes().size());
 
       job->model->loss(targets);
+      job->timers[CT_LOSS].record();
       assert(job->model->layerQ.empty());
       job->model->layerQ.push_back(&job->model->layers.back());
       DP_LOG(NOTICE, "Moving to backward pass.");
@@ -168,6 +202,7 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
     // DP_LOG(WARNING, "Backward pass is not implemented yet.");
     bool completed = job->model->backwardAStep();
     if (completed) {
+      job->timers[CT_BP].record();
       job->state = JobState::SYNC;
       DP_LOG(NOTICE, "Backward pass is completed. Moving to gradient all-reduce.");
     }
@@ -175,7 +210,9 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
     DP_LOG(DEBUG, "JobState::SYNC.");
     job->iter++;
     DP_LOG(WARNING, "All-reduce parameter sync is not implemented yet.");
+    job->timers[CT_SYNC].record();
     job->state = JobState::INIT;
+    job->timers[CT_STOP].record();
   }
   return 1;
 }

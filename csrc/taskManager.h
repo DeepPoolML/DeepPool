@@ -20,6 +20,7 @@
 #include <mutex>
 #include <vector>
 #include <string>
+#include "tracer.h"
 
 /**
  * Forward declarations. Do not include headers unless necessary.
@@ -48,6 +49,16 @@ enum class JobState {
   BACKWARD,
   SYNC,
   NUM_JOB_STATES // must be the last element in the enum
+};
+
+enum TracePoint {
+  CT_START = 0,
+  CT_FP,
+  CT_LOSS,
+  CT_BP,
+  CT_SYNC,
+  CT_STOP,
+  CT_NUM_OF_EVENTS // CT_NUM must be the last element.
 };
 
 /**
@@ -83,6 +94,8 @@ struct JobContext {
   // self.training_initialized = False
   // self.itersToCapture = set(range(250, 260))
   JobState state;
+
+  std::vector<CudaTimer> timers;
 };
 
 /**

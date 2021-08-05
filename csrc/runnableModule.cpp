@@ -57,7 +57,7 @@ TsrXferFunc::forward(AutogradContext* ctx, Variable x, TsrXfer* xfer)
       Rank src = xfer->xferTagAndRank[i].second;
       inputSizes[xfer->splitCatDim] = xfer->splitSizes[i];
       torch::Tensor tsr = torch::empty(inputSizes);
-      tsr.to(xfer->commHandler->getDev());
+      tsr.to(xfer->commHandler->getDev(), /*non_blocking*/ true, /*copy*/ false);
       DP_LOG(DEBUG, "Receiving tag:%d from R:%d with tensor: %s", tag, src,
           tsr.toString().c_str());
       xfer->commHandler->recv(tsr, tag, src, /*async*/ false);
@@ -101,7 +101,7 @@ TsrXferFunc::backward(AutogradContext* ctx, variable_list grad_output)
       Rank src = xfer->xferTagAndRankBack[i].second;
       inputSizes[xfer->splitCatDim] = xfer->splitSizes[i];
       torch::Tensor tsr = torch::empty(inputSizes);
-      tsr.to(xfer->commHandler->getDev());
+      tsr.to(xfer->commHandler->getDev(), /*non_blocking*/ true, /*copy*/ false);
       DP_LOG(DEBUG, "Receiving tag:%d from R:%d with tensor: %s", tag, src,
           tsr.toString().c_str());
       xfer->commHandler->recv(tsr, tag, src, /*async*/ false);
@@ -334,11 +334,24 @@ RunnableModule::forwardAStep()
       input = input.to(device, /*non_blocking*/ true, /*copy*/ false);
     }
 
+    // Recv samples before running this layer.
+    for (TsrXfer& xfer : layer->xferIns) {
+      input = TsrXferFunc::apply(input, &xfer);
+      DP_LOG(DEBUG, "Received & concatenated samples.");
+    }
+
     std::vector<torch::jit::IValue> inputVec;
     inputVec.push_back(input);
     DP_LOG(DEBUG, "inputVec is prepared.");
-    layer->output = layer->module.forward(inputVec).toTensor();
+    torch::Tensor output = layer->module.forward(inputVec).toTensor();
     DP_LOG(DEBUG, "module.forward called.");
+
+    // Send samples after running this layer.
+    for (TsrXfer& xfer : layer->xferOuts) {
+      output = TsrXferFunc::apply(output, &xfer);
+      DP_LOG(DEBUG, "Split & sent samples.");
+    }
+    layer->output = output;
 
     // auto h = layer->output.register_hook([layer](torch::Tensor grad){
     //   DP_LOG(DEBUG, "lid:%d grad: %s", layer->id, tsrToStr(grad).c_str());
@@ -388,13 +401,9 @@ RunnableModule::forwardAStep()
 void
 RunnableModule::loss(torch::Tensor targets)
 {
-  if (fpOutput.defined()) {
-    DP_LOG(DEBUG, "fpOutput: %s", tsrToStr(fpOutput).c_str());
-    // auto fpOutputD = fpOutput.detach();
-    // DP_LOG(DEBUG, "fpOutputD: %s", tsrToStr(fpOutputD).c_str());
-    
+  if (fpOutput.defined()) {    
     fpLoss = torch::nll_loss(fpOutput, targets);
-    DP_LOG(DEBUG, "fpLoss: %s", tsrToStr(fpLoss).c_str());
+    // DP_LOG(DEBUG, "fpLoss: %s", tsrToStr(fpLoss).c_str());
     fpLoss.backward();
     DP_LOG(DEBUG, "fpLoss.backward() done. ");
   }
@@ -408,7 +417,7 @@ RunnableModule::loss(torch::Tensor targets)
 bool
 RunnableModule::backwardAStep()
 {
-  DP_LOG(DEBUG, "layerQ size: %d", (int)layerQ.size());
+  // DP_LOG(DEBUG, "layerQ size: %d", (int)layerQ.size());
   Layer* layer = layerQ.front();
   layerQ.pop_front();
 
