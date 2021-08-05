@@ -122,7 +122,8 @@ class JobContext:
             med = times[len(times) // 2]
             self.idle_timings.append(med)
             Logger.log("[{}] Idle time discovered: {} ms".format(layerno, med))
-        self.init_stats = be_training.query()
+        if self.idle_timings:
+            self.init_stats = be_training.query()
 
     def idle_measurement_round_done(self):
         self.cur_idle_round = 0
