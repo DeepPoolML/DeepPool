@@ -119,7 +119,9 @@ RuntimeServiceImpl::ScheduleTraining(ServerContext* context,
   if (!rtctx->debug) {
     DP_LOG(DEBUG, "Not in DEBUGGING_MODE, so saving request to lastReq.txt.");
     std::ofstream ofs;
-    auto path = std::string(rtctx->homedir) + "/DeepPoolRuntime/lastReq.txt";
+    // auto path = std::string(rtctx->homedir) + "/DeepPoolRuntime/lastReq.txt";
+    std::string path = format("%s/DeepPoolRuntime/lastReq%d.txt",
+                              rtctx->homedir, rtctx->device);
     ofs.open(path.c_str());
     request->SerializeToOstream(&ofs);
     ofs.close();

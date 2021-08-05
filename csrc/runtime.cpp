@@ -68,7 +68,8 @@ void debugging(RuntimeContext* ctx) {
   ServerContext serverCtx;
   ScheduleTrainingRequest req;
   StandardReply reply;
-  std::string path = std::string(ctx->homedir) + "/DeepPoolRuntime/lastReq.txt";
+  std::string path = format("%s/DeepPoolRuntime/lastReq%d.txt", ctx->homedir, ctx->device);
+  // std::string path = std::string(ctx->homedir) + "/DeepPoolRuntime/lastReq.txt";
   std::ifstream ifs(path.c_str());
   req.ParseFromIstream(&ifs);
   ifs.close();
@@ -193,8 +194,8 @@ int main(int argc, char** argv) {
   
   std::string logFilePath = format("%scpprt%d.out", ctx.logdir, ctx.rank);
   Logger::get().setLogFile(logFilePath.c_str(), true);
-  Logger::get().setLogLevel(DEBUG);
-  // Logger::get().setLogLevel(NOTICE);
+  // Logger::get().setLogLevel(DEBUG);
+  Logger::get().setLogLevel(NOTICE);
 
   // Retrieve homedir path.
   if ((ctx.homedir = getenv("HOME")) == NULL) {
