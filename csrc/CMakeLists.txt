@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.11 FATAL_ERROR)
 project(DeepPool)
 
 list(APPEND CMAKE_PREFIX_PATH "$ENV{HOME}/libtorch")
+list(APPEND CMAKE_PREFIX_PATH "$ENV{HOME}/cuda")
 find_package(Torch REQUIRED)
 
 if(NOT CMAKE_BUILD_TYPE)

@@ -31,13 +31,15 @@ import sys
 # 172.31.112.36	g1lmd6.fleet.perspectalabs.com g1lmd6
 
 # ipAddresses = ["172.31.112.32", "172.31.112.33"] # g1lmd2 and g1lmd3
-ipAddresses = ["172.31.112.33"] # g1lmd3
+# ipAddresses = ["172.31.112.33"] # g1lmd3
+ipAddresses = ["172.31.112.34"] # g1lmd4
 pkeyPath = '~/.ssh/fastnic.pem'
 userId = "seojin"
 workDir = "~/DeepPoolRuntime/"
+gpuIdxOffset = 1
 # gpuCount = 1
 gpuCount = 4
-portPrefix = 11140 # prefix + Device# is used for port.
+portPrefix = 11240 # prefix + Device# is used for port.
 coordinatorPort = 12345
 
 # with open(PUBLIC_ADDR_FILENAME, "r") as f:
@@ -58,7 +60,7 @@ def generateConfigFile():
         deviceList = []
         for deviceIdx in range(gpuCount):
             portNum = portPrefix + deviceIdx
-            deviceList.append({"port": portNum, "device": deviceIdx})
+            deviceList.append({"port": portNum, "device": (deviceIdx + gpuIdxOffset)})
         config["serverList"].append({"addr": privateIp, "deviceList": deviceList, "userId": userId, "sshKeyPath": "~/.ssh/fastnic.pem"})
     with open('clusterConfig.json', 'w') as outfile:
         json.dump(config, outfile, indent=2, sort_keys=False)
@@ -130,6 +132,7 @@ if __name__ == "__main__":
         gpuCount = int(sys.argv[1])
         main()
         print("GPU count: %d" % gpuCount)
+        executeCommand("w")
 
     else:
         print("Too many arguments.\nUsage: no args ==> regular cluster setup.\n       one arg ==> execute command to all servers.")
