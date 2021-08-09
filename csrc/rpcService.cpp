@@ -203,10 +203,10 @@ RuntimeServiceImpl::P2PCommunication(ServerContext* context,
 {
   UNUSED(context);
 
-  DP_LOG(NOTICE, "P2PCommunication requested.");
+  DP_LOG(DEBUG, "P2PCommunication requested.");
   std::string taskName = request->task_name();
   std::string tsrData = request->tensor_data();
-  DP_LOG(NOTICE, "P2PCommunication requested. TaskName: %s", taskName.c_str());
+  DP_LOG(DEBUG, "P2PCommunication requested. TaskName: %s", taskName.c_str());
   int tag = request->tag();
 
   auto search = rtctx->commHandlerMap.find(taskName);
@@ -251,7 +251,6 @@ RuntimeClient::P2PCommunication(const std::string& taskName,
   request.set_task_name(taskName);
   request.set_tensor_data(tsrData);
   request.set_tag(tag);
-  DP_LOG(DEBUG, "P2PCommunicationRequest prepared.");
 
   grpc::ClientContext context;
   StandardReply reply;

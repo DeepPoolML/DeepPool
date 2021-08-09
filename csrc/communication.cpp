@@ -89,6 +89,7 @@ CommunicationHandlerGRPC::CommunicationHandlerGRPC(RuntimeContext* rtctx,
 void
 CommunicationHandlerGRPC::saveData(const std::string& tensorData, int tag)
 {
+  // DP_LOG(DEBUG, "awaiting grpc lock.");
   std::lock_guard<std::mutex> lock(_mutex);
   receivedData[tag] = tensorData;
 }
@@ -100,17 +101,21 @@ void
 CommunicationHandlerGRPC::send(const torch::Tensor& tensor, int tag, int dest,
     bool async)
 {
-  std::lock_guard<std::mutex> lock(_mutex);
-  auto search = clientPool.find(dest);
-  if (search == clientPool.end()) {
-    std::string ipAndPort = rtctx->rankToIpAndPort[dest];
-    DP_LOG(DEBUG, "Dest:%d(%s) isn't in clientPool yet.", dest, ipAndPort.c_str());
+  RuntimeClient* destClient;
+  {
+    std::lock_guard<std::mutex> lock(_mutex);
+    auto search = clientPool.find(dest);
+    if (search == clientPool.end()) {
+      std::string ipAndPort = rtctx->rankToIpAndPort[dest];
+      DP_LOG(DEBUG, "Dest:%d(%s) isn't in clientPool yet.", dest, ipAndPort.c_str());
 
-    auto channel = grpc::CreateChannel(ipAndPort, grpc::InsecureChannelCredentials());
-    auto client = std::make_unique<RuntimeClient>(channel);
-    clientPool[dest] = std::move(client);
-    clientPool[dest]->Poke();
-    DP_LOG(DEBUG, "Poked dest:%d", dest);
+      auto channel = grpc::CreateChannel(ipAndPort, grpc::InsecureChannelCredentials());
+      auto client = std::make_unique<RuntimeClient>(channel);
+      clientPool[dest] = std::move(client);
+      clientPool[dest]->Poke();
+      DP_LOG(DEBUG, "Poked dest:%d", dest);
+    }
+    destClient = clientPool[dest].get();
   }
 
   std::string tsrData;
@@ -118,7 +123,7 @@ CommunicationHandlerGRPC::send(const torch::Tensor& tensor, int tag, int dest,
   CUDACHECK(cudaMemcpy(&tsrData[0], tensor.data_ptr(),
                        tensor.nbytes(), cudaMemcpyDefault));
   DP_LOG(DEBUG, "Copied tensor data (potentially CUDA) to CPU.");
-  clientPool[dest]->P2PCommunication(taskName, tsrData, tag);
+  destClient->P2PCommunication(taskName, tsrData, tag);
 }
 
 /**
