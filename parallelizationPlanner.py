@@ -53,6 +53,7 @@ class SearchContext:
         self.sampleSplit = sampleSplit
         self.spatialSplit = spatialSplit
         self.filterSplit = filterSplit
+        print("SearchContext: " + str(self.__dict__))
 
 
 class CostSim:

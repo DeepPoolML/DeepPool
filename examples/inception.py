@@ -623,11 +623,11 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     job, iterMs, gpuMs, maxGpusUsed = cs.searchBestSplitsV3(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
     print("  %2d    %2d   %4.1f  %4.1f\n" % (globalBatch, maxGpusUsed, iterMs, gpuMs))
     profiler.saveProfile()
-    # cs.to_dot(simResultFilename, globalBatch)
+    cs.to_dot(simResultFilename, globalBatch)
     cs.to_gpuTimeline("Inception v3, Burst Parallel", maxGpusUsed, dataParallelBaseline)
     jobInJson = job.dumpInJSON()
 
-    # for rank in range(1):
+    # for rank in range(gpuCount):
     #     print("GPU rank: %d"%rank)
     #     print(job.dumpSingleRunnableModule(rank))
 
@@ -706,9 +706,16 @@ def runAllConfigs(modelName: str, clusterType: str, simOnly=True):
 if __name__ == "__main__":
     print(len(sys.argv))
     if len(sys.argv) == 3:
-        main(int(sys.argv[1]), int(sys.argv[2]), dataParallelBaseline=True)
+        gpuCount = int(sys.argv[1])
+        globalBatchSize = int(sys.argv[2])
+        simResultFilename = "%s_%s_b%d_sim.data" % ("inception", "DP", globalBatchSize)
+        main(gpuCount, globalBatchSize, dataParallelBaseline=True)
     elif len(sys.argv) == 4:
-        main(int(sys.argv[1]), int(sys.argv[2]), amplificationLimit=float(sys.argv[3]) )#, netBw = 1.25E4)
+        gpuCount = int(sys.argv[1])
+        globalBatchSize = int(sys.argv[2])
+        amplificationLimit = float(sys.argv[3])
+        simResultFilename = "%s_%s_b%d_lim%2.1f_sim.data" % ("inception", "MP", globalBatchSize, amplificationLimit)
+        main(gpuCount, globalBatchSize, amplificationLimit, simResultFilename = simResultFilename)#, netBw = 1.25E4)
     elif len(sys.argv) == 2:
         print("Run all configs")
         runAllConfigs("inceptionV3", sys.argv[1])

@@ -200,7 +200,7 @@ class GpuProfiler:
         height = config[2]
         inChannels = config[3]
         filterCount = config[4]
-        train_dataset = self.SyntheticDataset((inChannels, width, height), batchSize * 200) # 30) # 
+        train_dataset = self.SyntheticDataset((inChannels, width, height), batchSize * 200, 100) # 
         train_loader = torch.utils.data.DataLoader(
                 train_dataset, batch_size=batchSize, shuffle=False, pin_memory=True, drop_last=True)
 
