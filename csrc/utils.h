@@ -18,6 +18,7 @@
 #include <memory>
 #include <string>
 #include <stdexcept>
+#include <cuda_runtime.h>
 #include <torch/torch.h>
 
 #define UNUSED(expr) (void)(expr)
@@ -43,5 +44,27 @@ std::string tsrToStr(torch::Tensor tensor)
   stream << tensor;
   return stream.str();
 }
+
+#define CUDA_API_CALL(apiFuncCall)                                            \
+  do {                                                                        \
+    cudaError_t _status = apiFuncCall;                                        \
+    if (_status != cudaSuccess) {                                             \
+      fprintf(stderr, "%s:%d: error: function %s failed with error %s.\n",    \
+              __FILE__, __LINE__, #apiFuncCall, cudaGetErrorString(_status)); \
+      exit(-1);                                                               \
+    }                                                                         \
+  } while (0)
+
+
+#define NCCL_API_CALL(apiFuncCall)                                            \
+  do {                                                                        \
+    ncclResult_t _status = apiFuncCall;                                        \
+    if (_status != ncclSuccess) {                                             \
+      fprintf(stderr, "%s:%d: error: function %s failed with error %d.\n",    \
+              __FILE__, __LINE__, #apiFuncCall, _status); \
+      exit(-1);                                                               \
+    }                                                                         \
+  } while (0)
+
 
 #endif

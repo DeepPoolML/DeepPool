@@ -20,8 +20,10 @@
 #include <mutex>
 #include <vector>
 #include <map>
-#include "nccl.h"
-#include "cuda_runtime.h"
+#include <nccl.h>
+#include <cuda_runtime.h>
+
+#include <c10/cuda/CUDAStream.h>
 
 /**
  * Forward declarations
@@ -45,10 +47,9 @@ namespace torch {
 struct RuntimeContext {
   RuntimeContext() : coordinatorAddr(0), myAddr(0), device(0), c10dBackend(0),
       c10dMasterPort(0), rank(), worldSize(), logdir(), be_batch_size(0),
-      profile(false), debug(false), homedir(0),
-      grpcService(), grpcServer(), taskManager(), shutdownRequested(),
-      commHandlerMap(), rankToIpAndPort(), grpcCommReady(),
-      ncclGroupId(), ncclGroupSize(), ranks(), ncclCommReady(), ncclCommObj() { }
+      profile(false), debug(false), homedir(0), torch_stream(c10::cuda::getStreamFromPool(true)) {
+        c10::cuda::setCurrentCUDAStream(torch_stream);
+      }
 
   ~RuntimeContext(); // Defined in cpp file because of incomplete unique_ptrs.
 
@@ -83,12 +84,12 @@ struct RuntimeContext {
    * variables to maintain per NCCL comm group
    * need to be expanded if one node participates in more than one comm group
    */
-  ncclUniqueId* ncclGroupId;
+  ncclUniqueId ncclGroupId;
   int ncclGroupSize;
   std::vector<int> ranks;
-  std::atomic<bool> ncclCommReady;
-  ncclComm_t* ncclCommObj;
-  cudaStream_t* cudaStream;
+  std::atomic<bool> ncclCommReady{false};
+  ncclComm_t ncclCommObj;
+  c10::cuda::CUDAStream torch_stream;
 };
 
 

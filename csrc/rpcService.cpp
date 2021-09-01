@@ -69,33 +69,22 @@ RuntimeServiceImpl::InitCommNCCL(ServerContext* context,
 
   int msg_type = request->msg_type();
   int group_size = request->group_size();
-  int id_size = request->id_size();
 
   if (msg_type == 0) { // Generate comm group ID
     if (rtctx->rank == 0) { // Only rank 0 generates ID
-      rtctx->ncclGroupId = (ncclUniqueId *)malloc(sizeof(ncclUniqueId));
       rtctx->ncclGroupSize = group_size;
-      ncclGetUniqueId(rtctx->ncclGroupId);
+      NCCL_API_CALL(ncclGetUniqueId(&rtctx->ncclGroupId));
 
       std::string replyMsg("Comm group ID generated at rank 0.");
       reply->set_message(replyMsg);
-      reply->set_group_id((*rtctx->ncclGroupId).internal, id_size);
+      reply->set_group_id(&rtctx->ncclGroupId, sizeof(rtctx->ncclGroupId));
     }
   }
   else if (msg_type == 1) { // Join comm group specified by ID
-    if (rtctx->rank != 0) { // Ranks 1+ need to receive ID before joining
-      rtctx->ncclGroupId = (ncclUniqueId *)malloc(sizeof(ncclUniqueId));
-      rtctx->ncclGroupSize = group_size;
-      memcpy((*rtctx->ncclGroupId).internal, request->group_id().c_str(), id_size);
-    }
+    if (rtctx->rank != 0) // Ranks 1+ need to receive ID before joining
+      memcpy(&rtctx->ncclGroupId, request->group_id().c_str(), sizeof(rtctx->ncclGroupId));
 
-    rtctx->ncclCommObj = (ncclComm_t *)malloc(sizeof(ncclComm_t));
-    rtctx->cudaStream = (cudaStream_t *)malloc(sizeof(cudaStream_t));
-
-    cudaSetDevice(0);
-    cudaStreamCreate(rtctx->cudaStream);
-
-    ncclCommInitRank(rtctx->ncclCommObj, rtctx->worldSize, (*rtctx->ncclGroupId), rtctx->rank);
+    NCCL_API_CALL(ncclCommInitRank(&rtctx->ncclCommObj, rtctx->worldSize, rtctx->ncclGroupId, rtctx->rank));
     rtctx->ncclCommReady = true;
 
     std::string replyMsg("Comm group ID broadcast & joined.");

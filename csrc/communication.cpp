@@ -17,13 +17,12 @@
 #include <memory>
 #include <string>
 #include "Cycles.h"
-#include "cuda_runtime.h"
-// #include "nccl.h"
+#include <cuda_runtime.h>
+#include <nccl.h>
 #include "utils.h"
 #include "logger.h"
 #include "runtime.h"
 #include "json.hpp"
-#include "nccl.h"
 
 using Cycles = RAMCloud::Cycles;
 using json = nlohmann::json;
@@ -101,6 +100,7 @@ void
 CommunicationHandlerGRPC::send(const torch::Tensor& tensor, int tag, int dest,
     bool async)
 {
+  UNUSED(async);
   RuntimeClient* destClient;
   {
     std::lock_guard<std::mutex> lock(_mutex);
@@ -133,6 +133,7 @@ void
 CommunicationHandlerGRPC::recv(torch::Tensor& tensor, int tag, int src,
     bool async)
 {
+  UNUSED(async);
   std::unique_lock<std::mutex> lock(_mutex);
   bool found = false;
   while (!found) {
@@ -188,38 +189,103 @@ CommunicationHandlerNCCL::CommunicationHandlerNCCL(RuntimeContext* rtctx,
   DP_LOG(DEBUG, "Constructing CommunicationHandlerNCCL for %s", taskName.c_str());
   rtctx->commHandlerMap[taskName] = this;
   DP_LOG(DEBUG, "set CommunicationHandlerNCCL to commHandlerMap.");
+
+  cudaStream_t stream;
+
+  for (int i = 0; i < worldSize; i++) {
+    /* skip myself */
+    if (i == rank) {
+      send_streams.push_back(0);
+      recv_streams.push_back(0);
+      continue;
+    }
+    CUDA_API_CALL(cudaStreamCreateWithPriority(&stream, cudaStreamNonBlocking, 0));
+    send_streams.push_back(stream);
+    CUDA_API_CALL(cudaStreamCreateWithPriority(&stream, cudaStreamNonBlocking, 0));
+    recv_streams.push_back(stream);
+  }
+
+  CUDA_API_CALL(cudaStreamCreateWithPriority(&stream, cudaStreamNonBlocking, 0));
+  comm_sync_stream = stream;
 }
 
 void
 CommunicationHandlerNCCL::send(const torch::Tensor& tensor, int tag, int dest,
     bool async)
 {
-  ncclSend((void*)tensor.data_ptr(), tensor.nbytes()/tensor.itemsize(), ncclFloat, dest, *rtctx->ncclCommObj, *rtctx->cudaStream);
-  cudaSetDevice(rtctx->device);
-  cudaStreamSynchronize(*rtctx->cudaStream);
+  cudaStream_t send_stream = send_streams[dest];
+
+  /* ensure ncclSend happens after most recent kernel has finished on rtctx->torch_stream */
+  cudaEvent_t event;
+  CUDA_API_CALL(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
+  CUDA_API_CALL(cudaEventRecord(event, rtctx->torch_stream));
+  CUDA_API_CALL(cudaStreamWaitEvent(send_stream, event, 0)); // this is nonblocking for the host
+  CUDA_API_CALL(cudaEventDestroy(event));
+
+  /* send the data */
+  NCCL_API_CALL(ncclSend((void*)tensor.data_ptr(), tensor.nbytes(), ncclUint8, dest, rtctx->ncclCommObj, send_stream));
+
+  if (async) {
+    /* create a depedency on the send stream for sync stream */
+    CUDA_API_CALL(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
+    CUDA_API_CALL(cudaEventRecord(event, send_stream));
+    CUDA_API_CALL(cudaStreamWaitEvent(comm_sync_stream, event, 0)); // this is nonblocking for the host
+    CUDA_API_CALL(cudaEventDestroy(event));
+  } else {
+    cudaStreamSynchronize(send_stream);
+  }
 }
 
 void
 CommunicationHandlerNCCL::recv(torch::Tensor& tensor, int tag, int src,
     bool async)
 {
-  ncclRecv((void*)tensor.data_ptr(), tensor.nbytes()/tensor.itemsize(), ncclFloat, src, *rtctx->ncclCommObj, *rtctx->cudaStream);
-  cudaSetDevice(rtctx->device);
-  cudaStreamSynchronize(*rtctx->cudaStream);
+  cudaStream_t recv_stream = recv_streams[src];
+
+  /* ensure ncclRecv happens after most recent kernel has finished on rtctx->torch_stream */
+  cudaEvent_t event;
+  CUDA_API_CALL(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
+  CUDA_API_CALL(cudaEventRecord(event, rtctx->torch_stream));
+  CUDA_API_CALL(cudaStreamWaitEvent(recv_stream, event, 0)); // this is nonblocking for the host
+  CUDA_API_CALL(cudaEventDestroy(event));
+
+  /* receive the data */
+  NCCL_API_CALL(ncclRecv((void*)tensor.data_ptr(), tensor.nbytes(), ncclUint8, src, rtctx->ncclCommObj, recv_stream));
+
+  if (async) {
+    /* create a depedency on the recv stream for sync stream */
+    CUDA_API_CALL(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
+    CUDA_API_CALL(cudaEventRecord(event, recv_stream));
+    CUDA_API_CALL(cudaStreamWaitEvent(comm_sync_stream, event, 0)); // this is nonblocking for the host
+    CUDA_API_CALL(cudaEventDestroy(event));
+  } else {
+    cudaStreamSynchronize(recv_stream);
+  }
 }
 
 void
 CommunicationHandlerNCCL::testRingP2P()
 {
-  torch::Tensor send_tensor = torch::ones({3,3}, torch::Device(torch::kCUDA, rtctx->device));
-  torch::Tensor recv_tensor = torch::zeros({1,9}, torch::Device(torch::kCUDA, rtctx->device));
-
   int dest = (rtctx->rank + 1) % rtctx->worldSize;
   int src = (rtctx->rank + rtctx->worldSize - 1) % rtctx->worldSize;
 
-  send(send_tensor, 1, dest, false);
-  DP_LOG(DEBUG, "Sent tensor [%s] to %d.", tsrToStr(send_tensor).c_str(), dest);
+  torch::Tensor send_tensor = torch::full({3,3}, rtctx->rank + 1, torch::Device(torch::kCUDA, rtctx->device));
+  torch::Tensor recv_tensor = torch::full({3,3}, src, torch::Device(torch::kCUDA, rtctx->device));
+  torch::Tensor expected = torch::full({3,3}, src + 1, torch::Device(torch::kCUDA, rtctx->device));
 
-  recv(recv_tensor, 1, src, false);
-  DP_LOG(DEBUG, "Rcvd tensor [%s] to %d.", tsrToStr(recv_tensor).c_str(), src);
+  if (rtctx->rank == 0) {
+    send(send_tensor, 1, dest, true);
+    recv(recv_tensor, 1, src, true);
+  } else {
+    recv(recv_tensor, 1, src, true);
+    send(send_tensor, 1, dest, true);
+  }
+
+  sync();
+
+  DP_LOG(DEBUG, "Sent tensor [%s] to %d.", tsrToStr(send_tensor).c_str(), dest);
+  DP_LOG(DEBUG, "Received tensor [%s] from %d.", tsrToStr(recv_tensor).c_str(), src);
+  DP_LOG(DEBUG, "Expected tensor [%s] from %d.", tsrToStr(expected).c_str(), src);
+
+  assert(at::equal(recv_tensor, expected));
 }

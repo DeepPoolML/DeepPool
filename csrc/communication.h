@@ -16,6 +16,7 @@
 #define COMMUNICATION_H
 
 #include <torch/torch.h>
+#include <cuda_runtime.h>
 #include "json.hpp"
 #include "rpcService.h"
 
@@ -46,7 +47,10 @@ class CommunicationHandler {
                     bool async = false) = 0;
   virtual void recv(torch::Tensor& tensor, int tag, int src,
                     bool async = false) = 0;
-  
+
+  /* block until all outstanding send/recvs have completed */
+  virtual void sync() = 0;
+
   /**
    * Returns the tag for p2p communication send/recv.
    *
@@ -76,6 +80,7 @@ class CommunicationHandlerNCCL : public CommunicationHandler {
             bool async = false);
   void recv(torch::Tensor& tensor, int tag, int src,
             bool async = false);
+  void sync() { cudaStreamSynchronize(comm_sync_stream); }
   void testRingP2P();
 
  private:
@@ -84,6 +89,10 @@ class CommunicationHandlerNCCL : public CommunicationHandler {
   std::mutex _mutex;                // Monitor lock.
   std::unordered_map<int, std::string> receivedData;
   std::unordered_map<int, std::unique_ptr<RuntimeClient> > clientPool;
+
+  std::vector<cudaStream_t> send_streams;
+  std::vector<cudaStream_t> recv_streams;
+  cudaStream_t comm_sync_stream;
 };
 
 class CommunicationHandlerGRPC : public CommunicationHandler {
@@ -98,6 +107,8 @@ class CommunicationHandlerGRPC : public CommunicationHandler {
   void recv(torch::Tensor& tensor, int tag, int src,
             bool async = false);
   void testRingP2P();
+  void sync() {};
+
 
  private:
   RuntimeContext* rtctx;
