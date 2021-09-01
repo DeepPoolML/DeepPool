@@ -61,7 +61,7 @@ def generateConfigFile():
         for deviceIdx in range(gpuCount):
             portNum = portPrefix + deviceIdx
             deviceList.append({"port": portNum, "device": (deviceIdx + gpuIdxOffset)})
-        config["serverList"].append({"addr": privateIp, "deviceList": deviceList, "userId": userId, "sshKeyPath": "~/.ssh/fastnic.pem"})
+        config["serverList"].append({"addr": privateIp, "deviceList": deviceList, "userId": userId, "sshKeyPath": pkeyPath})
     with open('clusterConfig.json', 'w') as outfile:
         json.dump(config, outfile, indent=2, sort_keys=False)
     print("****** Configuration generated for Fastnic cluster: ")
@@ -74,8 +74,8 @@ def uploadCode():
             # subprocess.check_call(['rsync', '--progress', '-e', 'ssh -i %s -o StrictHostKeyChecking=no' % pkeyPath,
             #     '-rh', "--exclude=*__pycache__", "--exclude=results", localPath, "%s@%s:%s" % (userId, host, remotePath)],
             #     stderr=subprocess.STDOUT)
-            subprocess.check_call(['rsync', '-e', 'ssh -i %s -o StrictHostKeyChecking=no' % pkeyPath,
-                '-rh', "--exclude=*__pycache__", "--exclude=be_training", "--exclude=be_training/pytorch", "--exclude=be_training/build", "--exclude=results", localPath, "%s@%s:%s" % (userId, host, remotePath)],
+            subprocess.check_call(['rsync', '--progress', '-e', 'ssh -i %s -o StrictHostKeyChecking=no' % pkeyPath,
+                '-rh', "--exclude=*__pycache__", "--exclude=csrc/build/_deps", "--exclude=be_training", "--exclude=be_training/pytorch", "--exclude=be_training/build", "--exclude=results", localPath, "%s@%s:%s" % (userId, host, remotePath)],
                 stderr=subprocess.STDOUT)
         except subprocess.CalledProcessError as e:
             output = e.output

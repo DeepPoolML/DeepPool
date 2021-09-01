@@ -387,11 +387,13 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
 
     # testRunOnCPU()
 
+    profiler.saveProfile()
+
     if not spatialSplit:
         cc = ClusterClient()
         jobName = "vgg16_%d_%d_%2.1f%s" % (gpuCount, globalBatch, amplificationLimit, "_DP" if dataParallelBaseline else "")
         cc.submitTrainingJob(jobName, jobInJson)
-    
+
     if simResultFilename != None:
         f = open(simResultFilename, "a")
         f.write("  %2d    %2d   %4.1f  %4.1f\n" % (globalBatch, gpuCount, iterMs, gpuMs))
@@ -402,9 +404,6 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
             print(f.read())
             f.close()
 
-    profiler.saveProfile()
-
-    
 
 
 # def runAllConfigs(clusterType: str):

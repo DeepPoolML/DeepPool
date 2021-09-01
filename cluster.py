@@ -312,9 +312,9 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
                 nsysPrefix = ""
             if cppRuntime:
                 self.processes.append(location.rshAsync(
-                    self.workDir + "csrc/build/runtime" + \
-                    " --coordinatorAddr %s:%d --myAddr %s:%d --device %d --c10dBackend %s --rank %d --worldSize %d --logdir %s --be_batch_size %d %s" % \
-                        (self.myAddr, self.myPort, location.address, location.port, location.device, c10dBackend, i, len(self.locations), logdir, self.be_batch_size, "--profile" if profile else "") #+ \
+                    "CUDA_VISIBLE_DEVICES=" + str(location.device) + " " + self.workDir + "csrc/build/runtime" + \
+                    " --coordinatorAddr %s:%d --myAddr %s:%d --device 0 --c10dBackend %s --rank %d --worldSize %d --logdir %s --be_batch_size %d %s" % \
+                        (self.myAddr, self.myPort, location.address, location.port, c10dBackend, i, len(self.locations), logdir, self.be_batch_size, "--profile" if profile else "") #+ \
                     , stdout=stdoutFp, stderr=stderrFp))
             else:
                 self.processes.append(location.rshAsync(
