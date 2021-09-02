@@ -107,6 +107,7 @@ void ncclCommTest(RuntimeContext* rtctx) {
   DP_LOG(DEBUG, "a default commHandler created for testing.");
   sleep(5);
   commHandler->testRingP2P();
+  commHandler->testAllReduce();
 }
 
 void parse_args(RuntimeContext* ctx, int argc, char** argv) {

@@ -16,6 +16,7 @@
 #define COMMUNICATION_H
 
 #include <torch/torch.h>
+#include <c10d/Types.hpp>
 #include <cuda_runtime.h>
 #include "json.hpp"
 #include "rpcService.h"
@@ -48,6 +49,8 @@ class CommunicationHandler {
   virtual void recv(torch::Tensor& tensor, int tag, int src,
                     bool async = false) = 0;
 
+  virtual void all_reduce(torch::Tensor& tensor, c10d::ReduceOp op, bool async = false) = 0;
+
   /* block until all outstanding send/recvs have completed */
   virtual void sync() = 0;
 
@@ -75,13 +78,16 @@ class CommunicationHandlerNCCL : public CommunicationHandler {
   CommunicationHandlerNCCL(RuntimeContext* rtctx, std::string taskName,
       int worldSize, json tensorTags, int rank, json jobRankToGlobalRank,
       c10::Device dev, bool tensorInCuda = true);
+  ~CommunicationHandlerNCCL();
 
   void send(const torch::Tensor& tensor, int tag, int dest,
             bool async = false);
   void recv(torch::Tensor& tensor, int tag, int src,
             bool async = false);
   void sync() { cudaStreamSynchronize(comm_sync_stream); }
+  void all_reduce(torch::Tensor& tensor, c10d::ReduceOp op, bool async = false);
   void testRingP2P();
+  void testAllReduce();
 
  private:
   RuntimeContext* rtctx;
@@ -108,6 +114,7 @@ class CommunicationHandlerGRPC : public CommunicationHandler {
             bool async = false);
   void testRingP2P();
   void sync() {};
+  void all_reduce(torch::Tensor& tensor, c10d::ReduceOp op, bool async = false);
 
 
  private:

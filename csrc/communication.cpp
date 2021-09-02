@@ -134,6 +134,7 @@ CommunicationHandlerGRPC::recv(torch::Tensor& tensor, int tag, int src,
     bool async)
 {
   UNUSED(async);
+  UNUSED(src);
   std::unique_lock<std::mutex> lock(_mutex);
   bool found = false;
   while (!found) {
@@ -153,6 +154,16 @@ CommunicationHandlerGRPC::recv(torch::Tensor& tensor, int tag, int src,
       lock.lock();
     }
   }
+}
+
+void
+CommunicationHandlerGRPC::all_reduce(torch::Tensor &tensor,
+                                     c10d::ReduceOp op,
+                                     bool async) {
+  UNUSED(tensor);
+  UNUSED(op);
+  UNUSED(async);
+  fprintf(stderr, "GRPC all reduce not implemented\n");
 }
 
 void
@@ -205,14 +216,37 @@ CommunicationHandlerNCCL::CommunicationHandlerNCCL(RuntimeContext* rtctx,
     recv_streams.push_back(stream);
   }
 
-  CUDA_API_CALL(cudaStreamCreateWithPriority(&stream, cudaStreamNonBlocking, 0));
-  comm_sync_stream = stream;
+  CUDA_API_CALL(cudaStreamCreateWithPriority(&comm_sync_stream, cudaStreamNonBlocking, 0));
 }
+
+CommunicationHandlerNCCL::~CommunicationHandlerNCCL()
+{
+  for (auto &stream : send_streams)
+    if (stream)
+      CUDA_API_CALL(cudaStreamDestroy(stream));
+  for (auto &stream : recv_streams)
+    if (stream)
+      CUDA_API_CALL(cudaStreamDestroy(stream));
+  CUDA_API_CALL(cudaStreamDestroy(comm_sync_stream));
+}
+
+// borrowed from c10d
+static const std::map<at::ScalarType, ncclDataType_t> ncclDataType = {
+    {at::kChar, ncclInt8},
+    {at::kByte, ncclUint8},
+    {at::kFloat, ncclFloat},
+    {at::kDouble, ncclDouble},
+    {at::kInt, ncclInt32},
+    {at::kLong, ncclInt64},
+    {at::kHalf, ncclHalf},
+    {at::kBool, ncclUint8},
+};
 
 void
 CommunicationHandlerNCCL::send(const torch::Tensor& tensor, int tag, int dest,
     bool async)
 {
+  UNUSED(tag);
   cudaStream_t send_stream = send_streams[dest];
 
   /* ensure ncclSend happens after most recent kernel has finished on rtctx->torch_stream */
@@ -223,7 +257,8 @@ CommunicationHandlerNCCL::send(const torch::Tensor& tensor, int tag, int dest,
   CUDA_API_CALL(cudaEventDestroy(event));
 
   /* send the data */
-  NCCL_API_CALL(ncclSend((void*)tensor.data_ptr(), tensor.nbytes(), ncclUint8, dest, rtctx->ncclCommObj, send_stream));
+  auto dtype = ncclDataType.at(tensor.scalar_type());
+  NCCL_API_CALL(ncclSend(tensor.data_ptr(), tensor.numel(), dtype, dest, rtctx->ncclCommObj, send_stream));
 
   if (async) {
     /* create a depedency on the send stream for sync stream */
@@ -240,6 +275,7 @@ void
 CommunicationHandlerNCCL::recv(torch::Tensor& tensor, int tag, int src,
     bool async)
 {
+  UNUSED(tag);
   cudaStream_t recv_stream = recv_streams[src];
 
   /* ensure ncclRecv happens after most recent kernel has finished on rtctx->torch_stream */
@@ -250,7 +286,8 @@ CommunicationHandlerNCCL::recv(torch::Tensor& tensor, int tag, int src,
   CUDA_API_CALL(cudaEventDestroy(event));
 
   /* receive the data */
-  NCCL_API_CALL(ncclRecv((void*)tensor.data_ptr(), tensor.nbytes(), ncclUint8, src, rtctx->ncclCommObj, recv_stream));
+  auto dtype = ncclDataType.at(tensor.scalar_type());
+  NCCL_API_CALL(ncclRecv(tensor.data_ptr(), tensor.numel(), dtype, src, rtctx->ncclCommObj, recv_stream));
 
   if (async) {
     /* create a depedency on the recv stream for sync stream */
@@ -261,6 +298,70 @@ CommunicationHandlerNCCL::recv(torch::Tensor& tensor, int tag, int src,
   } else {
     cudaStreamSynchronize(recv_stream);
   }
+}
+
+void
+CommunicationHandlerNCCL::all_reduce(torch::Tensor &tensor,
+                                     c10d::ReduceOp op, bool async)
+{
+  // NCCL op mapping from c10d
+  const std::map<c10d::ReduceOp, ncclRedOp_t> ncclOp = {
+      {c10d::ReduceOp::MIN, ncclMin},
+      {c10d::ReduceOp::MAX, ncclMax},
+      {c10d::ReduceOp::SUM, ncclSum},
+      {c10d::ReduceOp::PRODUCT, ncclProd},
+  };
+
+  auto dtype = ncclDataType.at(tensor.scalar_type());
+  NCCL_API_CALL(ncclAllReduce(tensor.data_ptr(), tensor.data_ptr(),
+                              tensor.numel(), dtype, ncclOp.at(op),
+                              rtctx->ncclCommObj, rtctx->torch_stream));
+
+  if (async) {
+    /* create a depedency on the recv stream for sync stream */
+    cudaEvent_t event;
+    CUDA_API_CALL(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
+    CUDA_API_CALL(cudaEventRecord(event, rtctx->torch_stream));
+    CUDA_API_CALL(cudaStreamWaitEvent(comm_sync_stream, event,
+                                      0)); // this is nonblocking for the host
+    CUDA_API_CALL(cudaEventDestroy(event));
+  } else {
+    cudaStreamSynchronize(rtctx->torch_stream);
+  }
+}
+
+void
+CommunicationHandlerNCCL::testAllReduce()
+{
+  torch::Device dev(torch::kCUDA, rtctx->device);
+
+  /* sum */
+  torch::Tensor t = torch::full({3, 3}, rtctx->rank + 1, dev);
+  all_reduce(t, c10d::ReduceOp::SUM, false);
+  int sum = 0;
+  for (int i = 1; i < rtctx->worldSize + 1; i++)
+    sum += i;
+  torch::Tensor expected = torch::full({3, 3}, sum, dev);
+  assert(at::equal(t, expected));
+
+  /* prod */
+  int prod = 1;
+  for (int i = 1; i < rtctx->worldSize + 1; i++)
+    prod *= i;
+  t = torch::full({3, 3}, rtctx->rank + 1, dev);
+  expected = torch::full({3, 3}, prod, dev);
+  all_reduce(t, c10d::ReduceOp::PRODUCT, true);
+  sync();
+  assert(at::equal(t, expected));
+
+  /* max */
+  t = torch::full({3, 3}, rtctx->rank + 1, dev);
+  expected = torch::full({3, 3}, rtctx->worldSize, dev);
+  all_reduce(t, c10d::ReduceOp::MAX, true);
+  sync();
+  assert(at::equal(t, expected));
+
+  DP_LOG(DEBUG, "Completed 3 NCCL all reduce tests.");
 }
 
 void
