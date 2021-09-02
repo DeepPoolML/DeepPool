@@ -53,6 +53,7 @@ enum class JobState {
 
 enum TracePoint {
   CT_START = 0,
+  CT_LOAD,
   CT_FP,
   CT_LOSS,
   CT_BP,
@@ -96,6 +97,8 @@ struct JobContext {
   JobState state;
 
   std::vector<CudaTimer> timers;
+  torch::jit::Module modelToVerify;
+  torch::Tensor outputToVerify;
 };
 
 /**

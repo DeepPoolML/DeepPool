@@ -357,6 +357,15 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     global cs
     cs = CostSim(profiler, netBw=netBw, verbose=False)
     model = vgg16(pretrained=False)
+    
+    saveWholeModel = True
+    if saveWholeModel:
+        fakeInput = torch.zeros(cs.layers[0].inputDim)
+        traced = torch.jit.script(model, fakeInput)
+        saveLocation = "modules/vgg16.pt"
+        torch.jit.save(traced, saveLocation)
+        print("Saved whole model to %s" % saveLocation)
+
     # model = vgg11()
     # model = resnet34()
     cs.printAllLayers(slient=True)
@@ -366,14 +375,16 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     # job = cs.searchBestSplits(gpuCount, globalBatch, dataParallelBaseline=True)
     # job, iterMs, gpuMs = cs.searchBestSplits(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
     job, iterMs, gpuMs, maxGpusUsed = cs.searchBestSplitsV3(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
-    jobInJson = job.dumpInJSON()
-    print("\n*** General description ***\n")
-    print(jobInJson)
-    print("\n\n")
+    print("Searching for parallelization strategy is completed.\n")
 
-    print("\n*** GPU specific description for rank:0 ***\n")
-    print(job.dumpSingleRunnableModule(0))
-    print("\n\n")
+    jobInJson = job.dumpInJSON()
+    # print("\n*** General description ***\n")
+    # print(jobInJson)
+    # print("\n\n")
+
+    # print("\n*** GPU specific description for rank:0 ***\n")
+    # print(job.dumpSingleRunnableModule(0))
+    # print("\n\n")
 
     # for rank in range(4):
     #     print("GPU rank: %d"%rank)
@@ -457,8 +468,9 @@ def runAllConfigs(modelName: str, clusterType: str):
     # gpuCounts = [1, 2, 4]
     globalBatchSize = 16
     # globalBatchSize = 8
-    limitAndBaseline = [(2.0, True, False), (99, False, False), (4.0, False, False), (2.5, False, False)]
+    # limitAndBaseline = [(2.0, True, False), (99, False, False), (4.0, False, False), (2.5, False, False)]
     # limitAndBaseline = [(99, False, True)]
+    limitAndBaseline = [(99, True, False)]
     # limitAndBaseline = []
     for lim, baseline, spatialSplit in limitAndBaseline:
         simResultFilename = "%s_%s_b%d_lim%2.1f_sim.data" % (modelName, "DP" if baseline else "MP", globalBatchSize, lim)
@@ -518,6 +530,24 @@ def runAllConfigs(modelName: str, clusterType: str):
     # fr = open('runtimeResult.data', "w")
     # fr.close()
 
+def runStrongScalingBench(modelName='vgg16'):
+    profiler = GpuProfiler("cuda")
+    global cs
+    netBw = 2.66E5
+    cs = CostSim(profiler, netBw=netBw, verbose=False)
+    inputSize = (3,224,224)
+    if modelName == 'vgg11':
+        model = vgg11(pretrained=False)
+    elif modelName == 'vgg16':
+        model = vgg16(pretrained=False)
+    
+    print("Model: ", modelName)
+    print("BatchSize  iterMs    fpMs    bpMs")
+    for batchSize in [2 ** exp for exp in range(1, 9)]:
+        iterTime, fpTime, bpTime = profiler.benchModel(model, inputSize, batchSize)
+        print(" %8d  %6.1f  %6.1f  %6.1f" %
+            (batchSize, iterTime / 1000, fpTime / 10000, bpTime / 1000))
+
 
 if __name__ == "__main__":
     print(len(sys.argv))
@@ -528,5 +558,8 @@ if __name__ == "__main__":
     elif len(sys.argv) == 2:
         print("Run all configs")
         runAllConfigs("vgg16", sys.argv[1])
+    elif len(sys.argv) == 1:
+        for modelName in ['vgg11', 'vgg16']:
+            runStrongScalingBench(modelName)
     else:
         print("Wrong number of arguments.\nUsage: ")

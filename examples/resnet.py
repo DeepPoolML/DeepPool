@@ -538,6 +538,24 @@ def runAllConfigs(modelName: str, clusterType: str):
     # fr = open('runtimeResult.data', "w")
     # fr.close()
 
+def runStrongScalingBench(modelName='resnet50'):
+    profiler = GpuProfiler("cuda")
+    global cs
+    netBw = 2.66E5
+    cs = CostSim(profiler, netBw=netBw, verbose=False)
+    inputSize = (3,224,224)
+    if modelName == 'resnet50':
+        model = resnet50(pretrained=False)
+    elif modelName == 'resnet34':
+        model = resnet34(pretrained=False)
+    
+    print("Model: ", modelName)
+    print("BatchSize  iterMs    fpMs    bpMs")
+    for batchSize in [2 ** exp for exp in range(1, 9)]:
+        iterTime, fpTime, bpTime = profiler.benchModel(model, inputSize, batchSize)
+        print(" %8d  %6.1f  %6.1f  %6.1f" %
+            (batchSize, iterTime / 1000, fpTime / 10000, bpTime / 1000))
+
 
 if __name__ == "__main__":
     print(len(sys.argv))
@@ -548,5 +566,8 @@ if __name__ == "__main__":
     elif len(sys.argv) == 2:
         print("Run all configs")
         runAllConfigs("resnet34", sys.argv[1])
+    elif len(sys.argv) == 1:
+        for modelName in ['resnet50', 'resnet34']:
+            runStrongScalingBench(modelName)
     else:
         print("Wrong number of arguments.\nUsage: ")

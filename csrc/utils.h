@@ -45,6 +45,19 @@ std::string tsrToStr(torch::Tensor tensor)
   return stream.str();
 }
 
+static inline
+std::string tsrSizeToStr(torch::Tensor tensor)
+{
+  std::ostringstream stream;
+  auto sizes = tensor.sizes();
+  stream << "[ ";
+  for (auto size : sizes) {
+    stream << size << " ";
+  }
+  stream << "]";
+  return stream.str();
+}
+
 #define CUDA_API_CALL(apiFuncCall)                                            \
   do {                                                                        \
     cudaError_t _status = apiFuncCall;                                        \
@@ -65,6 +78,5 @@ std::string tsrToStr(torch::Tensor tensor)
       exit(-1);                                                               \
     }                                                                         \
   } while (0)
-
 
 #endif

@@ -31,14 +31,14 @@ import sys
 # 172.31.112.36	g1lmd6.fleet.perspectalabs.com g1lmd6
 
 # ipAddresses = ["172.31.112.32", "172.31.112.33"] # g1lmd2 and g1lmd3
-# ipAddresses = ["172.31.112.33"] # g1lmd3
-ipAddresses = ["172.31.112.34"] # g1lmd4
+ipAddresses = ["172.31.112.33"] # g1lmd3
+# ipAddresses = ["172.31.112.34"] # g1lmd4
 pkeyPath = '~/.ssh/fastnic.pem'
 userId = "seojin"
 workDir = "~/DeepPoolRuntime/"
 gpuIdxOffset = 1
 # gpuCount = 1
-gpuCount = 4
+gpuCount = 2
 portPrefix = 11240 # prefix + Device# is used for port.
 coordinatorPort = 12345
 
@@ -107,7 +107,7 @@ def downloadResults():
         subprocess.check_call(sh_command, stderr=subprocess.STDOUT)
 
     for host in ipAddresses:
-        for remotePath in ["~/DeepPoolRuntime/*.data"]: #, "~/DeepPoolRuntime/logs/*.out"]: 
+        for remotePath in ["~/DeepPoolRuntime/*.data", "~/DeepPoolRuntime/*.gv.pdf", "~/DeepPoolRuntime/gpuProfile.json"]: #, "~/DeepPoolRuntime/logs/*.out"]: 
             #["~/DeepPoolRuntime/*.data.gv.pdf", "~/DeepPoolRuntime/logs/*.out", "~/*.qdrep", "~/DeepPoolRuntime/logs/*.out", "~/net*.qdrep", "~/net*.sqlite", "~/DeepPoolRuntime/logs/*.out"]:
             try:
                 downloadFile(host, remotePath, "results/")

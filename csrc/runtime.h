@@ -47,7 +47,11 @@ namespace torch {
 struct RuntimeContext {
   RuntimeContext() : coordinatorAddr(0), myAddr(0), device(0), c10dBackend(0),
       c10dMasterPort(0), rank(), worldSize(), logdir(), be_batch_size(0),
-      profile(false), debug(false), homedir(0), torch_stream(c10::cuda::getStreamFromPool(true)) {
+      profile(false), debug(false), verify(false), homedir(0),
+      grpcService(), grpcServer(), taskManager(), shutdownRequested(),
+      commHandlerMap(), rankToIpAndPort(), grpcCommReady(),
+      ncclGroupId(), ncclGroupSize(), ranks(), ncclCommReady(), ncclCommObj(),
+      torch_stream(c10::cuda::getStreamFromPool(true)) {
         c10::cuda::setCurrentCUDAStream(torch_stream);
       }
 
@@ -67,6 +71,7 @@ struct RuntimeContext {
   int be_batch_size;
   bool profile;
   bool debug;
+  bool verify;
   char *homedir;
 
   /**

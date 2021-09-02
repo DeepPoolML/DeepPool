@@ -59,7 +59,7 @@ class CudaTimer {
     CUDACHECK(cudaEventCreate(&evt));
     recorded = false;
   }
-
+  int count() { return static_cast<int>(elapsedTimes.size()); }
   float getAvg(size_t skipIterCount = 0) {
     float sum = 0;
     for (size_t i = skipIterCount; i < elapsedTimes.size(); ++i) {
@@ -71,15 +71,16 @@ class CudaTimer {
     return sum / elapsedTimes.size();
   }
 
-  float getPercentile(float percentile) {
-    std::vector<float> sortedTimes(elapsedTimes);
+  float getPercentile(float percentile, size_t skipIterCount) {
+    std::vector<float> sortedTimes(elapsedTimes.begin() + skipIterCount,
+                                   elapsedTimes.end());
     std::sort(sortedTimes.begin(), sortedTimes.end());
     size_t idx = sortedTimes.size() * percentile / 100.0;
     return sortedTimes[idx];
   }
 
-  float getP50() { return getPercentile(50); }
-  float getP99() { return getPercentile(99); }
+  float getP50(size_t skipIterCount = 0) { return getPercentile(50, skipIterCount); }
+  float getP99(size_t skipIterCount = 0) { return getPercentile(99, skipIterCount); }
 
   cudaEvent_t* getCudaEvent() { return &evt; }
   bool isRecorded() { return recorded; }

@@ -116,11 +116,11 @@ class RunnableModule : public torch::nn::Module {
       CommunicationHandler* commHandler, c10::Device device);
 
   void getParameters(std::vector<torch::Tensor>* parameters);
-  void iterInit(torch::Tensor x);
+  void iterInit(torch::Tensor x, torch::Tensor targets);
   bool forwardAStep();
   // bool forwardAStepOld();
   bool backwardAStep();
-  void loss(torch::Tensor targets);
+  void loss();
 
   ////////////////////////////////////////////
   // Internal data structure.
@@ -140,6 +140,7 @@ class RunnableModule : public torch::nn::Module {
   ////////////////////////////////////////////
   std::deque<Layer*> layerQ;
   torch::Tensor fpInput;
+  torch::Tensor fpTargets;
   torch::Tensor fpOutput;
   torch::Tensor fpLoss;
   // bool runCriterionAndLoss;

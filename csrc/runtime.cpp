@@ -141,6 +141,7 @@ void parse_args(RuntimeContext* ctx, int argc, char** argv) {
       {"be_batch_size", required_argument, NULL, 'e'},
       {"profile", no_argument, NULL, 'f'},
       {"debug", no_argument, NULL, 'g'},
+      {"verify", no_argument, NULL, 'v'},
       {NULL, 0, NULL, 0}
   };
 
@@ -181,6 +182,9 @@ void parse_args(RuntimeContext* ctx, int argc, char** argv) {
       case 'g':
         ctx->debug = true;
         break;
+      case 'v':
+        ctx->verify = true;
+        break;
       default:
         printf("?? getopt returned character code 0%o ??\n", ch);
     }
@@ -219,6 +223,7 @@ int main(int argc, char** argv) {
     while (!ctx.grpcCommReady.load(std::memory_order_relaxed)) {}
     DP_LOG(DEBUG, "InitCommGRPC done. Running test now.");
     grpcCommTest(&ctx);
+    DP_LOG(DEBUG, "GRPC comm test done.");
   }
 
   if (strcmp(ctx.c10dBackend, "nccl") == 0) {
@@ -229,6 +234,7 @@ int main(int argc, char** argv) {
   }
 
   std::cout << "poller is starting." << std::endl;
+  DP_LOG(DEBUG, "Poller is starting.");
   while (!ctx.shutdownRequested.load(std::memory_order_relaxed)) {
     taskMngr.poll();
   }

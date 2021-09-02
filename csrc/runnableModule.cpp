@@ -137,6 +137,7 @@ RunnableModule::RunnableModule(RuntimeContext* rtctx,
   , layers()
   , layerQ()
   , fpInput()
+  , fpTargets()
   , fpOutput()
   , fpLoss()
 {
@@ -271,11 +272,12 @@ RunnableModule::getParameters(std::vector<torch::Tensor>* parameters)
  * Initiate an iteration.
  */
 void
-RunnableModule::iterInit(torch::Tensor x)
+RunnableModule::iterInit(torch::Tensor x, torch::Tensor targets)
 {
   layerQ.clear();
   layerQ.push_back(&layers[0]);
-  fpInput = x.to(device);
+  fpInput = x.to(device, /*non_blocking*/ true, /*copy*/ false);
+  fpTargets = targets.to(device, /*non_blocking*/ true, /*copy*/ false);
   fpOutput.reset();
   fpLoss.reset();
 }
@@ -399,10 +401,10 @@ RunnableModule::forwardAStep()
  * Compute the loss from forward pass.
  */
 void
-RunnableModule::loss(torch::Tensor targets)
+RunnableModule::loss()
 {
   if (fpOutput.defined()) {    
-    fpLoss = torch::nll_loss(fpOutput, targets);
+    fpLoss = torch::nll_loss(fpOutput, fpTargets);
     // DP_LOG(DEBUG, "fpLoss: %s", tsrToStr(fpLoss).c_str());
     fpLoss.backward();
     DP_LOG(DEBUG, "fpLoss.backward() done. ");

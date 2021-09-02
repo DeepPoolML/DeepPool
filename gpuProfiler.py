@@ -129,6 +129,7 @@ class GpuProfiler:
                 ev_fp = torch.cuda.Event(enable_timing=True)
                 ev_loss = torch.cuda.Event(enable_timing=True)
                 ev_bp = torch.cuda.Event(enable_timing=True)
+                ev_opt = torch.cuda.Event(enable_timing=True)
                 
                 # if profile and iterationCount == iter_to_capture_start:
                 #     print("profiler started.")
@@ -136,6 +137,7 @@ class GpuProfiler:
 
                 data, target = data.to(device), target.to(device)
                 optimizer.zero_grad()
+                torch.cuda.synchronize()
                 ev_zero.record()
                 output = model(data)
                 ev_fp.record()
@@ -153,12 +155,14 @@ class GpuProfiler:
                 # bpTime = (time.time() - bp_start) * 1E6
 
                 optimizer.step()
+                ev_opt.record()
                 
                 # if profile and iterationCount == iter_to_capture_end:
                 #     print("profiler ended.")
                 #     profiler.stop()
 
-                ev_bp.synchronize()
+                # ev_bp.synchronize()
+                ev_opt.synchronize()
             
                 stop_time = time.time()
                 # perf.recordTime(0, 1000 * ev_start.elapsed_time(ev_load))
@@ -169,13 +173,13 @@ class GpuProfiler:
                 # perf.recordTime(4, bpTime)
                 # perf.recordTime(4, 1000 * ev_fp.elapsed_time(ev_bp))
                 # perf.recordTime(5, 1000 * ev_bp.elapsed_time(ev_opt))
-                # perf.recordTime(6, 1000 * ev_start.elapsed_time(ev_opt))
+                perf.recordTime(6, 1000 * ev_zero.elapsed_time(ev_opt))
                 perf.recordTime(7, (stop_time - start_time) * 1000 * 1000)
             
                 iterationCount += 1
 
     def benchModel(self, model, inputSize, batchSize, profile=False):
-        train_dataset = self.SyntheticDataset(inputSize, batchSize * 200) # 30) # 
+        train_dataset = self.SyntheticDataset(inputSize, batchSize * 1000, 100) # 30) # 
         train_loader = torch.utils.data.DataLoader(
                 train_dataset, batch_size=batchSize, shuffle=False, pin_memory=True, drop_last=True)
         
@@ -184,7 +188,8 @@ class GpuProfiler:
 
         perfStat = Perf({0: 'load', 1: 'zero', 2: 'fp', 3: 'loss', 4: 'bp', 5: 'opt', 6: 'total/bat', 7: 'totalCPU'})
         self.train(model.cuda(), self.device, train_loader, criterion, optimizer, 1, perfStat, profile)
-        gpuTime = perfStat.getStat(2) + perfStat.getStat(4)
+        # gpuTime = perfStat.getStat(2) + perfStat.getStat(4)
+        gpuTime = perfStat.getStat(6) # Includes loss and optimizer.
         if profile:
             print("%.f + %.f" % (perfStat.getStat(2), perfStat.getStat(4)))
         return gpuTime, perfStat.getStat(2), perfStat.getStat(4)
