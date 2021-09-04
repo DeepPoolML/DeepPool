@@ -51,5 +51,19 @@ class ClusterClient:
                 retryCount += 1
     
     def submitTrainingJob(self, jobName: str, trainingJobInJSON: str):
-        # self.proxy.poke()
+        f = open(jobName + ".json", "w")
+        f.write(trainingJobInJSON)
+        f.close()
+        print("Saved the training job at: " + jobName + ".json")
         self.proxy.scheduleTraining(jobName, trainingJobInJSON)
+
+    def submitSavedTrainingJob(self, path):
+        f = open(path, "r")
+        trainingJobInJSON = f.read()
+        f.close()
+        self.proxy.scheduleTraining(path[:-5], trainingJobInJSON)
+
+if __name__ == "__main__":
+    if len(sys.argv) == 2:
+        cc = ClusterClient()
+        cc.submitSavedTrainingJob(sys.argv[1])
