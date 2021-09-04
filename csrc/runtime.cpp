@@ -199,8 +199,8 @@ int main(int argc, char** argv) {
   
   std::string logFilePath = format("%scpprt%d.out", ctx.logdir, ctx.rank);
   Logger::get().setLogFile(logFilePath.c_str(), true);
-  // Logger::get().setLogLevel(DEBUG);
-  Logger::get().setLogLevel(NOTICE);
+  Logger::get().setLogLevel(DEBUG);
+  // Logger::get().setLogLevel(NOTICE);
 
   // Retrieve homedir path.
   if ((ctx.homedir = getenv("HOME")) == NULL) {

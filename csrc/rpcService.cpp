@@ -131,9 +131,16 @@ RuntimeServiceImpl::ScheduleTraining(ServerContext* context,
   
   c10::Device dev(c10::DeviceType::CUDA, rtctx->device);
   DP_LOG(DEBUG, "dev constructed.");
-  std::unique_ptr<CommunicationHandler> commHandler =
-      std::make_unique<CommunicationHandlerGRPC>(
+
+  std::unique_ptr<CommunicationHandler> commHandler;
+  if (strcmp(rtctx->c10dBackend, "nccl") == 0) {
+    commHandler = std::make_unique<CommunicationHandlerNCCL>(
           rtctx, name, worldSize, tensorTags, rank, jobRankToGlobalRank, dev);
+  } else if (strcmp(rtctx->c10dBackend, "grpc") == 0) {
+    commHandler = std::make_unique<CommunicationHandlerGRPC>(
+          rtctx, name, worldSize, tensorTags, rank, jobRankToGlobalRank, dev);
+  }
+  
   DP_LOG(DEBUG, "commHandler constructed.");
   auto runnableModule = std::make_unique<RunnableModule>(rtctx, jobSpec, commHandler.get(), dev);
   DP_LOG(DEBUG, "runnableModule constructed.");

@@ -45,7 +45,7 @@ JobContext::JobContext(std::unique_ptr<RunnableModule> model, std::string name,
   , device(device)
   , epoch(0)
   , iter(0)
-  , itersToTrain(1000) // = len(dataLoader) if dataLoader != None else None #TODO: this is a temporary hack..
+  , itersToTrain(2) // = len(dataLoader) if dataLoader != None else None #TODO: this is a temporary hack..
   , state(JobState::INIT)
   , timers()
   , modelToVerify()

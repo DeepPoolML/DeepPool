@@ -103,6 +103,7 @@ CommunicationHandlerGRPC::send(const torch::Tensor& tensor, int tag, int dest,
   UNUSED(async);
   RuntimeClient* destClient;
   {
+    DP_LOG(DEBUG, "Grabbing a lock");
     std::lock_guard<std::mutex> lock(_mutex);
     auto search = clientPool.find(dest);
     if (search == clientPool.end()) {
@@ -116,6 +117,7 @@ CommunicationHandlerGRPC::send(const torch::Tensor& tensor, int tag, int dest,
       DP_LOG(DEBUG, "Poked dest:%d", dest);
     }
     destClient = clientPool[dest].get();
+    DP_LOG(DEBUG, "Releasing a lock");
   }
 
   std::string tsrData;
@@ -135,6 +137,7 @@ CommunicationHandlerGRPC::recv(torch::Tensor& tensor, int tag, int src,
 {
   UNUSED(async);
   UNUSED(src);
+  DP_LOG(DEBUG, "Grabbing a lock");
   std::unique_lock<std::mutex> lock(_mutex);
   bool found = false;
   while (!found) {
@@ -149,11 +152,14 @@ CommunicationHandlerGRPC::recv(torch::Tensor& tensor, int tag, int src,
       found = true;
     } else {
       // This is very hacky... implement thread queue. and async mode.
+      // DP_LOG(DEBUG, "Releasing a lock");
       lock.unlock();
       Cycles::sleep(100);
+      // DP_LOG(DEBUG, "Grabbing a lock");
       lock.lock();
     }
   }
+  DP_LOG(DEBUG, "Releasing a lock");
 }
 
 void
@@ -276,6 +282,7 @@ CommunicationHandlerNCCL::recv(torch::Tensor& tensor, int tag, int src,
     bool async)
 {
   UNUSED(tag);
+  DP_LOG(DEBUG, "NCCL recv.");
   cudaStream_t recv_stream = recv_streams[src];
 
   /* ensure ncclRecv happens after most recent kernel has finished on rtctx->torch_stream */

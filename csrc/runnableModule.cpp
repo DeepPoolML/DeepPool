@@ -32,6 +32,7 @@ Variable
 TsrXferFunc::forward(AutogradContext* ctx, Variable x, TsrXfer* xfer)
 {
   ctx->saved_data["xfer"] = reinterpret_cast<int64_t>(xfer);
+  DP_LOG(DEBUG, "TsrXferFunc::forward entered.. type: %d", xfer->type);
 
   if (xfer->type == TsrXfer::Send) {
     std::vector<torch::Tensor> splittedTsrs =
@@ -61,10 +62,15 @@ TsrXferFunc::forward(AutogradContext* ctx, Variable x, TsrXfer* xfer)
       DP_LOG(DEBUG, "Receiving tag:%d from R:%d with tensor: %s", tag, src,
           tsr.toString().c_str());
       xfer->commHandler->recv(tsr, tag, src, /*async*/ false);
+      DP_LOG(DEBUG, "Received tag:%d from R:%d with tensor: %s", tag, src,
+          tsr.toString().c_str());
       tsrList.push_back(tsr);
     }
     tsrList.push_back(x);
-    return torch::cat(tsrList, xfer->splitCatDim);
+    DP_LOG(DEBUG, "Concating %d tensors", static_cast<int>(tsrList.size()));
+    auto concated = torch::cat(tsrList, xfer->splitCatDim);
+    DP_LOG(DEBUG, "Concated tensor: %s", tsrSizeToStr(concated).c_str());
+    return concated;
   } else {
     DP_LOG(ERROR, "xfer type is %d, which is not supported.", xfer->type);
     return x;
@@ -182,7 +188,6 @@ RunnableModule::RunnableModule(RuntimeContext* rtctx,
       prevLayers.push_back(&layers[plid]);
     }
     layers.emplace_back(module, id, layerIsActive, detachInput, prevLayers);
-    DP_LOG(DEBUG, " layer's module is moved to device and set for train mode.");
 
     // Communications.
     if (layerIsActive && ldsc.contains("tensorTx")) {
@@ -213,10 +218,19 @@ RunnableModule::RunnableModule(RuntimeContext* rtctx,
           xfer.xferTagAndRank.push_back(std::make_pair(tag, dest));
           xfer.xferTagAndRankBack.push_back(std::make_pair(tagB, dest));
         }
-        int remainder = ldsc["outputDim"][xfer.splitCatDim].get<int>() - xferSampleSum;
+
+        int remainder;
+        if (xfer.splitCatDim == 0) {
+          DP_LOG(DEBUG, "total samples for layer: %d", ldsc["config"][0].get<int>());
+          remainder = ldsc["config"][0].get<int>() - xferSampleSum;
+        } else { // Other than sample dimension, use outputDim as its dimension is ordered correctly.
+          remainder = ldsc["outputDim"][xfer.splitCatDim - 1].get<int>() - xferSampleSum;
+        }
+        
         DP_LOG(DEBUG, "remainder: %d, sum: %d", remainder, xferSampleSum);
         xfer.splitSizes.push_back(remainder);
-        layers.end()->xferOuts.push_back(std::move(xfer));
+        layers.back().xferOuts.push_back(std::move(xfer));
+        DP_LOG(DEBUG, "xferOut registered. len(layer->xferOuts): %d", static_cast<int>(layers.back().xferOuts.size()));
       }
     }
 
@@ -237,10 +251,18 @@ RunnableModule::RunnableModule(RuntimeContext* rtctx,
         xfer.xferTagAndRank.push_back(std::make_pair(tag, src));
         xfer.xferTagAndRankBack.push_back(std::make_pair(tagB, src));
       }
-      int remainder = ldsc["inputDim"][xfer.splitCatDim].get<int>() - xferSampleSum;
+
+      int remainder;
+      if (xfer.splitCatDim == 0) {
+        remainder = ldsc["config"][0].get<int>() - xferSampleSum;
+      } else { // Other than sample dimension, use inputDim as its dimension is ordered correctly.
+        remainder = ldsc["inputDim"][xfer.splitCatDim - 1].get<int>() - xferSampleSum;
+      }
+
       DP_LOG(DEBUG, "remainder: %d, sum: %d", remainder, xferSampleSum);
       xfer.splitSizes.push_back(remainder);
-      layers.end()->xferIns.push_back(std::move(xfer));
+      layers.back().xferIns.push_back(std::move(xfer));
+      DP_LOG(DEBUG, "xferIn registered. len(layer->xferIns): %d", static_cast<int>(layers.back().xferIns.size()));
     }
 
     // std::string moduleName = format("%d:%s", ldsc["id"].get<int>(), name);
@@ -252,6 +274,11 @@ RunnableModule::RunnableModule(RuntimeContext* rtctx,
     DP_LOG(DEBUG, " layer's module is pushed back.");
     DP_LOG(DEBUG, " id: %d and moduleListsize: %d", id, (int)moduleList.size());
     assert(id + 1 == (int)moduleList.size());
+  }
+
+  for (auto& layer : layers) {
+    DP_LOG(DEBUG, "lid: %d, xferOuts: %d, xferIns: %d", layer.id,
+        static_cast<int>(layer.xferOuts.size()), static_cast<int>(layer.xferIns.size()));
   }
 }
 
@@ -307,11 +334,6 @@ RunnableModule::forwardAStep()
     input = fpInput; // TODO: cleanup..
   } else if (layer->prevLayers.size() == 1) {
     input = layer->prevLayers[0]->output; //.detach_();
-    if (layer->detachInput) {
-      layer->detachedInput = input.detach();
-      layer->detachedInput.requires_grad_();
-      input = layer->detachedInput;
-    }
   } else {
     DIE("%d-th layer has more than 2 previous layers (except concat), which"
         " is not supported.", layer->id);
@@ -335,6 +357,12 @@ RunnableModule::forwardAStep()
       input = torch::empty(0);
       input = input.to(device, /*non_blocking*/ true, /*copy*/ false);
     }
+    if (layer->detachInput) {
+      DP_LOG(DEBUG, "Detaching input");
+      layer->detachedInput = input.detach();
+      layer->detachedInput.requires_grad_();
+      input = layer->detachedInput;
+    }
 
     // Recv samples before running this layer.
     for (TsrXfer& xfer : layer->xferIns) {
@@ -349,6 +377,7 @@ RunnableModule::forwardAStep()
     DP_LOG(DEBUG, "module.forward called.");
 
     // Send samples after running this layer.
+    DP_LOG(DEBUG, "len(layer->xferOuts): %d", static_cast<int>(layer->xferOuts.size()));
     for (TsrXfer& xfer : layer->xferOuts) {
       output = TsrXferFunc::apply(output, &xfer);
       DP_LOG(DEBUG, "Split & sent samples.");
