@@ -103,6 +103,8 @@ struct Layer {
   LayerStatus status;
   std::vector<TsrXfer> xferIns;
   std::vector<TsrXfer> xferOuts;
+  std::vector<int64_t> emptyInSizes;  // primarily used for creating empty tensors for recv.
+  std::vector<int64_t> emptyOutSizes; // primarily used for creating empty tensors for recv.
 };
 
 /**

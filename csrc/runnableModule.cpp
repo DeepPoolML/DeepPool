@@ -44,7 +44,7 @@ TsrXferFunc::forward(AutogradContext* ctx, Variable x, TsrXfer* xfer)
       Rank dest = xfer->xferTagAndRank[i].second;
       torch::Tensor tsr = splittedTsrs[i];
       DP_LOG(DEBUG, "Sending tag:%d to R:%d with %s", tag, dest,
-          tsrToStr(tsr).c_str());
+          tsrSizeToStr(tsr).c_str());
       xfer->commHandler->send(tsr, tag, dest, /*async*/ false);
     }
     return splittedTsrs[i];
@@ -58,12 +58,12 @@ TsrXferFunc::forward(AutogradContext* ctx, Variable x, TsrXfer* xfer)
       Rank src = xfer->xferTagAndRank[i].second;
       inputSizes[xfer->splitCatDim] = xfer->splitSizes[i];
       torch::Tensor tsr = torch::empty(inputSizes);
-      tsr.to(xfer->commHandler->getDev(), /*non_blocking*/ true, /*copy*/ false);
-      DP_LOG(DEBUG, "Receiving tag:%d from R:%d with tensor: %s", tag, src,
-          tsr.toString().c_str());
+      tsr = tsr.to(xfer->commHandler->getDev(), /*non_blocking*/ true, /*copy*/ false);
+      // DP_LOG(DEBUG, "Receiving tag:%d from R:%d with tensor: %s, %s, %s", tag, src,
+      //     tsr.toString().c_str(), tsrSizeToStr(tsr).c_str(), tsrToStr(tsr).c_str());
       xfer->commHandler->recv(tsr, tag, src, /*async*/ false);
-      DP_LOG(DEBUG, "Received tag:%d from R:%d with tensor: %s", tag, src,
-          tsr.toString().c_str());
+      DP_LOG(DEBUG, "Received tag:%d from R:%d with tensor: %s, %s", tag, src,
+          tsr.toString().c_str(), tsrSizeToStr(tsr).c_str());
       tsrList.push_back(tsr);
     }
     tsrList.push_back(x);
@@ -82,6 +82,7 @@ TsrXferFunc::backward(AutogradContext* ctx, variable_list grad_output)
 {
   TsrXfer* xfer = reinterpret_cast<TsrXfer*>(ctx->saved_data["xfer"].toInt());
   Variable x = grad_output[0];
+  DP_LOG(DEBUG, "grad_output size: %d", (int)grad_output.size());
 
   if (xfer->type == TsrXfer::Recv) {
     std::vector<torch::Tensor> splittedTsrs =
@@ -93,10 +94,18 @@ TsrXferFunc::backward(AutogradContext* ctx, variable_list grad_output)
       Rank dest = xfer->xferTagAndRankBack[i].second;
       torch::Tensor tsr = splittedTsrs[i];
       DP_LOG(DEBUG, "Sending tag:%d to R:%d with %s", tag, dest,
-          tsrToStr(tsr).c_str());
+          tsrSizeToStr(tsr).c_str());
       xfer->commHandler->send(tsr, tag, dest, /*async*/ false);
     }
-    return { splittedTsrs[i] };
+    
+    variable_list grad_inputs(2);
+    grad_inputs[0] = splittedTsrs[i];
+
+    DP_LOG(DEBUG, "Remainder tensor after sending grads out. %s, %s",
+        splittedTsrs[i].toString().c_str(), tsrSizeToStr(splittedTsrs[i]).c_str());
+    
+    return grad_inputs;
+    // return { splittedTsrs[i] };
   }
   else if (xfer->type == TsrXfer::Send) {
     std::vector<int64_t> inputSizes = x.sizes().vec();
@@ -107,14 +116,18 @@ TsrXferFunc::backward(AutogradContext* ctx, variable_list grad_output)
       Rank src = xfer->xferTagAndRankBack[i].second;
       inputSizes[xfer->splitCatDim] = xfer->splitSizes[i];
       torch::Tensor tsr = torch::empty(inputSizes);
-      tsr.to(xfer->commHandler->getDev(), /*non_blocking*/ true, /*copy*/ false);
+      tsr = tsr.to(xfer->commHandler->getDev(), /*non_blocking*/ true, /*copy*/ false);
       DP_LOG(DEBUG, "Receiving tag:%d from R:%d with tensor: %s", tag, src,
           tsr.toString().c_str());
       xfer->commHandler->recv(tsr, tag, src, /*async*/ false);
       tsrList.push_back(tsr);
     }
     tsrList.push_back(x);
-    return { torch::cat(tsrList, xfer->splitCatDim) };
+    // return { torch::cat(tsrList, xfer->splitCatDim) };
+
+    variable_list grad_inputs(2);
+    grad_inputs[0] = torch::cat(tsrList, xfer->splitCatDim);
+    return grad_inputs;
   }
   else {
     DP_LOG(ERROR, "xfer type is %d, which is not supported.", xfer->type);
@@ -181,6 +194,7 @@ RunnableModule::RunnableModule(RuntimeContext* rtctx,
     bool detachInput = true;
     if (name == "ReLU2d" || name == "ReLU1d") {
       detachInput = false;
+      DP_LOG(DEBUG, "ReLU. detachInput: %d", detachInput);
     }
     std::vector<Layer*> prevLayers;
     for (auto& plidjson : ldsc["prevLayers"]) {
@@ -189,6 +203,16 @@ RunnableModule::RunnableModule(RuntimeContext* rtctx,
     }
     layers.emplace_back(module, id, layerIsActive, detachInput, prevLayers);
 
+    // EmptyTensorSizes.
+    layers.back().emptyInSizes.push_back(0);
+    for (int size : ldsc["inputDim"]) {
+      layers.back().emptyInSizes.push_back(size);
+    }
+    layers.back().emptyOutSizes.push_back(0);
+    for (int size : ldsc["outputDim"]) {
+      layers.back().emptyOutSizes.push_back(size);
+    }
+    
     // Communications.
     if (layerIsActive && ldsc.contains("tensorTx")) {
       std::map<int, std::vector<json> > sendListDict;
@@ -230,7 +254,8 @@ RunnableModule::RunnableModule(RuntimeContext* rtctx,
         DP_LOG(DEBUG, "remainder: %d, sum: %d", remainder, xferSampleSum);
         xfer.splitSizes.push_back(remainder);
         layers.back().xferOuts.push_back(std::move(xfer));
-        DP_LOG(DEBUG, "xferOut registered. len(layer->xferOuts): %d", static_cast<int>(layers.back().xferOuts.size()));
+        DP_LOG(DEBUG, "xferOut registered. len(layer->xferOuts): %d",
+            static_cast<int>(layers.back().xferOuts.size()));
       }
     }
 
@@ -354,14 +379,16 @@ RunnableModule::forwardAStep()
     DP_LOG(DEBUG, "Layer %d is active.", layer->id);
     if (!input.defined()) {
       DP_LOG(DEBUG, "input is not defined. Using empty tensor.");
-      input = torch::empty(0);
+      input = torch::empty(layer->emptyInSizes);
       input = input.to(device, /*non_blocking*/ true, /*copy*/ false);
+      DP_LOG(DEBUG, "Empty input tensor: %s", input.toString().c_str());
     }
     if (layer->detachInput) {
       DP_LOG(DEBUG, "Detaching input");
       layer->detachedInput = input.detach();
       layer->detachedInput.requires_grad_();
       input = layer->detachedInput;
+      DP_LOG(DEBUG, "Detached input tensor: %s", input.toString().c_str());
     }
 
     // Recv samples before running this layer.
@@ -459,33 +486,47 @@ RunnableModule::backwardAStep()
   }
   DP_LOG(DEBUG, "lid:%d.", layer->id);
 
-  bool shouldInvokeBackward = layer->nextLayers.size() > 0;
-  std::vector<torch::Tensor> gradInputs;
-  if (layer->nextLayers.size() == 0) {
-    DP_LOG(DEBUG, "No nextLayers.");
-  } else if (layer->nextLayers.size() >= 1) {
-    for (auto nextLayerPtr : layer->nextLayers) {
-      if (nextLayerPtr->detachInput) {
-        gradInputs.push_back(nextLayerPtr->detachedInput.grad());
-        // DP_LOG(DEBUG, "nextLayer detachedInput? %d, added to gradInputs: %s",
-        //     nextLayerPtr->detachInput,
-        //     tsrToStr(nextLayerPtr->detachedInput.grad()).c_str());
-        shouldInvokeBackward = shouldInvokeBackward && nextLayerPtr->detachInput;
-        // WARNING! this is a bit hacky... it assumes all children layers detach or not
-        // together.
-      }
-    }
-    // gradInputs.push_back(layer->nextLayers[0]->gradOut);
-  }
-  // else if (ldsc["name"].get<std::string>() == std::string("concat")) {
-  //   DIE("%d-th layer is concat, which is not implemented.", lid);
-  //   //TODO: implement.
-  //   // skipSinceNotReady should be updated here.
-  // } 
-
-  DP_LOG(DEBUG, "gradInputs.size(): %d", (int)gradInputs.size());
-
   if (layer->active) {
+
+    bool shouldInvokeBackward = layer->nextLayers.size() > 0;
+    std::vector<torch::Tensor> gradInputs;
+    if (layer->nextLayers.size() == 0) {
+      DP_LOG(DEBUG, "No nextLayers.");
+    } else if (layer->nextLayers.size() >= 1) {
+      for (auto nextLayerPtr : layer->nextLayers) {
+        if (nextLayerPtr->detachInput) {
+          torch::Tensor grad;
+          if (nextLayerPtr->detachedInput.defined()) {
+            grad = nextLayerPtr->detachedInput.grad();
+          } else {
+            DP_LOG(DEBUG, "nextLayerPtr->detachInput is not defined. Using empty tensor.");
+            grad = torch::empty(layer->emptyOutSizes);
+            grad = grad.to(device, /*non_blocking*/ true, /*copy*/ false);
+          }
+          DP_LOG(DEBUG, "nextLayerPtr->detachedInput: %s, grad: %s",
+              nextLayerPtr->detachedInput.toString().c_str(),
+              tsrSizeToStr(grad).c_str());
+          
+          gradInputs.push_back(grad);
+          // DP_LOG(DEBUG, "nextLayer detachedInput? %d, added to gradInputs: %s",
+          //     nextLayerPtr->detachInput,
+          //     tsrSizeToStr(nextLayerPtr->detachedInput.grad()).c_str());
+          // shouldInvokeBackward = shouldInvokeBackward && nextLayerPtr->detachInput;
+          // WARNING! this is a bit hacky... it assumes all children layers detach or not
+          // together.
+        }
+      }
+      // gradInputs.push_back(layer->nextLayers[0]->gradOut);
+    }
+    // else if (ldsc["name"].get<std::string>() == std::string("concat")) {
+    //   DIE("%d-th layer is concat, which is not implemented.", lid);
+    //   //TODO: implement.
+    //   // skipSinceNotReady should be updated here.
+    // }
+    DP_LOG(DEBUG, "shouldInvokeBackward: %d, gradInputs.size(): %d", shouldInvokeBackward, (int)gradInputs.size());
+
+
+
     DP_LOG(DEBUG, "Layer %d is active.", layer->id);
     // if (!input.defined()) {
     //   DP_LOG(DEBUG, "input is not defined. Using empty tensor.");

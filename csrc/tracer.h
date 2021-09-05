@@ -61,6 +61,9 @@ class CudaTimer {
   }
   int count() { return static_cast<int>(elapsedTimes.size()); }
   float getAvg(size_t skipIterCount = 0) {
+    if (skipIterCount >= elapsedTimes.size()) {
+      skipIterCount = 0;
+    }
     float sum = 0;
     for (size_t i = skipIterCount; i < elapsedTimes.size(); ++i) {
       sum += elapsedTimes[i];
@@ -72,6 +75,9 @@ class CudaTimer {
   }
 
   float getPercentile(float percentile, size_t skipIterCount) {
+    if (skipIterCount >= elapsedTimes.size()) {
+      skipIterCount = 0;
+    }
     std::vector<float> sortedTimes(elapsedTimes.begin() + skipIterCount,
                                    elapsedTimes.end());
     std::sort(sortedTimes.begin(), sortedTimes.end());
