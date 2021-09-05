@@ -155,13 +155,20 @@ class CostSim:
         namesIn2d = ["conv2d", "maxPool2d", "avgPool2d", "adAvgPool2d", "ReLU2d", "concat"]
         namesIn1d = ["linear", "ReLU1d"]
 
+        # Don't allow dynamic scaling from real layers to relu.
+        reluMultiple = 1
+        if destLayer.name in ["ReLU2d", "ReLU1d", "flatten"]:
+            reluMultiple = 1000
+
         if srcLayer.name in namesIn2d and \
                 destLayer.name in namesIn2d + ["flatten"]:
-            return self.calc2dActivationTime(srcLayer, destLayer, srcConfig, destConfig, noGpuOverlap)
-            #srcConfig, destConfig, destLayer.inputDim)
+            actTime = self.calc2dActivationTime(srcLayer, destLayer, srcConfig, destConfig, noGpuOverlap)
+            return (actTime[0] * reluMultiple, actTime[1])
+            
         elif srcLayer.name in namesIn1d + ["flatten"] and \
                 destLayer.name in namesIn1d:
-            return self.calcLinearActivationTime(srcLayer, destLayer, srcConfig, destConfig, noGpuOverlap)
+            actTime = self.calcLinearActivationTime(srcLayer, destLayer, srcConfig, destConfig, noGpuOverlap)
+            return (actTime[0] * reluMultiple, actTime[1])
         else:
             print("Can't compute input transfer time from %s to %s." % (srcLayer.name, destLayer.name))
 
