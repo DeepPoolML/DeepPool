@@ -169,11 +169,19 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
 
     DP_LOG(DEBUG, "JobState::INIT.");
     // TODO: load data from real data loader.
-    auto x = torch::randn({16, 3, 224, 224});
+    std::vector<int64_t> inputSizes;
+    inputSizes.push_back(job->model->initialBatchSize);
+    for (int size : job->model->layersInJson[0]["inputDim"]) {
+      inputSizes.push_back(size);
+    }
+    auto x = torch::randn(inputSizes);
+    // auto x = torch::randn({16, 3, 224, 224});
     // x = x.to(job->device);
     // TODO: replace this fake targets with real ones.
+    int targetCount = job->model->layersInJson.back()["config"][0];
+    DP_LOG(DEBUG, "targetCount: %d", targetCount);
     auto targetOpts = torch::TensorOptions().dtype(torch::kInt64);
-    auto targets = torch::randint(/*low=*/0, /*high=*/1000, {16}, targetOpts);
+    auto targets = torch::randint(/*low=*/0, /*high=*/1000, {targetCount}, targetOpts);
     // targets = targets.to(job->device);
     // DP_LOG(DEBUG, "targets: %s dim: %d sizes: %d", tsrToStr(targets).c_str(),
     //     (int)targets.dim(), (int)targets.sizes().size());
