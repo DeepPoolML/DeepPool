@@ -305,6 +305,18 @@ RunnableModule::RunnableModule(RuntimeContext* rtctx,
     DP_LOG(DEBUG, "lid: %d, xferOuts: %d, xferIns: %d", layer.id,
         static_cast<int>(layer.xferOuts.size()), static_cast<int>(layer.xferIns.size()));
   }
+
+
+  /* set up fake data pipelines for input + target */
+  std::vector<int64_t> inputSizes;
+  inputSizes.push_back(initialBatchSize);
+  for (int size : layersInJson[0]["inputDim"]) inputSizes.push_back(size);
+  auto inputFn = [=] { return torch::randn(inputSizes); };
+  input_pipeline = TensorGeneratorPipeline(inputFn, rtctx);
+  int targetCount = layersInJson.back()["config"][0];
+  auto targetOpts = torch::TensorOptions().dtype(torch::kInt64);
+  auto targetFn = [=] { return torch::randint(/*low=*/0, /*high=*/1000, {targetCount}, targetOpts); };
+  target_pipeline = TensorGeneratorPipeline(targetFn, rtctx);
 }
 
 /**
@@ -324,12 +336,12 @@ RunnableModule::getParameters(std::vector<torch::Tensor>* parameters)
  * Initiate an iteration.
  */
 void
-RunnableModule::iterInit(torch::Tensor x, torch::Tensor targets)
+RunnableModule::iterInit()
 {
   layerQ.clear();
   layerQ.push_back(&layers[0]);
-  fpInput = x.to(device, /*non_blocking*/ true, /*copy*/ false);
-  fpTargets = targets.to(device, /*non_blocking*/ true, /*copy*/ false);
+  fpInput = input_pipeline.GetNext();
+  fpTargets = target_pipeline.GetNext();
   fpOutput.reset();
   fpLoss.reset();
 }

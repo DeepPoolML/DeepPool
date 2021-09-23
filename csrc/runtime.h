@@ -51,7 +51,7 @@ struct RuntimeContext {
       grpcService(), grpcServer(), taskManager(), shutdownRequested(),
       commHandlerMap(), rankToIpAndPort(), grpcCommReady(),
       ncclGroupId(), ncclGroupSize(), ranks(), ncclCommReady(), ncclCommObj(),
-      torch_stream(c10::cuda::getStreamFromPool(true)) {
+      torch_stream(c10::cuda::getStreamFromPool(true)), xfer_stream(c10::cuda::getStreamFromPool(true)) {
         c10::cuda::setCurrentCUDAStream(torch_stream);
       }
 
@@ -94,7 +94,7 @@ struct RuntimeContext {
   std::vector<int> ranks;
   std::atomic<bool> ncclCommReady{false};
   ncclComm_t ncclCommObj;
-  c10::cuda::CUDAStream torch_stream;
+  c10::cuda::CUDAStream torch_stream, xfer_stream;
 };
 
 

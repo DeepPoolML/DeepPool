@@ -101,6 +101,8 @@ RuntimeServiceImpl::ScheduleTraining(ServerContext* context,
 {
   UNUSED(context);
 
+  c10::cuda::setCurrentCUDAStream(rtctx->torch_stream);
+
   //TODO(seojin): currently ignoring request->data_dir();
 
   DP_LOG(DEBUG, "Received ScheduleTraining().");
