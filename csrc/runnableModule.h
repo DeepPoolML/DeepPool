@@ -36,7 +36,7 @@ using torch::autograd::variable_list;
  * Forward declarations. Do not include headers unless necessary.
  */
 class CommunicationHandler;
-
+struct Layer;
 
 typedef int Tag;
 typedef int Rank;
@@ -52,14 +52,23 @@ struct TsrXfer {
   Type type;
   std::vector<int64_t> splitSizes; // used only for send's forward or recv's backward.
   int splitCatDim;
+  int prevLayerId;
+  int nextLayerId;
   std::vector<std::pair<Tag, Rank> > xferTagAndRank;
   std::vector<std::pair<Tag, Rank> > xferTagAndRankBack;
+  Layer* recevingLayerForSend; // Used for delayed send.
 };
 
 class TsrXferFunc : public torch::autograd::Function<TsrXferFunc> {
  public:
   static Variable forward(AutogradContext* ctx, Variable x, TsrXfer* xfer);
   static variable_list backward(AutogradContext* ctx, variable_list grad_output);
+};
+
+struct DelayedSend {
+  torch::Tensor tensor;
+  int tag;
+  int desk;
 };
 
 /**
@@ -72,13 +81,20 @@ enum class LayerStatus {
   PENDING_BP      // pending backward pass (last done job was forward).
 };
 
+
+enum class SpecialModuleTypes {
+  NOTSPECIAL = 0,
+  CONCAT
+};
+
 /**
  * Description / context of a layer for training.
  */
 struct Layer {
-  Layer(torch::jit::Module module, int id, bool active, bool detachInput,
-      std::vector<Layer*>& prevLayerVec)
+  Layer(torch::jit::Module module, SpecialModuleTypes specialModule, int id, bool active,
+      bool detachInput, std::vector<Layer*>& prevLayerVec)
     : module(module)
+    , specialModule(specialModule)
     , id(id)
     , active(active)
     , detachInput(detachInput)
@@ -97,18 +113,21 @@ struct Layer {
   }
   
   torch::jit::Module module;
+  const SpecialModuleTypes specialModule; // 0: not special, use module. 1: concat.
   const int id;
   const bool active; // Inactive means no samples assigned for this runtime.
   const bool detachInput; // Detach input before running this layer.
   std::vector<Layer*> prevLayers;
   std::vector<Layer*> nextLayers;
   torch::Tensor output;  // Used during forward pass.
+  std::map<int, torch::Tensor> outputsAfterXfer;  // Output specific to the nextLayerId (key).
   torch::Tensor detachedInput; // Used during backward pass.
   LayerStatus status;
   std::vector<TsrXfer> xferIns;
   std::vector<TsrXfer> xferOuts;
   std::vector<int64_t> emptyInSizes;  // primarily used for creating empty tensors for recv.
   std::vector<int64_t> emptyOutSizes; // primarily used for creating empty tensors for recv.
+  std::vector<DelayedSend> sendOnLayerVisit;
 };
 
 

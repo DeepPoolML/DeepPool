@@ -55,8 +55,18 @@ class Layer:
             prop["gpuAssignment"] = self.gpuAssignment
 
         if self.module != None:
-            fakeInput = torch.zeros(self.inputDim)
-            traced = torch.jit.script(self.module, fakeInput)
+            if self.name == "concat":
+                fakeInputs = []
+                for prevLayer in self.prevLayers:
+                    inputSize = [1] + list(prevLayer.outputDim)
+                    print("id: ", self.id, " Concat's inputSize: ", inputSize)
+                    fakeInputs.append(torch.zeros(inputSize))
+                traced = torch.jit.script(self.module, fakeInputs)
+            else:
+                inputSize = [1] + (list(self.inputDim) if type(self.inputDim) == tuple else [self.inputDim])
+                print("id: ", self.id, " non-concat inputSize: ", inputSize)
+                fakeInput = torch.zeros(tuple(inputSize))
+                traced = torch.jit.script(self.module, fakeInput)
             saveLocation = "modules/scriptmodule_%d.pt"%self.id
             torch.jit.save(traced, saveLocation)
             prop["moduleSavedLocation"] = saveLocation

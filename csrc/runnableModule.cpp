@@ -45,7 +45,9 @@ TsrXferFunc::forward(AutogradContext* ctx, Variable x, TsrXfer* xfer)
       torch::Tensor tsr = splittedTsrs[i];
       DP_LOG(DEBUG, "Sending tag:%d to R:%d with %s", tag, dest,
           tsrSizeToStr(tsr).c_str());
-      xfer->commHandler->send(tsr, tag, dest, /*async*/ false);
+
+      // xfer->recevingLayerForSend->sendOnLayerVisit.emplace_back({tsr, tag, dest});
+      xfer->commHandler->send(tsr, tag, dest, /*async*/ true);
     }
     return splittedTsrs[i];
   }
@@ -176,6 +178,10 @@ RunnableModule::RunnableModule(RuntimeContext* rtctx,
     DP_LOG(DEBUG, " %d-th layer's name: %s, moduleLoc: %s", id, name.c_str(),
         moduleLoc.c_str());
     
+    SpecialModuleTypes specialModule = SpecialModuleTypes::NOTSPECIAL;
+    if (name == "concat") {
+      specialModule = SpecialModuleTypes::CONCAT;
+    }
     torch::jit::Module module = torch::jit::load(std::string(rtctx->homedir) +
         "/DeepPoolRuntime/" + moduleLoc);
     DP_LOG(DEBUG, " layer's module is loaded.");
@@ -192,16 +198,21 @@ RunnableModule::RunnableModule(RuntimeContext* rtctx,
     int layerLocalBatch = ldsc["config"][0].get<int>();
     bool layerIsActive = layerLocalBatch > 0;
     bool detachInput = true;
+    // bool detachInput = false;
     if (name == "ReLU2d" || name == "ReLU1d") {
       detachInput = false;
       DP_LOG(DEBUG, "ReLU. detachInput: %d", detachInput);
+    }
+    if (ldsc["prevLayers"].size() > 1) {
+      detachInput = false;
+      DP_LOG(DEBUG, "More than 1 prevLayer. Detaching isn't supported for multiple inputs. detachInput: %d", detachInput);
     }
     std::vector<Layer*> prevLayers;
     for (auto& plidjson : ldsc["prevLayers"]) {
       int plid = plidjson.get<int>();
       prevLayers.push_back(&layers[plid]);
     }
-    layers.emplace_back(module, id, layerIsActive, detachInput, prevLayers);
+    layers.emplace_back(module, specialModule, id, layerIsActive, detachInput, prevLayers);
 
     // EmptyTensorSizes.
     layers.back().emptyInSizes.push_back(0);
@@ -224,11 +235,15 @@ RunnableModule::RunnableModule(RuntimeContext* rtctx,
         sendListDict[nextLayerId].push_back(item);
       }
       for (const auto& kv : sendListDict) {
+        const int nextLayerId = kv.first;
         const std::vector<json>& sendList = kv.second;
 
         TsrXfer xfer(commHandler);
         xfer.type = TsrXfer::Send;
         xfer.splitCatDim = 0; // Sample dimension.
+        xfer.prevLayerId = id;
+        xfer.nextLayerId = nextLayerId;
+        xfer.recevingLayerForSend = &layers.back();
         int xferSampleSum = 0;
         for (const json& item : sendList) {
           int xferSamples = item["prop"]["xferSamples"].get<int>();
@@ -260,34 +275,50 @@ RunnableModule::RunnableModule(RuntimeContext* rtctx,
     }
 
     if (layerIsActive && ldsc.contains("tensorRx")) {
-      TsrXfer xfer(commHandler);
-      xfer.type = TsrXfer::Recv;
-      xfer.splitCatDim = 0;
-      int xferSampleSum = 0;
-      for (const json& item : ldsc["tensorRx"]) {
-        int xferSamples = item["prop"]["xferSamples"].get<int>();
-        xfer.splitSizes.push_back(xferSamples);
-        xferSampleSum += xferSamples;
-
-        auto xferName = item["name"].get<std::string>();
-        Tag tag = commHandler->getTag(xferName);
-        Tag tagB = commHandler->getTag(xferName + "_back");
-        Rank src = item["src"].get<Rank>();
-        xfer.xferTagAndRank.push_back(std::make_pair(tag, src));
-        xfer.xferTagAndRankBack.push_back(std::make_pair(tagB, src));
+      std::map<int, std::vector<json> > recvListDict;
+      for (auto& item : ldsc["tensorRx"]) {
+        int prevLayerId = item["prop"]["prevLayerId"].get<int>();
+        if (recvListDict.find(prevLayerId) == recvListDict.end()) {
+          recvListDict[prevLayerId] = std::vector<json>();
+        }
+        recvListDict[prevLayerId].push_back(item);
       }
+      for (const auto& kv : recvListDict) {
+        const int prevLayerId = kv.first;
+        const std::vector<json>& recvList = kv.second;
 
-      int remainder;
-      if (xfer.splitCatDim == 0) {
-        remainder = ldsc["config"][0].get<int>() - xferSampleSum;
-      } else { // Other than sample dimension, use inputDim as its dimension is ordered correctly.
-        remainder = ldsc["inputDim"][xfer.splitCatDim - 1].get<int>() - xferSampleSum;
+        TsrXfer xfer(commHandler);
+        xfer.type = TsrXfer::Recv;
+        xfer.splitCatDim = 0;
+        xfer.prevLayerId = prevLayerId;
+        xfer.nextLayerId = id;
+        xfer.recevingLayerForSend = &layers.back();
+        int xferSampleSum = 0;
+        for (const json& item : recvList) {
+          int xferSamples = item["prop"]["xferSamples"].get<int>();
+          xfer.splitSizes.push_back(xferSamples);
+          xferSampleSum += xferSamples;
+
+          auto xferName = item["name"].get<std::string>();
+          Tag tag = commHandler->getTag(xferName);
+          Tag tagB = commHandler->getTag(xferName + "_back");
+          Rank src = item["src"].get<Rank>();
+          xfer.xferTagAndRank.push_back(std::make_pair(tag, src));
+          xfer.xferTagAndRankBack.push_back(std::make_pair(tagB, src));
+        }
+
+        int remainder;
+        if (xfer.splitCatDim == 0) {
+          remainder = ldsc["config"][0].get<int>() - xferSampleSum;
+        } else { // Other than sample dimension, use inputDim as its dimension is ordered correctly.
+          remainder = ldsc["inputDim"][xfer.splitCatDim - 1].get<int>() - xferSampleSum;
+        }
+
+        DP_LOG(DEBUG, "remainder: %d, sum: %d", remainder, xferSampleSum);
+        xfer.splitSizes.push_back(remainder);
+        layers.back().xferIns.push_back(std::move(xfer));
+        DP_LOG(DEBUG, "xferIn registered. len(layer->xferIns): %d", static_cast<int>(layers.back().xferIns.size()));
       }
-
-      DP_LOG(DEBUG, "remainder: %d, sum: %d", remainder, xferSampleSum);
-      xfer.splitSizes.push_back(remainder);
-      layers.back().xferIns.push_back(std::move(xfer));
-      DP_LOG(DEBUG, "xferIn registered. len(layer->xferIns): %d", static_cast<int>(layers.back().xferIns.size()));
     }
 
     // std::string moduleName = format("%d:%s", ldsc["id"].get<int>(), name);
@@ -360,65 +391,83 @@ RunnableModule::forwardAStep()
 
   // TODO: potentially we can make track if the cuda kernel is finished
   // or probably finished.
-  bool skipSinceNotReady = false;
+  // bool skipSinceNotReady = false;
   if (layer->status == LayerStatus::PENDING_BP) {
-    DIE("%d-th layer is processed again.", layer->id);
-  }
-  DP_LOG(DEBUG, "lid:%d.", layer->id);
-
-  torch::Tensor input;
-  if (layer->prevLayers.size() == 0) {
-    input = fpInput; // TODO: cleanup..
-  } else if (layer->prevLayers.size() == 1) {
-    input = layer->prevLayers[0]->output; //.detach_();
-  } else {
-    DIE("%d-th layer has more than 2 previous layers (except concat), which"
-        " is not supported.", layer->id);
-  }
-  // else if (ldsc["name"].get<std::string>() == std::string("concat")) {
-  //   DIE("%d-th layer is concat, which is not implemented.", lid);
-  //   //TODO: implement.
-  //   // skipSinceNotReady should be updated here.
-  // } 
-
-  DP_LOG(DEBUG, "input:%s.", input.toString().c_str());
-
-  if (skipSinceNotReady) {
+    DP_LOG(DEBUG, "%d-th layer is processed again.", layer->id);
     return false;
   }
-
+  DP_LOG(DEBUG, "lid:%d.", layer->id);
+  for (auto& prevLayer : layer->prevLayers) {
+    if (prevLayer->status == LayerStatus::PENDING_FP) {
+      DP_LOG(DEBUG, "Layer %d is skipped for now, must do %d first.",
+          layer->id, prevLayer->id);
+      return false;
+    }
+  }
+  
   if (layer->active) {
     DP_LOG(DEBUG, "Layer %d is active.", layer->id);
-    if (!input.defined()) {
-      DP_LOG(DEBUG, "input is not defined. Using empty tensor.");
-      input = torch::empty(layer->emptyInSizes);
-      input = input.to(device, /*non_blocking*/ true, /*copy*/ false);
-      DP_LOG(DEBUG, "Empty input tensor: %s", input.toString().c_str());
-    }
-    if (layer->detachInput) {
-      DP_LOG(DEBUG, "Detaching input");
-      layer->detachedInput = input.detach();
-      layer->detachedInput.requires_grad_();
-      input = layer->detachedInput;
-      DP_LOG(DEBUG, "Detached input tensor: %s", input.toString().c_str());
+
+    std::vector<torch::Tensor> inputVec;
+    if (layer->prevLayers.size() == 0) {
+      inputVec.push_back(fpInput);
+    } else if (layer->prevLayers.size() >= 1) {
+      std::map<int, torch::Tensor> inputsByPid;
+      for (auto& prevLayer : layer->prevLayers) {
+        torch::Tensor prevOut;
+        if (prevLayer->outputsAfterXfer.count(layer->id) > 0) {
+          prevOut = prevLayer->outputsAfterXfer[layer->id];
+        } else {
+          prevOut = prevLayer->output;
+        }
+        if (!prevOut.defined()) {
+          DP_LOG(DEBUG, "prevOut is not defined. Using empty tensor.");
+          // prevOut = torch::empty(layer->emptyInSizes);
+          prevOut = torch::empty(prevLayer->emptyOutSizes);
+          prevOut = prevOut.to(device, /*non_blocking*/ true, /*copy*/ false);
+          DP_LOG(DEBUG, "Empty input tensor: %s", prevOut.toString().c_str());
+        }
+        if (layer->detachInput) {
+          DP_LOG(DEBUG, "Detaching input");
+          layer->detachedInput = prevOut.detach();  // TODO: support detaching >1 inputs.
+          layer->detachedInput.requires_grad_();
+          prevOut = layer->detachedInput;
+          DP_LOG(DEBUG, "Detached input tensor: %s", prevOut.toString().c_str());
+        }
+        inputsByPid[prevLayer->id] = prevOut;
+      }
+
+      // Recv samples before running this layer.
+      for (TsrXfer& xfer : layer->xferIns) {
+        inputsByPid[xfer.prevLayerId] =
+            TsrXferFunc::apply(inputsByPid[xfer.prevLayerId], &xfer);
+        DP_LOG(DEBUG, "Received & concatenated samples.");
+      }
+      
+      for (auto& plidInputPair : inputsByPid) {
+        DP_LOG(DEBUG, "Adding to inputVec: %s.", tsrSizeToStr(plidInputPair.second).c_str());
+        inputVec.push_back(plidInputPair.second);
+      }
+    } else {
+      DIE("%d-th layer negative number of previous layers??", layer->id);
     }
 
-    // Recv samples before running this layer.
-    for (TsrXfer& xfer : layer->xferIns) {
-      input = TsrXferFunc::apply(input, &xfer);
-      DP_LOG(DEBUG, "Received & concatenated samples.");
+    torch::Tensor output;
+    if (layer->specialModule == SpecialModuleTypes::CONCAT) {
+      // temporary hack to solve the problem of passing list of tensors as input.
+      output = torch::cat(inputVec, 1);
+    } else {
+      std::vector<torch::jit::IValue> ivalVec;
+      ivalVec.push_back(inputVec[0]);
+      output = layer->module.forward(ivalVec).toTensor();
+      DP_LOG(DEBUG, "module.forward called.");
     }
-
-    std::vector<torch::jit::IValue> inputVec;
-    inputVec.push_back(input);
-    DP_LOG(DEBUG, "inputVec is prepared.");
-    torch::Tensor output = layer->module.forward(inputVec).toTensor();
-    DP_LOG(DEBUG, "module.forward called.");
 
     // Send samples after running this layer.
     DP_LOG(DEBUG, "len(layer->xferOuts): %d", static_cast<int>(layer->xferOuts.size()));
     for (TsrXfer& xfer : layer->xferOuts) {
-      output = TsrXferFunc::apply(output, &xfer);
+      torch::Tensor remainingOutput = TsrXferFunc::apply(output, &xfer);
+      layer->outputsAfterXfer[xfer.nextLayerId] = remainingOutput;
       DP_LOG(DEBUG, "Split & sent samples.");
     }
     layer->output = output;
@@ -440,6 +489,7 @@ RunnableModule::forwardAStep()
   }
   
   layer->status = LayerStatus::PENDING_BP;
+  DP_LOG(DEBUG, " ** Layer %d is processed.", layer->id);
   
   for (auto& nextLayerPtr : layer->nextLayers) {
     if (nextLayerPtr->status == LayerStatus::PENDING_FP) {
@@ -494,14 +544,20 @@ RunnableModule::backwardAStep()
   // TODO: potentially we can make track if the cuda kernel is finished
   // or probably finished.
   if (layer->status == LayerStatus::PENDING_FP) {
-    DIE("%d-th layer is processed again.", layer->id);
+    DP_LOG(DEBUG, "%d-th layer is processed again.", layer->id);
   }
   DP_LOG(DEBUG, "lid:%d.", layer->id);
+  for (auto& nextLayer : layer->nextLayers) {
+    if (nextLayer->status == LayerStatus::PENDING_BP) {
+      DP_LOG(DEBUG, "Layer %d is skipped for now, must do %d first.",
+          layer->id, nextLayer->id);
+      return false;
+    }
+  }
 
   if (layer->active) {
-
-    bool shouldInvokeBackward = layer->nextLayers.size() > 0;
-    std::vector<torch::Tensor> gradInputs;
+    // bool shouldInvokeBackward = layer->nextLayers.size() > 0;
+    // std::vector<torch::Tensor> gradInputs;
     if (layer->nextLayers.size() == 0) {
       DP_LOG(DEBUG, "No nextLayers.");
     } else if (layer->nextLayers.size() >= 1) {
@@ -519,13 +575,26 @@ RunnableModule::backwardAStep()
               nextLayerPtr->detachedInput.toString().c_str(),
               tsrSizeToStr(grad).c_str());
           
-          gradInputs.push_back(grad);
+          // gradInputs.push_back(grad);
+          
           // DP_LOG(DEBUG, "nextLayer detachedInput? %d, added to gradInputs: %s",
           //     nextLayerPtr->detachInput,
           //     tsrSizeToStr(nextLayerPtr->detachedInput.grad()).c_str());
           // shouldInvokeBackward = shouldInvokeBackward && nextLayerPtr->detachInput;
           // WARNING! this is a bit hacky... it assumes all children layers detach or not
           // together.
+          
+          if (layer->outputsAfterXfer.count(nextLayerPtr->id)) {
+            DP_LOG(DEBUG, "outputsAfterXfer:%s gradIn:%s", 
+                layer->outputsAfterXfer[nextLayerPtr->id].toString().c_str(),
+                grad.toString().c_str());
+            layer->outputsAfterXfer[nextLayerPtr->id].backward(grad);
+          } else {
+            DP_LOG(DEBUG, "output:%s gradIn:%s", 
+                layer->output.toString().c_str(), grad.toString().c_str());
+            layer->output.backward(grad);
+          }
+          DP_LOG(DEBUG, "layer->output.backward is called.");
         }
       }
       // gradInputs.push_back(layer->nextLayers[0]->gradOut);
@@ -535,7 +604,7 @@ RunnableModule::backwardAStep()
     //   //TODO: implement.
     //   // skipSinceNotReady should be updated here.
     // }
-    DP_LOG(DEBUG, "shouldInvokeBackward: %d, gradInputs.size(): %d", shouldInvokeBackward, (int)gradInputs.size());
+    // DP_LOG(DEBUG, "shouldInvokeBackward: %d, gradInputs.size(): %d", shouldInvokeBackward, (int)gradInputs.size());
 
 
 
@@ -546,16 +615,16 @@ RunnableModule::backwardAStep()
     //   gradIn = gradIn.to(device, /*non_blocking*/ true, /*copy*/ false);
     // }
 
-    if (shouldInvokeBackward) {
-      for (auto gradIn : gradInputs) {
-        DP_LOG(DEBUG, "output:%s gradIn:%s", 
-            layer->output.toString().c_str(), gradIn.toString().c_str());
-        layer->output.backward(gradIn);
-        DP_LOG(DEBUG, "layer->output.backward is called.");
-      }
-    } else {
-      // This layer must have only one following in-place layer.
-    }
+    // if (shouldInvokeBackward) {
+    //   for (auto gradIn : gradInputs) {
+    //     DP_LOG(DEBUG, "output:%s gradIn:%s", 
+    //         layer->output.toString().c_str(), gradIn.toString().c_str());
+    //     layer->output.backward(gradIn);
+    //     DP_LOG(DEBUG, "layer->output.backward is called.");
+    //   }
+    // } else {
+    //   // This layer must have only one following in-place layer.
+    // }
   } else { // This rank doesn't participate for this layer.
     DP_LOG(DEBUG, "Layer %d is not active.", layer->id);
   }

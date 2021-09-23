@@ -606,7 +606,7 @@ class BasicConv2d(nn.Module):
 
 
 
-def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=False, netBw=2.66E5, spatialSplit=False, simResultFilename=None, simOnly=True):
+def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=False, netBw=2.66E5, spatialSplit=False, simResultFilename=None, simOnly=False):
     profiler = GpuProfiler("cuda")
     profiler.loadProfile()
     global cs

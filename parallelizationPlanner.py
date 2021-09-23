@@ -402,10 +402,21 @@ class CostSim:
         self.layers.append(layer)
         return
     
+    class ConcatInputs(nn.Module):
+        def __init__(self, dim: int = 1):
+            super(CostSim.ConcatInputs, self).__init__()
+            self.dim = dim
+            
+        def forward(self, inputList: List[torch.Tensor]):
+            out = torch.cat(inputList, dim=self.dim)
+            return out
+
     def Concat(self, custom_previous_layers: list = None): # concatenates tensors on channel dimension only.
+        module = CostSim.ConcatInputs(dim=1)
+
         if custom_previous_layers == None and len(self.layers) > 0:
             custom_previous_layers = [self.layers[-1]]
-        layer = Layer(None, "concat", {"kernel_size": 1}, prevLayers = custom_previous_layers)
+        layer = Layer(module, "concat", {"kernel_size": 1}, prevLayers = custom_previous_layers)
         self.layers.append(layer)
         return
 
