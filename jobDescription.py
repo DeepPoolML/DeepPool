@@ -59,12 +59,12 @@ class Layer:
                 fakeInputs = []
                 for prevLayer in self.prevLayers:
                     inputSize = [1] + list(prevLayer.outputDim)
-                    print("id: ", self.id, " Concat's inputSize: ", inputSize)
+                    # print("id: ", self.id, " Concat's inputSize: ", inputSize)
                     fakeInputs.append(torch.zeros(inputSize))
                 traced = torch.jit.script(self.module, fakeInputs)
             else:
                 inputSize = [1] + (list(self.inputDim) if type(self.inputDim) == tuple else [self.inputDim])
-                print("id: ", self.id, " non-concat inputSize: ", inputSize)
+                # print("id: ", self.id, " non-concat inputSize: ", inputSize)
                 fakeInput = torch.zeros(tuple(inputSize))
                 traced = torch.jit.script(self.module, fakeInput)
             saveLocation = "modules/scriptmodule_%d.pt"%self.id
@@ -233,10 +233,18 @@ class TrainingJob:
                         
                         assert(dstRank != srcRank)
                         if targetRank == dstRank:
+                            # TODO: remove "tensorRx". It's left for python runtime compatibility.
                             if "tensorRx" not in prop:
                                 prop["tensorRx"] = []    
                             prop["tensorRx"].append({"name": "%d_from_%d_sample_%d" % (l.id, prevLayer.id, xferNum),
                                                     "prop": {"xferSamples": xferSamples, "prevLayerId": prevLayer.id}, # prevLayerId is necessary for Concat inputs.
+                                                    "src": srcRank,
+                                                    "bytes": xferBytes})
+                            # tensorRxJit is used for CPP runtime.
+                            if "tensorRxJit" not in allProps[prevLayer.id]:
+                                allProps[prevLayer.id]["tensorRxJit"] = []
+                            allProps[prevLayer.id]["tensorRxJit"].append({"name": "%d_from_%d_sample_%d" % (l.id, prevLayer.id, xferNum),
+                                                    "prop": {"xferSamples": xferSamples, "nextLayerId": l.id}, # prevLayerId is necessary for Concat inputs.
                                                     "src": srcRank,
                                                     "bytes": xferBytes})
                         if targetRank == srcRank:

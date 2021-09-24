@@ -65,7 +65,7 @@ TsrXferFunc::forward(AutogradContext* ctx, Variable x, TsrXfer* xfer)
       //     tsr.toString().c_str(), tsrSizeToStr(tsr).c_str(), tsrToStr(tsr).c_str());
       DP_LOG(DEBUG, "Receiving tag:%d from R:%d with tensor: %s", tag, src,
           tsrSizeToStr(tsr).c_str());
-      xfer->commHandler->recv(tsr, tag, src, /*async*/ false);
+      xfer->commHandler->recv(tsr, tag, src, /*async*/ true);
       tsrList.push_back(tsr);
     }
     tsrList.push_back(x);
@@ -97,7 +97,7 @@ TsrXferFunc::backward(AutogradContext* ctx, variable_list grad_output)
       torch::Tensor tsr = splittedTsrs[i];
       DP_LOG(DEBUG, "Sending tag:%d to R:%d with %s", tag, dest,
           tsrSizeToStr(tsr).c_str());
-      xfer->commHandler->send(tsr, tag, dest, /*async*/ false);
+      xfer->commHandler->send(tsr, tag, dest, /*async*/ true);
     }
     
     variable_list grad_inputs(2);
@@ -121,7 +121,7 @@ TsrXferFunc::backward(AutogradContext* ctx, variable_list grad_output)
       tsr = tsr.to(xfer->commHandler->getDev(), /*non_blocking*/ true, /*copy*/ false);
       DP_LOG(DEBUG, "Receiving tag:%d from R:%d with tensor: %s", tag, src,
           tsr.toString().c_str());
-      xfer->commHandler->recv(tsr, tag, src, /*async*/ false);
+      xfer->commHandler->recv(tsr, tag, src, /*async*/ true);
       tsrList.push_back(tsr);
     }
     tsrList.push_back(x);
@@ -272,24 +272,25 @@ RunnableModule::RunnableModule(RuntimeContext* rtctx,
       }
     }
 
-    if (layerIsActive && ldsc.contains("tensorRx")) {
+    if (ldsc.contains("tensorRxJit")) {
       std::map<int, std::vector<json> > recvListDict;
-      for (auto& item : ldsc["tensorRx"]) {
-        int prevLayerId = item["prop"]["prevLayerId"].get<int>();
-        if (recvListDict.find(prevLayerId) == recvListDict.end()) {
-          recvListDict[prevLayerId] = std::vector<json>();
+      for (auto& item : ldsc["tensorRxJit"]) {
+        int nextLayerId = item["prop"]["nextLayerId"].get<int>();
+        if (recvListDict.find(nextLayerId) == recvListDict.end()) {
+          recvListDict[nextLayerId] = std::vector<json>();
         }
-        recvListDict[prevLayerId].push_back(item);
+        recvListDict[nextLayerId].push_back(item);
       }
+
       for (const auto& kv : recvListDict) {
-        const int prevLayerId = kv.first;
+        const int nextLayerId = kv.first;
         const std::vector<json>& recvList = kv.second;
 
         TsrXfer xfer(commHandler);
         xfer.type = TsrXfer::Recv;
         xfer.splitCatDim = 0;
-        xfer.prevLayerId = prevLayerId;
-        xfer.nextLayerId = id;
+        xfer.prevLayerId = id;
+        xfer.nextLayerId = nextLayerId;
         xfer.recevingLayerForSend = &layers.back();
         int xferSampleSum = 0;
         for (const json& item : recvList) {
@@ -307,7 +308,8 @@ RunnableModule::RunnableModule(RuntimeContext* rtctx,
 
         int remainder;
         if (xfer.splitCatDim == 0) {
-          remainder = ldsc["config"][0].get<int>() - xferSampleSum;
+          remainder = layersInJson[nextLayerId]["config"][0].get<int>() - xferSampleSum;
+          // remainder = ldsc["config"][0].get<int>() - xferSampleSum;
         } else { // Other than sample dimension, use inputDim as its dimension is ordered correctly.
           remainder = ldsc["inputDim"][xfer.splitCatDim - 1].get<int>() - xferSampleSum;
         }
@@ -319,11 +321,53 @@ RunnableModule::RunnableModule(RuntimeContext* rtctx,
       }
     }
 
-    // std::string moduleName = format("%d:%s", ldsc["id"].get<int>(), name);
-    // register_module(moduleName, module);
-    // DP_LOG(DEBUG, "registered module as a submodule.");
-    
-    // std::shared_ptr<torch::nn::Module> modulePtr(std::move(module));
+    // if (layerIsActive && ldsc.contains("tensorRx")) {
+    //   std::map<int, std::vector<json> > recvListDict;
+    //   for (auto& item : ldsc["tensorRx"]) {
+    //     int prevLayerId = item["prop"]["prevLayerId"].get<int>();
+    //     if (recvListDict.find(prevLayerId) == recvListDict.end()) {
+    //       recvListDict[prevLayerId] = std::vector<json>();
+    //     }
+    //     recvListDict[prevLayerId].push_back(item);
+    //   }
+    //   for (const auto& kv : recvListDict) {
+    //     const int prevLayerId = kv.first;
+    //     const std::vector<json>& recvList = kv.second;
+
+    //     TsrXfer xfer(commHandler);
+    //     xfer.type = TsrXfer::Recv;
+    //     xfer.splitCatDim = 0;
+    //     xfer.prevLayerId = prevLayerId;
+    //     xfer.nextLayerId = id;
+    //     xfer.recevingLayerForSend = &layers.back();
+    //     int xferSampleSum = 0;
+    //     for (const json& item : recvList) {
+    //       int xferSamples = item["prop"]["xferSamples"].get<int>();
+    //       xfer.splitSizes.push_back(xferSamples);
+    //       xferSampleSum += xferSamples;
+
+    //       auto xferName = item["name"].get<std::string>();
+    //       Tag tag = commHandler->getTag(xferName);
+    //       Tag tagB = commHandler->getTag(xferName + "_back");
+    //       Rank src = item["src"].get<Rank>();
+    //       xfer.xferTagAndRank.push_back(std::make_pair(tag, src));
+    //       xfer.xferTagAndRankBack.push_back(std::make_pair(tagB, src));
+    //     }
+
+    //     int remainder;
+    //     if (xfer.splitCatDim == 0) {
+    //       remainder = ldsc["config"][0].get<int>() - xferSampleSum;
+    //     } else { // Other than sample dimension, use inputDim as its dimension is ordered correctly.
+    //       remainder = ldsc["inputDim"][xfer.splitCatDim - 1].get<int>() - xferSampleSum;
+    //     }
+
+    //     DP_LOG(DEBUG, "remainder: %d, sum: %d", remainder, xferSampleSum);
+    //     xfer.splitSizes.push_back(remainder);
+    //     layers.back().xferIns.push_back(std::move(xfer));
+    //     DP_LOG(DEBUG, "xferIn registered. len(layer->xferIns): %d", static_cast<int>(layers.back().xferIns.size()));
+    //   }
+    // }
+
     moduleList.push_back(module);
     DP_LOG(DEBUG, " layer's module is pushed back.");
     DP_LOG(DEBUG, " id: %d and moduleListsize: %d", id, (int)moduleList.size());
@@ -408,6 +452,7 @@ RunnableModule::forwardAStep()
 
     std::vector<torch::Tensor> inputVec;
     if (layer->prevLayers.size() == 0) {
+      DP_LOG(DEBUG, "Adding to inputVec: %s.", tsrSizeToStr(fpInput).c_str());
       inputVec.push_back(fpInput);
     } else if (layer->prevLayers.size() >= 1) {
       std::map<int, torch::Tensor> inputsByPid;
@@ -419,11 +464,12 @@ RunnableModule::forwardAStep()
           prevOut = prevLayer->output;
         }
         if (!prevOut.defined()) {
-          DP_LOG(DEBUG, "prevOut is not defined. Using empty tensor.");
-          // prevOut = torch::empty(layer->emptyInSizes);
-          prevOut = torch::empty(prevLayer->emptyOutSizes);
-          prevOut = prevOut.to(device, /*non_blocking*/ true, /*copy*/ false);
-          DP_LOG(DEBUG, "Empty input tensor: %s", prevOut.toString().c_str());
+          DIE("prevOut is not defined.");
+          // DP_LOG(DEBUG, "prevOut is not defined. Using empty tensor.");
+          // // prevOut = torch::empty(layer->emptyInSizes);
+          // prevOut = torch::empty(prevLayer->emptyOutSizes);
+          // prevOut = prevOut.to(device, /*non_blocking*/ true, /*copy*/ false);
+          // DP_LOG(DEBUG, "Empty input tensor: %s", prevOut.toString().c_str());
         }
         if (layer->detachInput) {
           DP_LOG(DEBUG, "Detaching input");
@@ -435,12 +481,12 @@ RunnableModule::forwardAStep()
         inputsByPid[prevLayer->id] = prevOut;
       }
 
-      // Recv samples before running this layer.
-      for (TsrXfer& xfer : layer->xferIns) {
-        inputsByPid[xfer.prevLayerId] =
-            TsrXferFunc::apply(inputsByPid[xfer.prevLayerId], &xfer);
-        DP_LOG(DEBUG, "Received & concatenated samples.");
-      }
+      // // Recv samples before running this layer.
+      // for (TsrXfer& xfer : layer->xferIns) {
+      //   inputsByPid[xfer.prevLayerId] =
+      //       TsrXferFunc::apply(inputsByPid[xfer.prevLayerId], &xfer);
+      //   DP_LOG(DEBUG, "Received & concatenated samples.");
+      // }
       
       for (auto& plidInputPair : inputsByPid) {
         DP_LOG(DEBUG, "Adding to inputVec: %s.", tsrSizeToStr(plidInputPair.second).c_str());
@@ -469,6 +515,7 @@ RunnableModule::forwardAStep()
 
     // Send samples after running this layer.
     DP_LOG(DEBUG, "len(layer->xferOuts): %d", static_cast<int>(layer->xferOuts.size()));
+    layer->outputsAfterXfer.clear();
     for (TsrXfer& xfer : layer->xferOuts) {
       torch::Tensor remainingOutput = TsrXferFunc::apply(output, &xfer);
       layer->outputsAfterXfer[xfer.nextLayerId] = remainingOutput;
@@ -490,6 +537,32 @@ RunnableModule::forwardAStep()
     // output.to(device, /*non_blocking*/ true, /*copy*/ false);
     // fpCtx.runCriterionAndLoss = false;
     // fpCtx.fpTensorToReturn.reset();
+  }
+
+  // Recv parts of output processed by another GPU.
+  for (TsrXfer& xfer : layer->xferIns) {
+    //TODO: assert that next layer is active.
+    torch::Tensor localOut;
+    if (layer->active) { // Don't use outputsAfterXfer if not active.
+      if (layer->outputsAfterXfer.count(xfer.nextLayerId) > 0) {
+        localOut = layer->outputsAfterXfer[xfer.nextLayerId];
+      } else {
+        localOut = layer->output;
+      }
+    }
+
+    if (!localOut.defined()) {
+      assert(!layer->active);
+      DP_LOG(DEBUG, "localOut is not defined. Must be inactive? Using an empty tensor.");
+      localOut = torch::empty(layer->emptyOutSizes);
+      localOut = localOut.to(device, /*non_blocking*/ true, /*copy*/ false);
+      localOut.requires_grad_();
+      DP_LOG(DEBUG, "Empty localOut tensor: %s", localOut.toString().c_str());
+    }
+    torch::Tensor remainingOutput = TsrXferFunc::apply(localOut, &xfer);
+    layer->outputsAfterXfer[xfer.nextLayerId] = remainingOutput;
+    DP_LOG(DEBUG, "Received (nextLayer: %d) & concatenated samples. %s",
+        xfer.nextLayerId, tsrSizeToStr(remainingOutput).c_str());
   }
   
   layer->status = LayerStatus::PENDING_BP;
@@ -559,7 +632,22 @@ RunnableModule::backwardAStep()
     }
   }
 
-  if (layer->active) {
+  bool mustRunBackward = layer->active;
+  if (!layer->active && layer->outputsAfterXfer.size()) {
+    mustRunBackward = true;
+    DP_LOG(DEBUG, "Layer %d is inactive, but backward is called for sending "
+        "out gradients.", layer->id);
+#if VERBOSE
+    bool someNextLayerIsActive = false;
+    for (const auto nextLayer : layer->nextLayers) {
+      if (nextLayer->active)
+        someNextLayerIsActive = true;
+    }
+    assert(someNextLayerIsActive);
+#endif
+  }
+
+  if (mustRunBackward) {
     if (layer->nextLayers.size() == 0) {
       DP_LOG(DEBUG, "No nextLayers.");
     } else if (layer->nextLayers.size() >= 1) {
@@ -582,22 +670,24 @@ RunnableModule::backwardAStep()
               tsrSizeToStr(grad).c_str());
           
           if (layer->outputsAfterXfer.count(nextLayerPtr->id)) {
-            DP_LOG(DEBUG, "outputsAfterXfer:%s gradIn:%s", 
-                layer->outputsAfterXfer[nextLayerPtr->id].toString().c_str(),
-                grad.toString().c_str());
+            DP_LOG(DEBUG, "Backward on outputsAfterXfer:%s gradIn:%s", 
+                tsrSizeToStr(layer->outputsAfterXfer[nextLayerPtr->id]).c_str(),
+                tsrSizeToStr(grad).c_str());
             layer->outputsAfterXfer[nextLayerPtr->id].backward(grad, retainGraph);
-          } else {
-            DP_LOG(DEBUG, "output:%s gradIn:%s", 
-                layer->output.toString().c_str(), grad.toString().c_str());
+          } else if (layer->active) {
+            DP_LOG(DEBUG, "Backward on output:%s gradIn:%s", 
+                tsrSizeToStr(layer->output).c_str(), tsrSizeToStr(grad).c_str());
             layer->output.backward(grad, retainGraph);
+          } else {
+            DP_LOG(DEBUG, "Backward is not called since inactive layer & "
+                "no xferIn for layer %d", nextLayerPtr->id);
           }
-          DP_LOG(DEBUG, "layer->output.backward is called.");
         } else {
           DP_LOG(DEBUG, "  nextLayerPtr(%d)->detachInput is false!", nextLayerPtr->id);
         }
       }
 
-      if (layer->detachOutput) {
+      if (layer->active && layer->detachOutput) {
         DP_LOG(DEBUG, "  output was detached previously. Invoking backward on outputBeforeDetach.");
         layer->outputBeforeDetach.backward(layer->output.grad());
       }
