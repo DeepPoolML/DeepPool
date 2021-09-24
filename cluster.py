@@ -300,9 +300,13 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
         # Using the absolute path for compatibility with C++ runtime.
         homedir = expanduser("~")
         logdir = homedir + "/DeepPoolRuntime/logs/"
-
+        upSyncedAddrs = set()
         for i, location in enumerate(self.locations):
-            location.upSync(".", self.workDir)
+            if (location.address not in upSyncedAddrs):
+                # TODO: skip if location's addr is same as the current node.
+                location.upSync(".", self.workDir)
+                upSyncedAddrs.add(location.address)
+
             # pass master ip and port.
             stdoutFp = open("logs/runtime%d.out"%i, "w", buffering=1)
             stderrFp = open("logs/runtime%d.err"%i, "w", buffering=1)
