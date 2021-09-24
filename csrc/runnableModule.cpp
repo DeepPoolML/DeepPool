@@ -65,7 +65,7 @@ TsrXferFunc::forward(AutogradContext* ctx, Variable x, TsrXfer* xfer)
       //     tsr.toString().c_str(), tsrSizeToStr(tsr).c_str(), tsrToStr(tsr).c_str());
       DP_LOG(DEBUG, "Receiving tag:%d from R:%d with tensor: %s", tag, src,
           tsrSizeToStr(tsr).c_str());
-      xfer->commHandler->recv(tsr, tag, src, /*async*/ true);
+      xfer->commHandler->recv(tsr, tag, src, /*async*/ false);
       tsrList.push_back(tsr);
     }
     tsrList.push_back(x);
@@ -121,7 +121,7 @@ TsrXferFunc::backward(AutogradContext* ctx, variable_list grad_output)
       tsr = tsr.to(xfer->commHandler->getDev(), /*non_blocking*/ true, /*copy*/ false);
       DP_LOG(DEBUG, "Receiving tag:%d from R:%d with tensor: %s", tag, src,
           tsr.toString().c_str());
-      xfer->commHandler->recv(tsr, tag, src, /*async*/ true);
+      xfer->commHandler->recv(tsr, tag, src, /*async*/ false);
       tsrList.push_back(tsr);
     }
     tsrList.push_back(x);
@@ -393,11 +393,11 @@ RunnableModule::RunnableModule(RuntimeContext* rtctx,
   inputSizes.push_back(initialBatchSize);
   for (int size : layersInJson[0]["inputDim"]) inputSizes.push_back(size);
   auto inputFn = [=] { return torch::randn(inputSizes); };
-  input_pipeline = TensorGeneratorPipeline(inputFn, rtctx);
+  input_pipeline = TensorGeneratorPipeline(inputFn);
   int targetCount = layersInJson.back()["config"][0];
   auto targetOpts = torch::TensorOptions().dtype(torch::kInt64);
   auto targetFn = [=] { return torch::randint(/*low=*/0, /*high=*/1000, {targetCount}, targetOpts); };
-  target_pipeline = TensorGeneratorPipeline(targetFn, rtctx);
+  target_pipeline = TensorGeneratorPipeline(targetFn);
 }
 
 /**

@@ -158,6 +158,7 @@ void parse_args(RuntimeContext* ctx, int argc, char** argv) {
         break;
       case 'd':
         ctx->device = atoi(optarg);
+        ctx->c10dev = c10::Device(c10::DeviceType::CUDA, ctx->device);
         break;
       case 'b':
         ctx->c10dBackend = optarg;
@@ -192,8 +193,11 @@ void parse_args(RuntimeContext* ctx, int argc, char** argv) {
   }
 }
 
+RuntimeContext *rtctx; /* global rtctx variable */
+
 int main(int argc, char** argv) {
   RuntimeContext ctx;
+  rtctx = &ctx;
   ctx.shutdownRequested = false;
   parse_args(&ctx, argc, argv);
   

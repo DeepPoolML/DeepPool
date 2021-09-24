@@ -68,6 +68,7 @@ std::string tsrSizeToStr(torch::Tensor tensor)
     }                                                                         \
   } while (0)
 
+#define CUDACHECK(cmd) CUDA_API_CALL(cmd)
 
 #define NCCL_API_CALL(apiFuncCall)                                            \
   do {                                                                        \

@@ -99,6 +99,7 @@ class CommunicationHandlerNCCL : public CommunicationHandler {
   std::vector<cudaStream_t> send_streams;
   std::vector<cudaStream_t> recv_streams;
   cudaStream_t comm_sync_stream;
+  cudaStream_t all_reduce_stream;
 };
 
 class CommunicationHandlerGRPC : public CommunicationHandler {

@@ -49,7 +49,7 @@ namespace torch {
 struct RuntimeContext {
   RuntimeContext() : coordinatorAddr(0), myAddr(0), device(0), c10dBackend(0),
       c10dMasterPort(0), rank(), worldSize(), logdir(), be_batch_size(0),
-      profile(false), debug(false), verify(false), homedir(0),
+      profile(false), debug(false), verify(false), homedir(0), c10dev(c10::DeviceType::CUDA, 0),
       grpcService(), grpcServer(), taskManager(), shutdownRequested(),
       commHandlerMap(), rankToIpAndPort(), grpcCommReady(),
       ncclGroupId(), ncclGroupSize(), ranks(), ncclCommReady(), ncclCommObj(),
@@ -75,6 +75,7 @@ struct RuntimeContext {
   bool debug;
   bool verify;
   char *homedir;
+  c10::Device c10dev;
 
   /**
    *  additional variables.
@@ -99,7 +100,7 @@ struct RuntimeContext {
   c10::cuda::CUDAStream torch_stream, xfer_stream;
 };
 
-
+extern RuntimeContext *rtctx;
 
 
 #endif // RUNTIME_H

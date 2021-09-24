@@ -24,6 +24,7 @@
 #include "json.hpp"
 
 #include "runtime.h"
+#include "utils.h"
 
 #include <c10/cuda/CUDAStream.h>
 
@@ -130,25 +131,17 @@ struct Layer {
 };
 
 
-#define CUDACHECK(cmd) do {                         \
-  cudaError_t e = cmd;                              \
-  if( e != cudaSuccess ) {                          \
-    printf("Failed: Cuda error %s:%d '%s'\n",       \
-        __FILE__,__LINE__,cudaGetErrorString(e));   \
-    exit(EXIT_FAILURE);                             \
-  }                                                 \
-} while(0)
-
 class TensorGeneratorPipeline {
 public:
   TensorGeneratorPipeline() {};
-  TensorGeneratorPipeline(std::function<torch::Tensor()> gen, RuntimeContext *rtctx) : rtctx(rtctx) {
+
+  TensorGeneratorPipeline(std::function<torch::Tensor()> gen) {
     for (size_t i = 0; i < 64; i++) cached_.push_back(gen());
 
     next_t_ = cached_[iter_idx_++ % 64];
     auto origstream = c10::cuda::getCurrentCUDAStream();
     c10::cuda::setCurrentCUDAStream(rtctx->xfer_stream);
-    next_t_ = next_t_.to(device, /*non_blocking*/ true, /*copy*/ false);
+    next_t_ = next_t_.to(rtctx->c10dev, /*non_blocking*/ true, /*copy*/ false);
     CUDACHECK(cudaEventCreateWithFlags(&next_t_ev_, cudaEventDisableTiming));
     CUDACHECK(cudaEventRecord(next_t_ev_, rtctx->xfer_stream.stream()));
     c10::cuda::setCurrentCUDAStream(origstream);
@@ -163,17 +156,15 @@ public:
     /* generate next */
     next_t_ = cached_[iter_idx_++ % 64];
     c10::cuda::setCurrentCUDAStream(rtctx->xfer_stream);
-    next_t_ = next_t_.to(device, /*non_blocking*/ true, /*copy*/ false);
+    next_t_ = next_t_.to(rtctx->c10dev, /*non_blocking*/ true, /*copy*/ false);
     CUDACHECK(cudaEventRecord(next_t_ev_, rtctx->xfer_stream.stream()));
     c10::cuda::setCurrentCUDAStream(origstream);
     return next_t_;
   }
 
 private:
-  RuntimeContext *rtctx;
-  torch::Device device{"cuda:0"};
   torch::Tensor next_t_;
-  cudaEvent_t next_t_ev_;
+  cudaEvent_t next_t_ev_{nullptr};
   std::vector<torch::Tensor> cached_;
   uint64_t iter_idx_{0};
 };

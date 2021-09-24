@@ -18,27 +18,26 @@
 #include <vector>
 #include "cuda_runtime.h"
 #include "logger.h"
+#include "utils.h"
+#include "runtime.h"
 
-#define CUDACHECK(cmd) do {                         \
-  cudaError_t e = cmd;                              \
-  if( e != cudaSuccess ) {                          \
-    printf("Failed: Cuda error %s:%d '%s'\n",       \
-        __FILE__,__LINE__,cudaGetErrorString(e));   \
-    exit(EXIT_FAILURE);                             \
-  }                                                 \
-} while(0)
+#define ENABLE_TIMERS 1
 
 class CudaTimer {
  public:
-  CudaTimer(CudaTimer* from = nullptr, size_t reservedEntries = 1000)
-    : fromTimer(from), evt(), recorded(false), elapsedTimes()
+  CudaTimer(CudaTimer* from = nullptr, size_t reservedEntries = 2500)
+    : fromTimer(from)
   {
+#if ENABLE_TIMERS
     elapsedTimes.reserve(reservedEntries);
-    CUDACHECK(cudaEventCreate(&evt));
+    CUDACHECK(cudaEventCreateWithFlags(&evt, cudaEventBlockingSync));
+#endif
   }
 
   void record() {
-    CUDACHECK(cudaEventRecord(evt));
+#if ENABLE_TIMERS
+    CUDACHECK(cudaEventRecord(evt, rtctx->torch_stream));
+#endif
     recorded = true;
   }
 
@@ -46,18 +45,20 @@ class CudaTimer {
   // other CudaTimer measuring time from this timer invokes.
   void saveAndReset() {
     if (fromTimer != nullptr && recorded) {
+#if ENABLE_TIMERS
       CUDACHECK(cudaEventSynchronize(evt));
       assert(fromTimer->recorded);
       float ms;
       CUDACHECK(cudaEventElapsedTime(&ms, fromTimer->evt, evt));
       elapsedTimes.push_back(ms);
+#endif
+      counter++;
     }
-    CUDACHECK(cudaEventDestroy(evt));
-    CUDACHECK(cudaEventCreate(&evt));
     recorded = false;
   }
-  int count() { return static_cast<int>(elapsedTimes.size()); }
+  size_t count() { return counter; }
   float getAvg(size_t skipIterCount = 0) {
+#if ENABLE_TIMERS
     if (skipIterCount >= elapsedTimes.size()) {
       skipIterCount = 0;
     }
@@ -69,9 +70,13 @@ class CudaTimer {
       return 0;
     }
     return sum / (elapsedTimes.size() - skipIterCount);
+#else
+    return 0;
+#endif
   }
 
   float getPercentile(float percentile, size_t skipIterCount) {
+#if ENABLE_TIMERS
     if (skipIterCount >= elapsedTimes.size()) {
       skipIterCount = 0;
     }
@@ -80,6 +85,9 @@ class CudaTimer {
     std::sort(sortedTimes.begin(), sortedTimes.end());
     size_t idx = sortedTimes.size() * percentile / 100.0;
     return sortedTimes[idx];
+#else
+    return 0;
+#endif
   }
 
   float getP50(size_t skipIterCount = 0) { return getPercentile(50, skipIterCount); }
@@ -91,7 +99,8 @@ class CudaTimer {
  private:
   CudaTimer* fromTimer;
   cudaEvent_t evt;
-  bool recorded;
+  bool recorded{false};
+  size_t counter{0};
   std::vector<float> elapsedTimes;
 };
 
