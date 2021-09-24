@@ -63,9 +63,9 @@ TsrXferFunc::forward(AutogradContext* ctx, Variable x, TsrXfer* xfer)
       tsr = tsr.to(xfer->commHandler->getDev(), /*non_blocking*/ true, /*copy*/ false);
       // DP_LOG(DEBUG, "Receiving tag:%d from R:%d with tensor: %s, %s, %s", tag, src,
       //     tsr.toString().c_str(), tsrSizeToStr(tsr).c_str(), tsrToStr(tsr).c_str());
+      DP_LOG(DEBUG, "Receiving tag:%d from R:%d with tensor: %s", tag, src,
+          tsrSizeToStr(tsr).c_str());
       xfer->commHandler->recv(tsr, tag, src, /*async*/ false);
-      DP_LOG(DEBUG, "Received tag:%d from R:%d with tensor: %s, %s", tag, src,
-          tsr.toString().c_str(), tsrSizeToStr(tsr).c_str());
       tsrList.push_back(tsr);
     }
     tsrList.push_back(x);
@@ -198,21 +198,19 @@ RunnableModule::RunnableModule(RuntimeContext* rtctx,
     int layerLocalBatch = ldsc["config"][0].get<int>();
     bool layerIsActive = layerLocalBatch > 0;
     bool detachInput = true;
-    // bool detachInput = false;
     if (name == "ReLU2d" || name == "ReLU1d") {
       detachInput = false;
       DP_LOG(DEBUG, "ReLU. detachInput: %d", detachInput);
     }
-    if (ldsc["prevLayers"].size() > 1) {
-      detachInput = false;
-      DP_LOG(DEBUG, "More than 1 prevLayer. Detaching isn't supported for multiple inputs. detachInput: %d", detachInput);
-    }
+    
     std::vector<Layer*> prevLayers;
     for (auto& plidjson : ldsc["prevLayers"]) {
       int plid = plidjson.get<int>();
       prevLayers.push_back(&layers[plid]);
     }
-    layers.emplace_back(module, specialModule, id, layerIsActive, detachInput, prevLayers);
+    bool detachOutput = ldsc["nextLayers"].size() > 1;
+    layers.emplace_back(module, specialModule, id, layerIsActive, detachInput,
+                        detachOutput, prevLayers);
 
     // EmptyTensorSizes.
     layers.back().emptyInSizes.push_back(0);
@@ -429,9 +427,9 @@ RunnableModule::forwardAStep()
         }
         if (layer->detachInput) {
           DP_LOG(DEBUG, "Detaching input");
-          layer->detachedInput = prevOut.detach();  // TODO: support detaching >1 inputs.
-          layer->detachedInput.requires_grad_();
-          prevOut = layer->detachedInput;
+          layer->detachedInputs[prevLayer->id] = prevOut.detach();
+          layer->detachedInputs[prevLayer->id].requires_grad_();
+          prevOut = layer->detachedInputs[prevLayer->id];
           DP_LOG(DEBUG, "Detached input tensor: %s", prevOut.toString().c_str());
         }
         inputsByPid[prevLayer->id] = prevOut;
@@ -461,6 +459,12 @@ RunnableModule::forwardAStep()
       ivalVec.push_back(inputVec[0]);
       output = layer->module.forward(ivalVec).toTensor();
       DP_LOG(DEBUG, "module.forward called.");
+    }
+
+    if (layer->detachOutput) {
+      layer->outputBeforeDetach = output;
+      output = output.detach();
+      output.requires_grad_();
     }
 
     // Send samples after running this layer.
@@ -537,7 +541,6 @@ RunnableModule::loss()
 bool
 RunnableModule::backwardAStep()
 {
-  // DP_LOG(DEBUG, "layerQ size: %d", (int)layerQ.size());
   Layer* layer = layerQ.front();
   layerQ.pop_front();
 
@@ -545,6 +548,7 @@ RunnableModule::backwardAStep()
   // or probably finished.
   if (layer->status == LayerStatus::PENDING_FP) {
     DP_LOG(DEBUG, "%d-th layer is processed again.", layer->id);
+    return false;
   }
   DP_LOG(DEBUG, "lid:%d.", layer->id);
   for (auto& nextLayer : layer->nextLayers) {
@@ -556,75 +560,49 @@ RunnableModule::backwardAStep()
   }
 
   if (layer->active) {
-    // bool shouldInvokeBackward = layer->nextLayers.size() > 0;
-    // std::vector<torch::Tensor> gradInputs;
     if (layer->nextLayers.size() == 0) {
       DP_LOG(DEBUG, "No nextLayers.");
     } else if (layer->nextLayers.size() >= 1) {
-      for (auto nextLayerPtr : layer->nextLayers) {
+      // for (auto nextLayerPtr : layer->nextLayers) {
+      for (size_t nli = 0; nli < layer->nextLayers.size(); nli++) {
+        auto nextLayerPtr = layer->nextLayers[nli];
         if (nextLayerPtr->detachInput) {
+          bool retainGraph = nli < layer->nextLayers.size() - 1;
           torch::Tensor grad;
-          if (nextLayerPtr->detachedInput.defined()) {
-            grad = nextLayerPtr->detachedInput.grad();
+          if (nextLayerPtr->detachedInputs[layer->id].defined()) {
+            grad = nextLayerPtr->detachedInputs[layer->id].grad();
           } else {
             DP_LOG(DEBUG, "nextLayerPtr->detachInput is not defined. Using empty tensor.");
             grad = torch::empty(layer->emptyOutSizes);
             grad = grad.to(device, /*non_blocking*/ true, /*copy*/ false);
           }
-          DP_LOG(DEBUG, "nextLayerPtr->detachedInput: %s, grad: %s",
-              nextLayerPtr->detachedInput.toString().c_str(),
+          DP_LOG(DEBUG, "nextLayerPtr(%d)->detachedInputs[%d]: %s, grad: %s",
+              nextLayerPtr->id, layer->id,
+              nextLayerPtr->detachedInputs[layer->id].toString().c_str(),
               tsrSizeToStr(grad).c_str());
-          
-          // gradInputs.push_back(grad);
-          
-          // DP_LOG(DEBUG, "nextLayer detachedInput? %d, added to gradInputs: %s",
-          //     nextLayerPtr->detachInput,
-          //     tsrSizeToStr(nextLayerPtr->detachedInput.grad()).c_str());
-          // shouldInvokeBackward = shouldInvokeBackward && nextLayerPtr->detachInput;
-          // WARNING! this is a bit hacky... it assumes all children layers detach or not
-          // together.
           
           if (layer->outputsAfterXfer.count(nextLayerPtr->id)) {
             DP_LOG(DEBUG, "outputsAfterXfer:%s gradIn:%s", 
                 layer->outputsAfterXfer[nextLayerPtr->id].toString().c_str(),
                 grad.toString().c_str());
-            layer->outputsAfterXfer[nextLayerPtr->id].backward(grad);
+            layer->outputsAfterXfer[nextLayerPtr->id].backward(grad, retainGraph);
           } else {
             DP_LOG(DEBUG, "output:%s gradIn:%s", 
                 layer->output.toString().c_str(), grad.toString().c_str());
-            layer->output.backward(grad);
+            layer->output.backward(grad, retainGraph);
           }
           DP_LOG(DEBUG, "layer->output.backward is called.");
+        } else {
+          DP_LOG(DEBUG, "  nextLayerPtr(%d)->detachInput is false!", nextLayerPtr->id);
         }
       }
-      // gradInputs.push_back(layer->nextLayers[0]->gradOut);
+
+      if (layer->detachOutput) {
+        DP_LOG(DEBUG, "  output was detached previously. Invoking backward on outputBeforeDetach.");
+        layer->outputBeforeDetach.backward(layer->output.grad());
+      }
     }
-    // else if (ldsc["name"].get<std::string>() == std::string("concat")) {
-    //   DIE("%d-th layer is concat, which is not implemented.", lid);
-    //   //TODO: implement.
-    //   // skipSinceNotReady should be updated here.
-    // }
-    // DP_LOG(DEBUG, "shouldInvokeBackward: %d, gradInputs.size(): %d", shouldInvokeBackward, (int)gradInputs.size());
-
-
-
     DP_LOG(DEBUG, "Layer %d is active.", layer->id);
-    // if (!input.defined()) {
-    //   DP_LOG(DEBUG, "input is not defined. Using empty tensor.");
-    //   gradIn = torch::empty(0);
-    //   gradIn = gradIn.to(device, /*non_blocking*/ true, /*copy*/ false);
-    // }
-
-    // if (shouldInvokeBackward) {
-    //   for (auto gradIn : gradInputs) {
-    //     DP_LOG(DEBUG, "output:%s gradIn:%s", 
-    //         layer->output.toString().c_str(), gradIn.toString().c_str());
-    //     layer->output.backward(gradIn);
-    //     DP_LOG(DEBUG, "layer->output.backward is called.");
-    //   }
-    // } else {
-    //   // This layer must have only one following in-place layer.
-    // }
   } else { // This rank doesn't participate for this layer.
     DP_LOG(DEBUG, "Layer %d is not active.", layer->id);
   }

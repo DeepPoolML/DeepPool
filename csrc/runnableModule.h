@@ -92,16 +92,18 @@ enum class SpecialModuleTypes {
  */
 struct Layer {
   Layer(torch::jit::Module module, SpecialModuleTypes specialModule, int id, bool active,
-      bool detachInput, std::vector<Layer*>& prevLayerVec)
+      bool detachInput, bool detachOutput, std::vector<Layer*>& prevLayerVec)
     : module(module)
     , specialModule(specialModule)
     , id(id)
     , active(active)
     , detachInput(detachInput)
+    , detachOutput(detachOutput)
     , prevLayers()
     , nextLayers()
     , output()
-    , detachedInput()
+    , outputBeforeDetach()
+    , detachedInputs()
     , status(LayerStatus::PENDING_FP)
     , xferIns()
     , xferOuts()
@@ -117,11 +119,13 @@ struct Layer {
   const int id;
   const bool active; // Inactive means no samples assigned for this runtime.
   const bool detachInput; // Detach input before running this layer.
+  const bool detachOutput; // Detach output when output is used multiple times.
   std::vector<Layer*> prevLayers;
   std::vector<Layer*> nextLayers;
   torch::Tensor output;  // Used during forward pass.
+  torch::Tensor outputBeforeDetach; // Used during backward when output is used multple times. 
   std::map<int, torch::Tensor> outputsAfterXfer;  // Output specific to the nextLayerId (key).
-  torch::Tensor detachedInput; // Used during backward pass.
+  std::map<int, torch::Tensor> detachedInputs; // Used during backward pass.
   LayerStatus status;
   std::vector<TsrXfer> xferIns;
   std::vector<TsrXfer> xferOuts;
