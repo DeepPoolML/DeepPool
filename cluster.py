@@ -143,7 +143,7 @@ class Location:
     
     def rshAsync(self, command, **kwargs):
         print("Sending cmd: %s" % command)
-        sh_command = ['ssh', '-i', self.sshKeyPath, '%s@%s' % (self.userId, self.address),
+        sh_command = ['ssh', '-i', self.sshKeyPath, '-o StrictHostKeyChecking=no', '%s@%s' % (self.userId, self.address),
                     '%s' % command]
         p = subprocess.Popen(sh_command, **kwargs)
         return p
@@ -292,7 +292,7 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
             for pipPackage in pipPackages:
                 location.rsh("pip install %s" % pipPackage)
         
-    def launchRuntimeAll(self, c10dBackend: str, profile: bool, cppRuntime: bool):
+    def launchRuntimeAll(self, c10dBackend: str, profile: bool, cppRuntime: bool, manualLaunch: bool):
         """ Launch runtime at all remote locations. Also registers the sighandler
             that cleanly shuts down all remote runtime servers.
         """
@@ -304,7 +304,7 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
         for i, location in enumerate(self.locations):
             if (location.address not in upSyncedAddrs):
                 # TODO: skip if location's addr is same as the current node.
-                location.upSync(".", self.workDir)
+                # location.upSync(".", self.workDir)
                 upSyncedAddrs.add(location.address)
 
             # pass master ip and port.
@@ -314,7 +314,9 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
                 nsysPrefix = "nsys profile -f true -o net%d -c cudaProfilerApi --stop-on-range-end true -t cuda,nvtx --export sqlite " % i # -s none
             else:
                 nsysPrefix = ""
-            if cppRuntime:
+            if manualLaunch:
+                print("Skipping ssh launching runtime. Must have launched them manually.")
+            elif cppRuntime:
                 self.processes.append(location.rshAsync(
                     "CUDA_VISIBLE_DEVICES=" + str(location.device) + " " + self.workDir + "csrc/build/runtime" + \
                     " --coordinatorAddr %s:%d --myAddr %s:%d --device 0 --c10dBackend %s --rank %d --worldSize %d --logdir %s --be_batch_size %d %s" % \
@@ -452,6 +454,8 @@ def parse_args():
                         help="launch runtimes with be beatch size")
     parser.add_argument('--cpp', default=False, action='store_true',
                         help="To launch CPP version runtimes.")
+    parser.add_argument('--manualLaunch', default=False, action='store_true',
+                        help="Do not runtimes automatically. Primarily for using gdb on runtime processes.")
     # For installing nsys.. (with other cuda toolkit..)
     # wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu1804/x86_64/cuda-ubuntu1804.pin
     # sudo mv cuda-ubuntu1804.pin /etc/apt/preferences.d/cuda-repository-pin-600
@@ -492,7 +496,7 @@ def main():
         coordinator.shutdownRuntimeAll()
         time.sleep(10)
 
-    coordinator.launchRuntimeAll(args.c10dBackend, profile=args.profile, cppRuntime=args.cpp)
+    coordinator.launchRuntimeAll(args.c10dBackend, profile=args.profile, cppRuntime=args.cpp, manualLaunch=args.manualLaunch)
     print("All runtime nodes are up and running. Now, initializing communication backend..")
     time.sleep(5)
     coordinator.initCommBackendAll(args.c10dBackend, rankToIpMap, commGrpRanksDict)
