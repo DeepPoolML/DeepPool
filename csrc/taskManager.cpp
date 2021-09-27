@@ -45,7 +45,7 @@ JobContext::JobContext(std::unique_ptr<RunnableModule> modelIn, std::string name
   , device(device)
   , epoch(0)
   , iter(0)
-  , itersToTrain(1000) // = len(dataLoader) if dataLoader != None else None #TODO: this is a temporary hack..
+  , itersToTrain(200) // = len(dataLoader) if dataLoader != None else None #TODO: this is a temporary hack..
   , state(JobState::INIT)
   , timers()
   , modelToVerify()
@@ -123,7 +123,7 @@ TaskManager::poll()
     DP_LOG(NOTICE, "A training job %s is completed (%d iters)."
         " AverageTiming (ms) => load:%.1f, fp:%.1f, loss:%.1f, bp:%.1f, iter:%.1f"
         " P50 (ms) => fp:%.1f, loss:%.1f, bp:%.1f, iter:%.1f",
-        mainJob->name.c_str(), mainJob->timers[CT_FP].count(),
+        mainJob->name.c_str(), static_cast<int>(mainJob->timers[CT_FP].count()),
         mainJob->timers[CT_LOAD].getAvg(warmupIters),
         mainJob->timers[CT_FP].getAvg(warmupIters),
         mainJob->timers[CT_LOSS].getAvg(warmupIters),

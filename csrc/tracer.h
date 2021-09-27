@@ -80,6 +80,9 @@ class CudaTimer {
     if (skipIterCount >= elapsedTimes.size()) {
       skipIterCount = 0;
     }
+    if (elapsedTimes.size() == 0) {
+      return 0;
+    }
     std::vector<float> sortedTimes(elapsedTimes.begin() + skipIterCount,
                                    elapsedTimes.end());
     std::sort(sortedTimes.begin(), sortedTimes.end());

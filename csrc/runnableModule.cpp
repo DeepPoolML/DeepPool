@@ -513,9 +513,10 @@ RunnableModule::forwardAStep()
       ivalVec.push_back(inputVec[0]);
       output = layer->module.forward(ivalVec).toTensor();
       DP_LOG(DEBUG, "module.forward called.");
-      if (rtctx->profile) {
-        layer->fpTimer->record();
-      }
+    }
+
+    if (rtctx->profile) {
+      layer->fpTimer->record();
     }
 
     if (layer->detachOutput) {
@@ -735,7 +736,7 @@ RunnableModule::backwardAStep()
 void
 RunnableModule::initProfileTimers(CudaTimer* ct_load, CudaTimer* ct_loss) {
   if (rtctx->profile) {
-    DP_LOG(DEBUG, "initProfileTimers invoked");
+    DP_LOG(NOTICE, "initProfileTimers invoked");
     for (auto& layer : layers) {
       layer.fpTimer = std::make_unique<CudaTimer>(ct_load);
       layer.bpTimer = std::make_unique<CudaTimer>(ct_loss);
@@ -782,20 +783,16 @@ RunnableModule::printProfileTimers(int warmupIters) {
     std::sort(fpTimes.begin(), fpTimes.end());
     std::sort(bpTimes.begin(), bpTimes.end());
 
-    // printf("## Forward time\n");
     float lastTime = 0;
     std::unordered_map<const char*, float> nameToTime;
     for (auto& timeName : fpTimes) {
       float layerTime = timeName.first - lastTime;
-      // printf("%100s  %.3f\n", timeName.second, layerTime);
       nameToTime[timeName.second] = layerTime;
       lastTime = timeName.first;
     }
-    // printf("## Backward time\n");
     lastTime = 0;
     for (auto& timeName : bpTimes) {
       float layerTime = timeName.first - lastTime;
-      // printf("%100s  %.3f\n", timeName.second, layerTime);
       nameToTime[timeName.second] += layerTime;
       lastTime = timeName.first;
     }
@@ -821,7 +818,7 @@ RunnableModule::printProfileTimers(int warmupIters) {
   std::unordered_map<const char*, float> nameToTime;
   for (auto& timeName : fpTimes) {
     float layerTime = timeName.first - lastTime;
-    // printf("%100s  %.3f\n", timeName.second, layerTime);
+    // printf("%110s  %.3f\n", timeName.second, layerTime);
     nameToTime[timeName.second] = layerTime;
     lastTime = timeName.first;
   }
@@ -829,7 +826,7 @@ RunnableModule::printProfileTimers(int warmupIters) {
   lastTime = 0;
   for (auto& timeName : bpTimes) {
     float layerTime = timeName.first - lastTime;
-    // printf("%100s  %.3f\n", timeName.second, layerTime);
+    // printf("%110s  %.3f\n", timeName.second, layerTime);
     nameToTime[timeName.second] += layerTime;
     lastTime = timeName.first;
   }
@@ -840,13 +837,13 @@ RunnableModule::printProfileTimers(int warmupIters) {
   std::unordered_map<const char*, float> p99Times = getName2LayerTime(99);
   
   // printf("## Sum\n");
-  printf("%100s  avg(ms)    p50     p90     p99\n", "#config");
+  printf("%110s  avg(ms)    p50     p90     p99\n", "#config");
   float sum = 0;
   for (auto& timeName : fpTimes) {
     const char* name = timeName.second;
     float avgT = nameToTime[name];
     sum += avgT;
-    printf("%100s  %6.3f  %6.3f  %6.3f  %6.3f\n", name, avgT, p50Times[name],
+    printf("%110s  %6.3f  %6.3f  %6.3f  %6.3f\n", name, avgT, p50Times[name],
            p90Times[name], p99Times[name]);
   }
   printf("%100s  %.3f\n", "SUM(avg)", sum);

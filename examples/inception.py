@@ -610,7 +610,7 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     profiler = GpuProfiler("cuda")
     profiler.loadProfile()
     global cs
-    cs = CostSim(profiler, netBw=netBw, verbose=True, gpuProfileLoc="layerGpuProfileA100.txt")
+    cs = CostSim(profiler, netBw=netBw, verbose=True, gpuProfileLoc="inceptionLayerGpuProfileA100.txt")
     model = Inception3(aux_logits=False)
     cs.printAllLayers(slient=True)
     cs.computeInputDimensions((3,299,299))
@@ -708,8 +708,13 @@ def runStrongScalingBench():
     global cs
     netBw = 2.66E5
     cs = CostSim(profiler, netBw=netBw, verbose=False)
-    inputSize = (3,224,224)
+    inputSize = (3,299,299)
     model = Inception3(aux_logits=False)
+
+    fakeInputSize = (16,3,299,299)
+    fakeInput = torch.zeros(fakeInputSize)
+    traced = torch.jit.script(model, fakeInput)
+    torch.jit.save(traced, "modules/inception.pt")
     
     print("Model: ", "Inception3")
     print("BatchSize  iterMs    fpMs    bpMs")
