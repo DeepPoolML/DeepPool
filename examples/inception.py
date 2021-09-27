@@ -623,7 +623,7 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     job, iterMs, gpuMs, maxGpusUsed = cs.searchBestSplitsV3(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
     print("  %2d    %2d   %4.1f  %4.1f\n" % (globalBatch, maxGpusUsed, iterMs, gpuMs))
     profiler.saveProfile()
-    # cs.to_dot(simResultFilename, globalBatch)
+    cs.to_dot(simResultFilename, globalBatch)
     # cs.to_gpuTimeline("Inception v3, Burst Parallel", maxGpusUsed, dataParallelBaseline)
     jobInJson = job.dumpInJSON()
 
@@ -703,6 +703,21 @@ def runAllConfigs(modelName: str, clusterType: str, simOnly=True):
         fr = open('runtimeResult.data', "w")
         fr.close()
 
+def runStrongScalingBench():
+    profiler = GpuProfiler("cuda")
+    global cs
+    netBw = 2.66E5
+    cs = CostSim(profiler, netBw=netBw, verbose=False)
+    inputSize = (3,224,224)
+    model = Inception3(aux_logits=False)
+    
+    print("Model: ", "Inception3")
+    print("BatchSize  iterMs    fpMs    bpMs")
+    for batchSize in [2 ** exp for exp in range(1, 9)]:
+        iterTime, fpTime, bpTime = profiler.benchModel(model, inputSize, batchSize)
+        print(" %8d  %6.1f  %6.1f  %6.1f" %
+            (batchSize, iterTime / 1000, fpTime / 10000, bpTime / 1000))
+
 if __name__ == "__main__":
     print(len(sys.argv))
     if len(sys.argv) == 3:
@@ -719,6 +734,7 @@ if __name__ == "__main__":
     elif len(sys.argv) == 2:
         print("Run all configs")
         runAllConfigs("inceptionV3", sys.argv[1])
+    elif len(sys.argv) == 1:
+        runStrongScalingBench()
     else:
         print("Wrong number of arguments.\nUsage: ")
-

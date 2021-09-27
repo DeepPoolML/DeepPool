@@ -1710,12 +1710,14 @@ class CostSim:
                 gpuUsecBranch, gpusUsedBranch, startNoOverlapAdjustment, sideBranchOvertime = backwardLinear(prevLayer, prevCfg, packGpus, stopAtLayer=joiningLayer.branchStartLayer)
                 endNoOverlapActivationTime, actSizes = self.calcInputXfer(prevLayer, joiningLayer, prevCfg, joiningLayer.bestCfg, True)
                 endActivationTime, actSizes = self.calcInputXfer(prevLayer, joiningLayer, prevCfg, joiningLayer.bestCfg, False)
-                endAdjustment = endActivationTime - endNoOverlapActivationTime
+                # endAdjustment = endActivationTime - endNoOverlapActivationTime
+                endAdjustment = endNoOverlapActivationTime - endActivationTime
 
                 gpuUsecSum += gpuUsecBranch
                 gpusUsedBlock += gpusUsedBranch
                 if sideBranchOvertime > 0:
                     print("backward branch, joining layer: %d, prevLayerId: %d, sideBranchOvertime: %d" % (joiningLayer.id, prevLayer.id, sideBranchOvertime))
+                print("branchStartLayer: %d prevOfJoining: %d   startNoOverlapAdjustment: %.f   endAdjustment: %.f" % (branchStartLayer.id, prevLayer.id, startNoOverlapAdjustment, endAdjustment))
                 branchTimeList.append((prevLayer.t[prevCfg][0] - blockStartTime + sideBranchOvertime, gpusUsedBranch, prevLayer.id, startNoOverlapAdjustment + endAdjustment))
 
             ## GPU packing! Comment out to disable GPU packing.
@@ -1728,7 +1730,8 @@ class CostSim:
             for i, (branchTime, gpusNeeded, prevLayerId, newGpuActiviationAdjustment) in enumerate(branchTimeList):
                 if i >= 1:
                     # Using the same GPU will be cheaper than using new set of GPUs.
-                    if maxBranchTime < newGpuActiviationAdjustment or \
+                    if dataParallelBaseline or ctx.doNotBench or \
+                            maxBranchTime < newGpuActiviationAdjustment or \
                             ((newGpuActiviationAdjustment + branchTime) / branchTime if branchTime > 0 else 1) > amplificationLimit: # TODO; revisit this amplificationLimit.
                         maxBranchTime += branchTime
                         sideBranchOvertime += branchTime
@@ -1774,7 +1777,7 @@ class CostSim:
 
         gpuUsecSum, maxGpusUsed, startNoOverlapAdjustment, sideBranchOvertimeSum = backwardLinear(finalLayer, bestLastCfg, True)
         
-        print("Final layer: ", finalLayer.id, " bestCfg:", finalLayer.bestCfg, " sideBranchOvertimeSum: ", sideBranchOvertimeSum)
+        print("Final layer: ", finalLayer.id, " bestCfg:", finalLayer.bestCfg, " sideBranchOvertimeSum: %.f" % sideBranchOvertimeSum)
 
         # 2nd backward pass: assign GPUs.
         def gpuAssignLinear(lastLayer, availableRanks, stopAtLayer=None):
@@ -1811,7 +1814,7 @@ class CostSim:
 
 
         # Print result
-        print("Layer    type       initial configuration          => after split configuration            #GPUs time(us) |   prev inptXfer  gpuTime syncTime bestGpuTime dpGpuTime noParallelTime")
+        print("Layer                  nextLayer                   initial configuration          => after split configuration        #GPUs      time(us) |   prev inptXfer  gpuTime syncTime bestGpuTime dpGpuTime noParallelTime")
         finalTime = 0
         dpTime = 0
         for layer in self.layers:
