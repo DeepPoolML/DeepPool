@@ -15,10 +15,7 @@
 #ifndef TRACER_H
 #define TRACER_H
 
-// #include <memory>
-// #include <mutex>
 #include <vector>
-// #include <string>
 #include "cuda_runtime.h"
 #include "logger.h"
 
@@ -71,7 +68,7 @@ class CudaTimer {
     if (elapsedTimes.size() == 0) {
       return 0;
     }
-    return sum / elapsedTimes.size();
+    return sum / (elapsedTimes.size() - skipIterCount);
   }
 
   float getPercentile(float percentile, size_t skipIterCount) {
