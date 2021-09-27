@@ -23,6 +23,11 @@
 #include "communication.h"
 #include "logger.h"
 
+#include <ATen/autocast_mode.h>
+#include <ATen/cuda/CUDAGraph.h>
+#include <ATen/cuda/CUDAEvent.h>
+
+
 using Cycles = RAMCloud::Cycles;
 
 /**
@@ -74,6 +79,92 @@ JobContext::JobContext(std::unique_ptr<RunnableModule> modelIn, std::string name
  */
 JobContext::~JobContext() {}
 
+#include <condition_variable>
+#include <mutex>
+
+std::mutex mtx;
+std::condition_variable cv;
+bool beinited = false;
+
+std::atomic<uint64_t> becounter{0};
+
+/* tremendous WIP */
+void BeRunner(long bsize) {
+  assert(bsize % 32 == 0);
+  long splitways = bsize / 32;
+
+  std::string filename("/home/friedj/mlsf/multimodel/resnet_dropped.jit");
+  torch::jit::script::Module m = torch::jit::load(filename);
+  m.train();
+  m.to(torch::Device("cuda:0"));
+
+  long px = filename.find("inception") == std::string::npos ? 224 : 299;
+  auto tensor = torch::rand({bsize, 3, px, px});
+  tensor = tensor.to(torch::Device("cuda:0"));
+
+  // assert(bsize % splitways == 0);
+  std::vector<int64_t> splitSizes(splitways, bsize / splitways);
+  std::cerr << "split: " << splitSizes << std::endl;
+  auto tenss = tensor.split_with_sizes(splitSizes);
+  std::vector<c10::cuda::CUDAStream> streams;
+  for (size_t i = 0; i < tenss.size(); i++) streams.push_back(c10::cuda::getStreamFromPool(false));
+  auto target =
+        torch::empty(bsize).uniform_(0, 1000).to(at::kLong).to(torch::Device("cuda:0"));
+  auto targs = target.split_with_sizes(splitSizes);
+
+  at::autocast::set_enabled(true);
+
+  auto fn = [&] {
+    auto orig_stream = c10::cuda::getCurrentCUDAStream();
+    at::cuda::CUDAEvent ev;
+    ev.record(orig_stream);
+    for (size_t i = 0; i < tenss.size(); i++) {
+      auto &st = streams.at(i);
+      c10::cuda::setCurrentCUDAStream(st);
+      ev.block(st);
+      auto ret = m.operator()({tenss.at(i)});
+      auto loss = torch::nll_loss(ret.toTensor().log_softmax(1), targs.at(i));
+      loss.backward();
+      at::cuda::CUDAEvent ev2;
+      ev2.record(st);
+      ev2.block(orig_stream);
+    }
+
+    c10::cuda::setCurrentCUDAStream(orig_stream);
+
+    at::autocast::clear_cache();
+  };
+
+  auto cstream = c10::cuda::getStreamFromPool(false);
+  c10::cuda::setCurrentCUDAStream(cstream);
+
+  for (size_t i = 0; i < 50; i++) fn();
+  at::cuda::CUDAGraph graph;
+  c10::cuda::device_synchronize();
+  graph.capture_begin();
+  fn();
+  graph.capture_end();
+  c10::cuda::device_synchronize();
+  // auto cgr_exec_ = graph.getGEXEC();
+  {
+    std::lock_guard<std::mutex> lk(mtx);
+    beinited = true;
+  }
+  cv.notify_one();
+
+  cudaEvent_t waiter;
+  CUDACHECK(cudaEventCreateWithFlags(&waiter, cudaEventDisableTiming));
+
+  while (true) {
+    graph.replay();
+    // CUDACHECK(cudaGraphLaunch(cgr_exec_, cstream.stream()));
+    CUDACHECK(cudaEventRecord(waiter, cstream.stream()));
+    while (cudaEventQuery(waiter) != cudaSuccess) { usleep(100); }
+    becounter.store(becounter.load() + bsize);
+  }
+}
+
+
 /**
  * Constructs a TaskManager.
  */
@@ -83,6 +174,26 @@ TaskManager::TaskManager(RuntimeContext* rtctx)
   , jobList()
 {
   rtctx->taskManager = this;
+  if (rtctx->be_batch_size > 0) {
+    long bsize = rtctx->be_batch_size;
+    std::thread([=] { BeRunner(bsize); }).detach();
+    std::thread([&] {
+      using namespace std::chrono;
+      size_t lastc = becounter.load();
+      auto lastt = steady_clock::now();
+      while (true) {
+        sleep(5);
+        size_t newtr = becounter.load();
+        auto now = steady_clock::now();
+        auto s = duration_cast<seconds>(now - lastt).count();
+        std::cerr << "Trained " << (newtr - lastc) / s << " img/s" << std::endl;
+        lastt = now;
+        lastc = newtr;
+      }
+    }).detach();
+    std::unique_lock<std::mutex> lk(mtx);
+    cv.wait(lk, []{return beinited;});
+  }
 }
 
 /**
@@ -120,10 +231,17 @@ TaskManager::poll()
   if (jobCompleted) {
     size_t warmupIters = 100;
     mainJob->model->printProfileTimers(warmupIters);
-    DP_LOG(NOTICE, "A training job %s is completed (%d iters)."
+    size_t totiters = mainJob->totiters - warmupIters;
+    using msec = std::chrono::duration<double, std::milli>;
+    double elapsed_ms = std::chrono::duration_cast<msec>(mainJob->end - mainJob->start).count();
+    double total_iter_ms = elapsed_ms / (double)totiters;
+    double total_iter_ps = 1e3 / total_iter_ms;
+    double be_img_ps = mainJob->be_img_end - mainJob->be_img_start;
+    be_img_ps = 1e3 * be_img_ps / elapsed_ms;
+    DP_LOG(NOTICE, "A training job %s is completed (%lu iters, %.2f ms/iter, %.2f iter/s, %.2f be img/s)."
         " AverageTiming (ms) => load:%.1f, fp:%.1f, loss:%.1f, bp:%.1f, iter:%.1f"
         " P50 (ms) => fp:%.1f, loss:%.1f, bp:%.1f, iter:%.1f",
-        mainJob->name.c_str(), static_cast<int>(mainJob->timers[CT_FP].count()),
+        mainJob->name.c_str(), totiters, total_iter_ms, total_iter_ps, be_img_ps,
         mainJob->timers[CT_LOAD].getAvg(warmupIters),
         mainJob->timers[CT_FP].getAvg(warmupIters),
         mainJob->timers[CT_LOSS].getAvg(warmupIters),
@@ -154,13 +272,23 @@ TaskManager::poll()
 int
 TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
 {
-  if (job->iter > job->itersToTrain) {
+  /* record starting point for BE training */
+  if (job->totiters == 100) {
+    rtctx->torch_stream.synchronize();
+    job->be_img_start = becounter.load();
+    job->start = std::chrono::steady_clock::now();
+  }
+
+  if (job->iter >= job->itersToTrain) {
     DP_LOG(DEBUG, "epoch is completed.");
     job->iter = 0;
     job->epoch++;
   }
   if (job->epoch >= job->epochsToTrain) {
     DP_LOG(DEBUG, "training is completed.");
+    rtctx->torch_stream.synchronize();
+    job->end = std::chrono::steady_clock::now();
+    job->be_img_end = becounter.load();
     *jobCompleted = true;
     return 0;
   }
@@ -176,6 +304,20 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
 
     job->model->iterInit();
     job->state = JobState::FORWARD;
+
+    if (job->totiters == job->iters_before_graph_capture) {
+      c10::cuda::device_synchronize();
+      DP_LOG(NOTICE, "Starting capture.");
+      job->model->graph.capture_begin();
+      job->commHandler->precapture();
+    } else if (job->iter > job->totiters) {
+      DP_LOG(DEBUG, "Replay iter.");
+      job->model->graph.replay();
+      c10::cuda::device_synchronize(); // TODO remove me
+      job->state = JobState::SYNC;
+      return 1;
+    }
+
 
     if (rtctx->verify && job->iter == 0) {
       auto x2 = job->model->fpInput.clone();
@@ -228,6 +370,13 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
     }
   } else if (job->state == JobState::SYNC) {
     DP_LOG(DEBUG, "JobState::SYNC.");
+    if (job->iter == job->iters_before_graph_capture) {
+      job->commHandler->postcapture();
+      job->model->graph.capture_end();
+      DP_LOG(NOTICE, "Ending capture.");
+    }
+
+    job->totiters++;
     job->iter++;
     DP_LOG(DEBUG, "All-reduce parameter sync is not implemented yet.");
     job->timers[CT_SYNC].record();

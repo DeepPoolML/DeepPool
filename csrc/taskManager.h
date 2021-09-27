@@ -90,15 +90,20 @@ struct JobContext {
   // self.criterion = nn.CrossEntropyLoss().cuda(device) if criterion == None else criterion
   int epoch;
   int iter;
+  size_t totiters{0}; // total iters executed
   int itersToTrain; // = len(dataLoader) if dataLoader != None else None #TODO: this is a temporary hack..
   // self.itersPerPoll = 50
   // self.training_initialized = False
   // self.itersToCapture = set(range(250, 260))
+  int iters_before_graph_capture{5000}; // set high to disable graph capture
   JobState state;
 
   std::vector<CudaTimer> timers;
   torch::jit::Module modelToVerify;
   torch::Tensor outputToVerify;
+
+  std::chrono::time_point<std::chrono::steady_clock> start, end;
+  uint64_t be_img_start, be_img_end;
 };
 
 /**

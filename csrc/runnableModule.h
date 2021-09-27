@@ -27,6 +27,7 @@
 #include "utils.h"
 
 #include <c10/cuda/CUDAStream.h>
+#include <ATen/cuda/CUDAGraph.h>
 
 using json = nlohmann::json;
 using torch::autograd::Variable;
@@ -214,6 +215,8 @@ class RunnableModule : public torch::nn::Module {
   // bool runCriterionAndLoss;
 
   TensorGeneratorPipeline input_pipeline, target_pipeline;
+
+  at::cuda::CUDAGraph graph;
 };
 
 #endif

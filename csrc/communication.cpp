@@ -395,3 +395,34 @@ CommunicationHandlerNCCL::testRingP2P()
 
   assert(at::equal(recv_tensor, expected));
 }
+
+void
+CommunicationHandlerNCCL::precapture() {
+  size_t i = 0;
+  cudaEvent_t event;
+  CUDA_API_CALL(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
+  CUDA_API_CALL(cudaEventRecord(event, rtctx->torch_stream));
+
+  for (auto &sset : {recv_streams, send_streams, {comm_sync_stream, all_reduce_stream}}) {
+    for (auto &stream : sset) {
+      if (!stream) continue;
+      CUDA_API_CALL(cudaStreamWaitEvent(stream, event, 0));
+    }
+  }
+  CUDA_API_CALL(cudaEventDestroy(event));
+}
+
+void
+CommunicationHandlerNCCL::postcapture() {
+  cudaEvent_t event;
+  CUDA_API_CALL(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
+  size_t i = 0;
+  for (auto &sset : {recv_streams, send_streams, {comm_sync_stream, all_reduce_stream}}) {
+    for (auto &stream : sset) {
+      if (!stream) continue;
+      CUDA_API_CALL(cudaEventRecord(event, stream));
+      CUDA_API_CALL(cudaStreamWaitEvent(rtctx->torch_stream, event, 0));
+    }
+  }
+  CUDA_API_CALL(cudaEventDestroy(event));
+}
