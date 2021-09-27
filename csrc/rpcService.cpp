@@ -165,9 +165,6 @@ RuntimeServiceImpl::ScheduleTraining(ServerContext* context,
   rtctx->taskManager->addTrainingJob(std::move(job));
   DP_LOG(DEBUG, "added the training job.");
 
-  std::cout << request->name() << " " << request->job_rank_to_global_rank_in_json()
-            << " this job's worldSize: " << worldSize << std::endl << std::flush;
-
   std::string replyMsg("ScheduleTraining invoked.");
   reply->set_message(replyMsg);
   return Status::OK;

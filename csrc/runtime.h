@@ -25,7 +25,7 @@
 
 #include <c10/cuda/CUDAStream.h>
 
-#define VERBOSE 1
+#define VERBOSE 0
 
 /**
  * Forward declarations

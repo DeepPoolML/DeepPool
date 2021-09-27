@@ -610,7 +610,7 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     profiler = GpuProfiler("cuda")
     profiler.loadProfile()
     global cs
-    cs = CostSim(profiler, netBw=netBw, verbose=True)
+    cs = CostSim(profiler, netBw=netBw, verbose=True, gpuProfileLoc="layerGpuProfileA100.txt")
     model = Inception3(aux_logits=False)
     cs.printAllLayers(slient=True)
     cs.computeInputDimensions((3,299,299))
@@ -623,8 +623,8 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     job, iterMs, gpuMs, maxGpusUsed = cs.searchBestSplitsV3(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
     print("  %2d    %2d   %4.1f  %4.1f\n" % (globalBatch, maxGpusUsed, iterMs, gpuMs))
     profiler.saveProfile()
-    cs.to_dot(simResultFilename, globalBatch)
-    cs.to_gpuTimeline("Inception v3, Burst Parallel", maxGpusUsed, dataParallelBaseline)
+    # cs.to_dot(simResultFilename, globalBatch)
+    # cs.to_gpuTimeline("Inception v3, Burst Parallel", maxGpusUsed, dataParallelBaseline)
     jobInJson = job.dumpInJSON()
 
     # for rank in range(gpuCount):

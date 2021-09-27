@@ -28,14 +28,14 @@ using Cycles = RAMCloud::Cycles;
 /**
  * Contructs context for a training job.
  */
-JobContext::JobContext(std::unique_ptr<RunnableModule> model, std::string name,
+JobContext::JobContext(std::unique_ptr<RunnableModule> modelIn, std::string name,
     std::unique_ptr<DataLoader> dataLoader,
     std::unique_ptr<CommunicationHandler> commHandler,
     std::unique_ptr<TargetShuffler> targetShuffler,
     c10::Device device,
     int epochsToTrain,
     std::unique_ptr<torch::optim::Optimizer> optimizer)
-  : model(std::move(model))
+  : model(std::move(modelIn))
   , name(name)
   , dataLoader(std::move(dataLoader))
   , commHandler(std::move(commHandler))
@@ -45,7 +45,7 @@ JobContext::JobContext(std::unique_ptr<RunnableModule> model, std::string name,
   , device(device)
   , epoch(0)
   , iter(0)
-  , itersToTrain(2) // = len(dataLoader) if dataLoader != None else None #TODO: this is a temporary hack..
+  , itersToTrain(1000) // = len(dataLoader) if dataLoader != None else None #TODO: this is a temporary hack..
   , state(JobState::INIT)
   , timers()
   , modelToVerify()
@@ -62,6 +62,9 @@ JobContext::JobContext(std::unique_ptr<RunnableModule> model, std::string name,
     lastTimer = &timers.back();
   }
   timers.emplace_back(startTimer); // CT_STOP measures from CT_START to CT_STOP;
+
+  // Initialize timers.
+  model->initProfileTimers(&timers[CT_LOAD], &timers[CT_LOSS]);
 }
 
 /**
@@ -116,6 +119,7 @@ TaskManager::poll()
   trainSingleStep(mainJob, &jobCompleted);
   if (jobCompleted) {
     size_t warmupIters = 100;
+    mainJob->model->printProfileTimers(warmupIters);
     DP_LOG(NOTICE, "A training job %s is completed (%d iters)."
         " AverageTiming (ms) => load:%.1f, fp:%.1f, loss:%.1f, bp:%.1f, iter:%.1f"
         " P50 (ms) => fp:%.1f, loss:%.1f, bp:%.1f, iter:%.1f",
@@ -161,6 +165,7 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
     return 0;
   }
   if (job->state == JobState::INIT) {
+    job->model->resetProfileTimers();
     for (int tpIdx = CT_NUM_OF_EVENTS - 1; tpIdx >= CT_START; --tpIdx) {
       DP_LOG(DEBUG, "timer.saveAndReset() for %d. recorded:%d", tpIdx, job->timers[tpIdx].isRecorded());
       job->timers[tpIdx].saveAndReset();

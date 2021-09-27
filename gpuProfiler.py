@@ -103,7 +103,8 @@ class GpuProfiler:
             planInJson = jsonpickle.encode(data, unpicklable=False)
             json.dump(json.loads(planInJson), outfile, indent=2, sort_keys=False)
             print("[GpuProfiler] Saved %d entries." % (len(self.conv2dBenchCache) + len(self.linearBenchCache)))
-            print("[GpuProfiler] Cache hit %3.1f %%" % (100 * self.benchCacheHit / (self.benchCacheHit + self.benchCacheMiss)))
+            if (self.benchCacheHit + self.benchCacheMiss) > 0:
+                print("[GpuProfiler] Cache hit %3.1f %%" % (100 * self.benchCacheHit / (self.benchCacheHit + self.benchCacheMiss)))
     
     def loadProfile(self, path = "gpuProfile.json"):
         try:
@@ -205,7 +206,7 @@ class GpuProfiler:
         height = config[2]
         inChannels = config[3]
         filterCount = config[4]
-        train_dataset = self.SyntheticDataset((inChannels, width, height), batchSize * 200, 100) # 
+        train_dataset = self.SyntheticDataset((inChannels, width, height), batchSize * 100, 100) # 
         train_loader = torch.utils.data.DataLoader(
                 train_dataset, batch_size=batchSize, shuffle=False, pin_memory=True, drop_last=True)
 
@@ -237,7 +238,7 @@ class GpuProfiler:
         batchSize = config[0]
         inFeatures = config[1]
         outFeatures = config[2]
-        train_dataset = self.SyntheticDataset((inFeatures), batchSize * 200, num_classes=outFeatures)
+        train_dataset = self.SyntheticDataset((inFeatures), batchSize * 100, num_classes=outFeatures)
         # train_dataset = self.SyntheticDataset((inFeatures), batchSize * 30, num_classes=outFeatures)
         train_loader = torch.utils.data.DataLoader(
                 train_dataset, batch_size=batchSize, shuffle=False, pin_memory=True, drop_last=True)

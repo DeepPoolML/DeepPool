@@ -36,6 +36,7 @@ using torch::autograd::variable_list;
  * Forward declarations. Do not include headers unless necessary.
  */
 class CommunicationHandler;
+class CudaTimer;
 struct Layer;
 
 typedef int Tag;
@@ -65,12 +66,6 @@ class TsrXferFunc : public torch::autograd::Function<TsrXferFunc> {
   static variable_list backward(AutogradContext* ctx, variable_list grad_output);
 };
 
-struct DelayedSend {
-  torch::Tensor tensor;
-  int tag;
-  int desk;
-};
-
 /**
  * Flipping status flag. This variable tracks the execution of the layer.
  * Specifically, it is used to (1) prevent duplicate execution and (2) ensure
@@ -80,7 +75,6 @@ enum class LayerStatus {
   PENDING_FP = 0, // pending forward pass (last done job was backward).
   PENDING_BP      // pending backward pass (last done job was forward).
 };
-
 
 enum class SpecialModuleTypes {
   NOTSPECIAL = 0,
@@ -131,7 +125,8 @@ struct Layer {
   std::vector<TsrXfer> xferOuts;
   std::vector<int64_t> emptyInSizes;  // primarily used for creating empty tensors for recv.
   std::vector<int64_t> emptyOutSizes; // primarily used for creating empty tensors for recv.
-  std::vector<DelayedSend> sendOnLayerVisit;
+  std::unique_ptr<CudaTimer> fpTimer, bpTimer; // Used during profile mode only.
+  std::string moduleName; // Used to output profiled runtimes.
 };
 
 
@@ -200,6 +195,9 @@ class RunnableModule : public torch::nn::Module {
   // bool forwardAStepOld();
   bool backwardAStep();
   void loss();
+  void initProfileTimers(CudaTimer* ct_load, CudaTimer* ct_loss);
+  void resetProfileTimers();
+  void printProfileTimers(int warmupIters);
 
   ////////////////////////////////////////////
   // Internal data structure.

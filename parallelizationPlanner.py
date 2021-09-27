@@ -45,7 +45,8 @@ import matplotlib.pyplot as plt
 
 class SearchContext:
     def __init__(self, totalGpus: int, globalBatch: int, amplificationLimit: float = 2.0,
-            dataParallelBaseline = False, sampleSplit=True, spatialSplit=False, filterSplit=False):
+            dataParallelBaseline = False, sampleSplit=True, spatialSplit=False, filterSplit=False,
+            doNotBench = False):
         self.totalGpus = totalGpus
         self.globalBatch = globalBatch
         self.amplificationLimit = amplificationLimit
@@ -53,16 +54,46 @@ class SearchContext:
         self.sampleSplit = sampleSplit
         self.spatialSplit = spatialSplit
         self.filterSplit = filterSplit
+        self.doNotBench = doNotBench
         print("SearchContext: " + str(self.__dict__))
 
 
 class CostSim:
-    def __init__(self, profiler: GpuProfiler, netBw = 1.25E4, verbose=False):
+    def __init__(self, profiler: GpuProfiler, netBw = 1.25E4, verbose=False, gpuProfileLoc=None):
         self.profiler = profiler
         self.layers: List[Layer] = []
         self.NET_BANDWIDTH = netBw
         self.NET_LATENCY = 140 #40
         self.verbose = verbose
+        self.layerProfileCache = {}
+        if gpuProfileLoc != None:
+            self.loadGpuProfile(gpuProfileLoc)
+        else:
+            print("!!! gpuProfileLoc is not supplied for CostSim")
+
+    def loadGpuProfile(self, gpuProfileLoc):
+        with open(gpuProfileLoc, "r") as f:
+            for line in f:
+                items = line.strip().split()
+                if len(items) != 5 or items[0] == "#config":
+                    continue
+                layerInfo = items[0]
+                avgTime = float(items[1]) * 1000
+                self.layerProfileCache[layerInfo] = {"avg": avgTime}
+                # p50Time = items[2]
+        #       printf("%100s  %.3f  %.3f  %.3f  %.3f\n", name, avgT, p50Times[name],
+        #           p90Times[name], p99Times[name]);
+
+    def queryLayerProfileCache(self, layer, config: tuple):
+        layerInfo = layer.name +\
+            json.dumps(layer.params, sort_keys=True, separators=(',', ':')) +\
+            "[" + str(config[0]) + "]" +\
+            json.dumps(layer.inputDim, sort_keys=False, separators=(',', ':'))
+            # TODO: use config instead of inputDim to support operator splits.
+        if layerInfo in self.layerProfileCache:
+            return self.layerProfileCache[layerInfo]["avg"]
+        else:
+            return 0
 
     def generateModuleDescription(self, layerConfigs: list, globalBatch: int):
         # gpuTimeSum = 0
@@ -528,7 +559,16 @@ class CostSim:
                 dpOnly = False
         return dpOnly
 
-    def benchGpuTime(self, layer, config: tuple, profile=False):
+    def benchGpuTime(self, layer, config: tuple, profile=False, ctx=None):
+        cached = self.queryLayerProfileCache(layer, config)
+        if cached > 0:
+            return cached
+
+        # This is a hack for quickly generating a plan for initial layer profiling.
+        if ctx != None and ctx.doNotBench:
+            assert ctx.totalGpus == 1
+            return 1
+
         if layer.name in ["conv2d"]:
             gpuTime = self.profiler.runConv2dBench(config, layer.params, profile)
         elif layer.name in ["linear"]:
@@ -1338,7 +1378,7 @@ class CostSim:
 
             initCfg = self.getInitialConfig(layer, ctx.globalBatch)
             layer.initCfg = initCfg
-            layer.noParallelTime = self.benchGpuTime(layer, initCfg) + self.calcSyncTime(layer, initCfg, ctx)
+            layer.noParallelTime = self.benchGpuTime(layer, initCfg, ctx=ctx) + self.calcSyncTime(layer, initCfg, ctx)
             
             configCandidates = self.listConfigOptions(layer, ctx.globalBatch, ctx.totalGpus, sampleSplit=ctx.sampleSplit, spatialSplit=ctx.spatialSplit, filterSplit=ctx.filterSplit, dataParallelBaseline=ctx.dataParallelBaseline)
             if self.verbose and layer.id < 3:
@@ -1346,7 +1386,7 @@ class CostSim:
             
             for config in configCandidates:
                 # Benchmark GPU time and all-reduce time
-                gpuTime = self.benchGpuTime(layer, config)
+                gpuTime = self.benchGpuTime(layer, config, ctx=ctx)
                 syncTime = self.calcSyncTime(layer, config, ctx)
                 
                 if layer == startLayer:
@@ -1445,7 +1485,7 @@ class CostSim:
 
         initCfg = self.getInitialConfig(startLayer, ctx.globalBatch)
         startLayer.initCfg = initCfg
-        startLayer.noParallelTime = self.benchGpuTime(startLayer, initCfg) + self.calcSyncTime(startLayer, initCfg, ctx)
+        startLayer.noParallelTime = self.benchGpuTime(startLayer, initCfg, ctx=ctx) + self.calcSyncTime(startLayer, initCfg, ctx)
 
         for startCfg in startCfgOptions:
             cumulativeTime, prevLayerTime, prevConfigIndexOfPrev, timeComposition, prevMpIdleTime = startLayer.t[startCfg]
@@ -1457,7 +1497,7 @@ class CostSim:
                     assert joiningLayer == endingLayer
 
             for joinConfig in self.listConfigOptions(joiningLayer, ctx.globalBatch, ctx.totalGpus, sampleSplit=ctx.sampleSplit, spatialSplit=ctx.spatialSplit, filterSplit=ctx.filterSplit, dataParallelBaseline=ctx.dataParallelBaseline):
-                gpuTime = self.benchGpuTime(joiningLayer, joinConfig)
+                gpuTime = self.benchGpuTime(joiningLayer, joinConfig, ctx=ctx)
                 syncTime = self.calcSyncTime(joiningLayer, joinConfig, ctx)
 
                 maxBestCumulativeTime = 0
@@ -1505,7 +1545,7 @@ class CostSim:
 
         joiningLayerInitCfg = self.getInitialConfig(joiningLayer, ctx.globalBatch)
         joiningLayer.initCfg = joiningLayerInitCfg
-        joiningLayer.noParallelTime = self.benchGpuTime(joiningLayer, joiningLayerInitCfg) + self.calcSyncTime(joiningLayer, joiningLayerInitCfg, ctx)
+        joiningLayer.noParallelTime = self.benchGpuTime(joiningLayer, joiningLayerInitCfg, ctx=ctx) + self.calcSyncTime(joiningLayer, joiningLayerInitCfg, ctx)
         joiningLayer.t = {}
         for joinConfig in bestTimeByEndCfg:
             bestTimeByEndCfg[joinConfig]
@@ -1540,6 +1580,10 @@ class CostSim:
         dot.render()
 
     def to_gpuTimeline(self, name, totalGpus, dataParallelBaseline=False):
+        if totalGpus == 1:
+            print("Cannot generate gpuTimeline for totalGpus=1.")
+            return
+
         gpuTimes = [[] for r in range(totalGpus)]
         maxT = 0
         if dataParallelBaseline:
@@ -1595,6 +1639,7 @@ class CostSim:
     def searchBestSplitsV3(self, totalGpus: int, globalBatch: int = 16, amplificationLimit: float = 2.0, dataParallelBaseline = False, sampleSplit=True, spatialSplit=False, filterSplit=False):
         """ Parallelization strategy findiing for DeepPool. """
         ctx = SearchContext(totalGpus, globalBatch, amplificationLimit, dataParallelBaseline, sampleSplit=sampleSplit, spatialSplit=spatialSplit, filterSplit=filterSplit)
+        ctx.doNotBench = totalGpus == 1
         finalLayer = self.searchLinear(None, None, self.layers[0], ctx)
 
         bestTime = 99999999999
@@ -1796,7 +1841,7 @@ class CostSim:
                 print("(b=%2d, w=%3d, h=%3d, c=%4d)         " % layer.bestCfg, end="")
 
             gpusUsed = self.calcGpusNeeded(layer, layer.bestCfg, ctx.globalBatch)
-            gpuTime = self.benchGpuTime(layer, layer.bestCfg)
+            gpuTime = self.benchGpuTime(layer, layer.bestCfg, ctx=ctx)
             # gpuUsec = gpusUsed * (cumulativeTime - timeComposition[0])
             # gpuUsecSum += gpuUsec
             print(" %4d   %6.f   %6.f   %6.f   " #%6.f   %6.f      %6.f    %6.f  %6.f (%4.1fx) (DP:%4.1fx, MP:%4.1fx)  %6.f  %10s"

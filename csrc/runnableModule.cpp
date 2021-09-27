@@ -20,6 +20,7 @@
 #include "logger.h"
 #include "utils.h"
 #include "communication.h"
+#include "tracer.h"
 
 using torch::autograd::Variable;
 using torch::autograd::AutogradContext;
@@ -46,7 +47,6 @@ TsrXferFunc::forward(AutogradContext* ctx, Variable x, TsrXfer* xfer)
       DP_LOG(DEBUG, "Sending tag:%d to R:%d with %s", tag, dest,
           tsrSizeToStr(tsr).c_str());
 
-      // xfer->recevingLayerForSend->sendOnLayerVisit.emplace_back({tsr, tag, dest});
       xfer->commHandler->send(tsr, tag, dest, /*async*/ true);
     }
     return splittedTsrs[i];
@@ -368,6 +368,14 @@ RunnableModule::RunnableModule(RuntimeContext* rtctx,
     //   }
     // }
 
+    if (rtctx->profile) {
+      // TODO: if it's not that accurate, maybe add layer id?
+      layers.back().moduleName = name + ldsc["params"].dump() +
+          "[" + std::to_string(layerLocalBatch) + "]" + ldsc["inputDim"].dump();
+      DP_LOG(DEBUG, "moduleName: %s", layers.back().moduleName.c_str());
+    }
+    
+
     moduleList.push_back(module);
     DP_LOG(DEBUG, " layer's module is pushed back.");
     DP_LOG(DEBUG, " id: %d and moduleListsize: %d", id, (int)moduleList.size());
@@ -505,6 +513,9 @@ RunnableModule::forwardAStep()
       ivalVec.push_back(inputVec[0]);
       output = layer->module.forward(ivalVec).toTensor();
       DP_LOG(DEBUG, "module.forward called.");
+      if (rtctx->profile) {
+        layer->fpTimer->record();
+      }
     }
 
     if (layer->detachOutput) {
@@ -697,6 +708,9 @@ RunnableModule::backwardAStep()
     DP_LOG(DEBUG, "Layer %d is not active.", layer->id);
   }
   
+  if (rtctx->profile) {
+    layer->bpTimer->record();
+  }
   layer->status = LayerStatus::PENDING_FP;
   
   for (auto& prevLayerPtr : layer->prevLayers) {
@@ -713,4 +727,127 @@ RunnableModule::backwardAStep()
     return true;
   }
   return false;
+}
+
+/**
+ * Initialize timers for profiling each layer.
+ */
+void
+RunnableModule::initProfileTimers(CudaTimer* ct_load, CudaTimer* ct_loss) {
+  if (rtctx->profile) {
+    DP_LOG(DEBUG, "initProfileTimers invoked");
+    for (auto& layer : layers) {
+      layer.fpTimer = std::make_unique<CudaTimer>(ct_load);
+      layer.bpTimer = std::make_unique<CudaTimer>(ct_loss);
+    }
+  }
+}
+
+/**
+ * Reset timers for profiling each layer. Happens every iteration.
+ */
+void
+RunnableModule::resetProfileTimers() {
+  if (rtctx->profile) {
+    for (auto& layer : layers) {
+      layer.fpTimer->saveAndReset();
+      layer.bpTimer->saveAndReset();
+    }
+  }
+}
+
+/**
+ * Reset timers for profiling each layer. Happens every iteration.
+ */
+void
+RunnableModule::printProfileTimers(int warmupIters) {
+  if (!rtctx->profile) {
+    return;
+  }
+
+  auto getName2LayerTime = [&] (float percentile) {
+    std::vector<std::pair<float, const char*> > fpTimes;
+    std::vector<std::pair<float, const char*> > bpTimes;
+    for (auto& layer : layers) {
+      if (!layer.detachInput) {
+        continue;
+      }
+      fpTimes.push_back(std::make_pair<float, const char*>(
+          layer.fpTimer->getPercentile(percentile, warmupIters),
+          layer.moduleName.c_str()));
+      bpTimes.push_back(std::make_pair<float, const char*>(
+          layer.bpTimer->getPercentile(percentile, warmupIters),
+          layer.moduleName.c_str()));
+    }
+    std::sort(fpTimes.begin(), fpTimes.end());
+    std::sort(bpTimes.begin(), bpTimes.end());
+
+    // printf("## Forward time\n");
+    float lastTime = 0;
+    std::unordered_map<const char*, float> nameToTime;
+    for (auto& timeName : fpTimes) {
+      float layerTime = timeName.first - lastTime;
+      // printf("%100s  %.3f\n", timeName.second, layerTime);
+      nameToTime[timeName.second] = layerTime;
+      lastTime = timeName.first;
+    }
+    // printf("## Backward time\n");
+    lastTime = 0;
+    for (auto& timeName : bpTimes) {
+      float layerTime = timeName.first - lastTime;
+      // printf("%100s  %.3f\n", timeName.second, layerTime);
+      nameToTime[timeName.second] += layerTime;
+      lastTime = timeName.first;
+    }
+    return nameToTime;
+  };
+
+  // Get average.
+  std::vector<std::pair<float, const char*> > fpTimes;
+  std::vector<std::pair<float, const char*> > bpTimes;
+  for (auto& layer : layers) {
+    if (!layer.detachInput) {
+      continue;
+    }
+    fpTimes.push_back(std::make_pair<float, const char*>(
+        layer.fpTimer->getAvg(warmupIters), layer.moduleName.c_str()));
+    bpTimes.push_back(std::make_pair<float, const char*>(
+        layer.bpTimer->getAvg(warmupIters), layer.moduleName.c_str()));
+  }
+  std::sort(fpTimes.begin(), fpTimes.end());
+  std::sort(bpTimes.begin(), bpTimes.end());
+  // printf("## Forward time\n");
+  float lastTime = 0;
+  std::unordered_map<const char*, float> nameToTime;
+  for (auto& timeName : fpTimes) {
+    float layerTime = timeName.first - lastTime;
+    // printf("%100s  %.3f\n", timeName.second, layerTime);
+    nameToTime[timeName.second] = layerTime;
+    lastTime = timeName.first;
+  }
+  // printf("## Backward time\n");
+  lastTime = 0;
+  for (auto& timeName : bpTimes) {
+    float layerTime = timeName.first - lastTime;
+    // printf("%100s  %.3f\n", timeName.second, layerTime);
+    nameToTime[timeName.second] += layerTime;
+    lastTime = timeName.first;
+  }
+
+  
+  std::unordered_map<const char*, float> p50Times = getName2LayerTime(50);
+  std::unordered_map<const char*, float> p90Times = getName2LayerTime(90);
+  std::unordered_map<const char*, float> p99Times = getName2LayerTime(99);
+  
+  // printf("## Sum\n");
+  printf("%100s  avg(ms)    p50     p90     p99\n", "#config");
+  float sum = 0;
+  for (auto& timeName : fpTimes) {
+    const char* name = timeName.second;
+    float avgT = nameToTime[name];
+    sum += avgT;
+    printf("%100s  %6.3f  %6.3f  %6.3f  %6.3f\n", name, avgT, p50Times[name],
+           p90Times[name], p99Times[name]);
+  }
+  printf("%100s  %.3f\n", "SUM(avg)", sum);
 }
