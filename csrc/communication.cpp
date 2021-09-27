@@ -218,6 +218,8 @@ CommunicationHandlerNCCL::CommunicationHandlerNCCL(RuntimeContext* rtctx,
 
   CUDA_API_CALL(cudaStreamCreateWithPriority(&all_reduce_stream, cudaStreamNonBlocking, hipri));
   CUDA_API_CALL(cudaStreamCreateWithPriority(&comm_sync_stream, cudaStreamNonBlocking, hipri));
+  CUDA_API_CALL(cudaEventCreateWithFlags(&sync_event, cudaEventDisableTiming));
+
 }
 
 CommunicationHandlerNCCL::~CommunicationHandlerNCCL()
@@ -230,6 +232,7 @@ CommunicationHandlerNCCL::~CommunicationHandlerNCCL()
       CUDA_API_CALL(cudaStreamDestroy(stream));
   CUDA_API_CALL(cudaStreamDestroy(comm_sync_stream));
   CUDA_API_CALL(cudaStreamDestroy(all_reduce_stream));
+  CUDA_API_CALL(cudaEventDestroy(sync_event));
 }
 
 // borrowed from c10d
@@ -245,6 +248,12 @@ static const std::map<at::ScalarType, ncclDataType_t> ncclDataType = {
 };
 
 void
+CommunicationHandlerNCCL::sync() {
+  CUDA_API_CALL(cudaEventRecord(sync_event, comm_sync_stream));
+  CUDA_API_CALL(cudaStreamWaitEvent(rtctx->torch_stream, sync_event, 0));
+}
+
+void
 CommunicationHandlerNCCL::send(const torch::Tensor& tensor, int tag, int dest,
     bool async)
 {
@@ -252,23 +261,19 @@ CommunicationHandlerNCCL::send(const torch::Tensor& tensor, int tag, int dest,
   cudaStream_t send_stream = send_streams[dest];
 
   /* ensure ncclSend happens after most recent kernel has finished on rtctx->torch_stream */
-  cudaEvent_t event;
-  CUDA_API_CALL(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
-  CUDA_API_CALL(cudaEventRecord(event, rtctx->torch_stream));
-  CUDA_API_CALL(cudaStreamWaitEvent(send_stream, event, 0));
+  CUDA_API_CALL(cudaEventRecord(sync_event, rtctx->torch_stream));
+  CUDA_API_CALL(cudaStreamWaitEvent(send_stream, sync_event, 0));
 
   /* send the data */
   auto dtype = ncclDataType.at(tensor.scalar_type());
   NCCL_API_CALL(ncclSend(tensor.data_ptr(), tensor.numel(), dtype, dest, rtctx->ncclCommObj, send_stream));
 
-  CUDA_API_CALL(cudaEventRecord(event, send_stream));
+  CUDA_API_CALL(cudaEventRecord(sync_event, send_stream));
 
   if (async)
-    CUDA_API_CALL(cudaStreamWaitEvent(comm_sync_stream, event, 0));
+    CUDA_API_CALL(cudaStreamWaitEvent(comm_sync_stream, sync_event, 0));
   else
-    CUDA_API_CALL(cudaStreamWaitEvent(rtctx->torch_stream, event, 0));
-
-  CUDA_API_CALL(cudaEventDestroy(event));
+    CUDA_API_CALL(cudaStreamWaitEvent(rtctx->torch_stream, sync_event, 0));
 }
 
 void
@@ -280,23 +285,19 @@ CommunicationHandlerNCCL::recv(torch::Tensor& tensor, int tag, int src,
   cudaStream_t recv_stream = recv_streams[src];
 
   /* ensure ncclRecv happens after most recent kernel has finished on rtctx->torch_stream */
-  cudaEvent_t event;
-  CUDA_API_CALL(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
-  CUDA_API_CALL(cudaEventRecord(event, rtctx->torch_stream));
-  CUDA_API_CALL(cudaStreamWaitEvent(recv_stream, event, 0)); // this is nonblocking for the host
+  CUDA_API_CALL(cudaEventRecord(sync_event, rtctx->torch_stream));
+  CUDA_API_CALL(cudaStreamWaitEvent(recv_stream, sync_event, 0)); // this is nonblocking for the host
 
   /* receive the data */
   auto dtype = ncclDataType.at(tensor.scalar_type());
   NCCL_API_CALL(ncclRecv(tensor.data_ptr(), tensor.numel(), dtype, src, rtctx->ncclCommObj, recv_stream));
 
-  CUDA_API_CALL(cudaEventRecord(event, recv_stream));
+  CUDA_API_CALL(cudaEventRecord(sync_event, recv_stream));
 
   if (async)
-    CUDA_API_CALL(cudaStreamWaitEvent(comm_sync_stream, event, 0));
+    CUDA_API_CALL(cudaStreamWaitEvent(comm_sync_stream, sync_event, 0));
   else
-    CUDA_API_CALL(cudaStreamWaitEvent(rtctx->torch_stream, event, 0));
-
-  CUDA_API_CALL(cudaEventDestroy(event));
+    CUDA_API_CALL(cudaStreamWaitEvent(rtctx->torch_stream, sync_event, 0));
 }
 
 void
@@ -312,24 +313,20 @@ CommunicationHandlerNCCL::all_reduce(torch::Tensor &tensor,
   };
 
   /* ensure all_reduce happens after most recent kernel has finished on rtctx->torch_stream */
-  cudaEvent_t event;
-  CUDA_API_CALL(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
-  CUDA_API_CALL(cudaEventRecord(event, rtctx->torch_stream));
-  CUDA_API_CALL(cudaStreamWaitEvent(all_reduce_stream, event, 0));
+  CUDA_API_CALL(cudaEventRecord(sync_event, rtctx->torch_stream));
+  CUDA_API_CALL(cudaStreamWaitEvent(all_reduce_stream, sync_event, 0));
 
 
   auto dtype = ncclDataType.at(tensor.scalar_type());
   NCCL_API_CALL(ncclAllReduce(tensor.data_ptr(), tensor.data_ptr(),
                               tensor.numel(), dtype, ncclOp.at(op),
                               rtctx->ncclCommObj, all_reduce_stream));
-  CUDA_API_CALL(cudaEventRecord(event, all_reduce_stream));
+  CUDA_API_CALL(cudaEventRecord(sync_event, all_reduce_stream));
 
   if (async)
-    CUDA_API_CALL(cudaStreamWaitEvent(comm_sync_stream, event, 0));
+    CUDA_API_CALL(cudaStreamWaitEvent(comm_sync_stream, sync_event, 0));
   else
-    CUDA_API_CALL(cudaStreamWaitEvent(rtctx->torch_stream, event, 0));
-
-  CUDA_API_CALL(cudaEventDestroy(event));
+    CUDA_API_CALL(cudaStreamWaitEvent(rtctx->torch_stream, sync_event, 0));
 }
 
 void
@@ -399,30 +396,24 @@ CommunicationHandlerNCCL::testRingP2P()
 void
 CommunicationHandlerNCCL::precapture() {
   size_t i = 0;
-  cudaEvent_t event;
-  CUDA_API_CALL(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
-  CUDA_API_CALL(cudaEventRecord(event, rtctx->torch_stream));
+  CUDA_API_CALL(cudaEventRecord(sync_event, rtctx->torch_stream));
 
   for (auto &sset : {recv_streams, send_streams, {comm_sync_stream, all_reduce_stream}}) {
     for (auto &stream : sset) {
       if (!stream) continue;
-      CUDA_API_CALL(cudaStreamWaitEvent(stream, event, 0));
+      CUDA_API_CALL(cudaStreamWaitEvent(stream, sync_event, 0));
     }
   }
-  CUDA_API_CALL(cudaEventDestroy(event));
 }
 
 void
 CommunicationHandlerNCCL::postcapture() {
-  cudaEvent_t event;
-  CUDA_API_CALL(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
   size_t i = 0;
   for (auto &sset : {recv_streams, send_streams, {comm_sync_stream, all_reduce_stream}}) {
     for (auto &stream : sset) {
       if (!stream) continue;
-      CUDA_API_CALL(cudaEventRecord(event, stream));
-      CUDA_API_CALL(cudaStreamWaitEvent(rtctx->torch_stream, event, 0));
+      CUDA_API_CALL(cudaEventRecord(sync_event, stream));
+      CUDA_API_CALL(cudaStreamWaitEvent(rtctx->torch_stream, sync_event, 0));
     }
   }
-  CUDA_API_CALL(cudaEventDestroy(event));
 }

@@ -88,7 +88,7 @@ class CommunicationHandlerNCCL : public CommunicationHandler {
             bool async = false);
   void recv(torch::Tensor& tensor, int tag, int src,
             bool async = false);
-  void sync() { cudaStreamSynchronize(comm_sync_stream); }
+  void sync();
   void precapture();
   void postcapture();
   void all_reduce(torch::Tensor& tensor, c10d::ReduceOp op, bool async = false);
@@ -101,6 +101,8 @@ class CommunicationHandlerNCCL : public CommunicationHandler {
   std::mutex _mutex;                // Monitor lock.
   std::unordered_map<int, std::string> receivedData;
   std::unordered_map<int, std::unique_ptr<RuntimeClient> > clientPool;
+
+  cudaEvent_t sync_event; // already created event used to immediately sync two streams
 
   std::vector<cudaStream_t> send_streams;
   std::vector<cudaStream_t> recv_streams;

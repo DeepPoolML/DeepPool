@@ -65,10 +65,11 @@ TsrXferFunc::forward(AutogradContext* ctx, Variable x, TsrXfer* xfer)
       //     tsr.toString().c_str(), tsrSizeToStr(tsr).c_str(), tsrToStr(tsr).c_str());
       DP_LOG(DEBUG, "Receiving tag:%d from R:%d with tensor: %s", tag, src,
           tsrSizeToStr(tsr).c_str());
-      xfer->commHandler->recv(tsr, tag, src, /*async*/ false);
+      xfer->commHandler->recv(tsr, tag, src, /*async*/ true);
       tsrList.push_back(tsr);
     }
     tsrList.push_back(x);
+    xfer->commHandler->sync();
     DP_LOG(DEBUG, "Concating %d tensors", static_cast<int>(tsrList.size()));
     auto concated = torch::cat(tsrList, xfer->splitCatDim);
     DP_LOG(DEBUG, "Concated tensor: %s", tsrSizeToStr(concated).c_str());
@@ -121,11 +122,12 @@ TsrXferFunc::backward(AutogradContext* ctx, variable_list grad_output)
       tsr = tsr.to(xfer->commHandler->getDev(), /*non_blocking*/ true, /*copy*/ false);
       DP_LOG(DEBUG, "Receiving tag:%d from R:%d with tensor: %s", tag, src,
           tsr.toString().c_str());
-      xfer->commHandler->recv(tsr, tag, src, /*async*/ false);
+      xfer->commHandler->recv(tsr, tag, src, /*async*/ true);
       tsrList.push_back(tsr);
     }
     tsrList.push_back(x);
     // return { torch::cat(tsrList, xfer->splitCatDim) };
+    xfer->commHandler->sync();
 
     variable_list grad_inputs(2);
     grad_inputs[0] = torch::cat(tsrList, xfer->splitCatDim);
