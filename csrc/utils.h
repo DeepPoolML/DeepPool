@@ -70,14 +70,4 @@ std::string tsrSizeToStr(torch::Tensor tensor)
 
 #define CUDACHECK(cmd) CUDA_API_CALL(cmd)
 
-#define NCCL_API_CALL(apiFuncCall)                                            \
-  do {                                                                        \
-    ncclResult_t _status = apiFuncCall;                                        \
-    if (_status != ncclSuccess) {                                             \
-      fprintf(stderr, "%s:%d: error: function %s failed with error %d.\n",    \
-              __FILE__, __LINE__, #apiFuncCall, _status); \
-      exit(-1);                                                               \
-    }                                                                         \
-  } while (0)
-
 #endif

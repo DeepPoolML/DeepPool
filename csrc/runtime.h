@@ -20,10 +20,9 @@
 #include <mutex>
 #include <vector>
 #include <map>
-#include <nccl.h>
-#include <cuda_runtime.h>
 
 #include <c10/cuda/CUDAStream.h>
+#include <torch/csrc/cuda/nccl.h>
 
 #define VERBOSE 0
 
@@ -92,11 +91,12 @@ struct RuntimeContext {
    * variables to maintain per NCCL comm group
    * need to be expanded if one node participates in more than one comm group
    */
-  ncclUniqueId ncclGroupId;
+
+  torch::cuda::nccl::ncclUniqueId ncclGroupId;
   int ncclGroupSize;
   std::vector<int> ranks;
   std::atomic<bool> ncclCommReady{false};
-  ncclComm_t ncclCommObj;
+  torch::cuda::nccl::ncclComm_t ncclCommObj;
   c10::cuda::CUDAStream torch_stream, xfer_stream;
 };
 

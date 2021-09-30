@@ -55,18 +55,26 @@ TsrXferFunc::forward(AutogradContext* ctx, Variable x, TsrXfer* xfer)
     std::vector<int64_t> inputSizes = x.sizes().vec();
     std::vector<torch::Tensor> tsrList;
     size_t i;
+
+    // TODO: allocate single tensor buffer and direct recvs into correct portions
+    // assert(xfer->splitCatDim == 0);
+
+    for (i = 0; i < xfer->xferTagAndRank.size(); ++i) {
+      inputSizes[xfer->splitCatDim] = xfer->splitSizes[i];
+      torch::Tensor tsr = torch::empty(inputSizes);
+      tsr = tsr.to(rtctx->c10dev, /*non_blocking*/ true, /*copy*/ false);
+      tsrList.push_back(tsr);
+    }
+
     for (i = 0; i < xfer->xferTagAndRank.size(); ++i) {
       Tag tag = xfer->xferTagAndRank[i].first;
       Rank src = xfer->xferTagAndRank[i].second;
-      inputSizes[xfer->splitCatDim] = xfer->splitSizes[i];
-      torch::Tensor tsr = torch::empty(inputSizes);
-      tsr = tsr.to(xfer->commHandler->getDev(), /*non_blocking*/ true, /*copy*/ false);
+      auto &tsr = tsrList.at(i);
       // DP_LOG(DEBUG, "Receiving tag:%d from R:%d with tensor: %s, %s, %s", tag, src,
       //     tsr.toString().c_str(), tsrSizeToStr(tsr).c_str(), tsrToStr(tsr).c_str());
       DP_LOG(DEBUG, "Receiving tag:%d from R:%d with tensor: %s", tag, src,
           tsrSizeToStr(tsr).c_str());
       xfer->commHandler->recv(tsr, tag, src, /*async*/ true);
-      tsrList.push_back(tsr);
     }
     tsrList.push_back(x);
     xfer->commHandler->sync();
@@ -115,15 +123,19 @@ TsrXferFunc::backward(AutogradContext* ctx, variable_list grad_output)
     std::vector<torch::Tensor> tsrList;
     size_t i;
     for (i = 0; i < xfer->xferTagAndRankBack.size(); ++i) {
-      Tag tag = xfer->xferTagAndRankBack[i].first;
-      Rank src = xfer->xferTagAndRankBack[i].second;
       inputSizes[xfer->splitCatDim] = xfer->splitSizes[i];
       torch::Tensor tsr = torch::empty(inputSizes);
-      tsr = tsr.to(xfer->commHandler->getDev(), /*non_blocking*/ true, /*copy*/ false);
+      tsr = tsr.to(rtctx->c10dev, /*non_blocking*/ true, /*copy*/ false);
+      tsrList.push_back(tsr);
+    }
+
+    for (i = 0; i < xfer->xferTagAndRankBack.size(); ++i) {
+      Tag tag = xfer->xferTagAndRankBack[i].first;
+      Rank src = xfer->xferTagAndRankBack[i].second;
+      auto &tsr = tsrList[i];
       DP_LOG(DEBUG, "Receiving tag:%d from R:%d with tensor: %s", tag, src,
           tsr.toString().c_str());
       xfer->commHandler->recv(tsr, tag, src, /*async*/ true);
-      tsrList.push_back(tsr);
     }
     tsrList.push_back(x);
     // return { torch::cat(tsrList, xfer->splitCatDim) };

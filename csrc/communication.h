@@ -21,6 +21,11 @@
 #include "json.hpp"
 #include "rpcService.h"
 
+#include <c10/cuda/CUDAStream.h>
+#include <ATen/cuda/CUDAEvent.h>
+#include <torch/csrc/cuda/nccl.h>
+
+
 using json = nlohmann::json;
 
 /**
@@ -102,12 +107,12 @@ class CommunicationHandlerNCCL : public CommunicationHandler {
   std::unordered_map<int, std::string> receivedData;
   std::unordered_map<int, std::unique_ptr<RuntimeClient> > clientPool;
 
-  cudaEvent_t sync_event; // already created event used to immediately sync two streams
+  at::cuda::CUDAEvent sync_event;
 
-  std::vector<cudaStream_t> send_streams;
-  std::vector<cudaStream_t> recv_streams;
-  cudaStream_t comm_sync_stream;
-  cudaStream_t all_reduce_stream;
+  std::vector<c10::cuda::CUDAStream> send_streams;
+  std::vector<c10::cuda::CUDAStream> recv_streams;
+  c10::cuda::CUDAStream comm_sync_stream;
+  c10::cuda::CUDAStream all_reduce_stream;
 };
 
 class CommunicationHandlerGRPC : public CommunicationHandler {

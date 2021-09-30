@@ -24,7 +24,6 @@
 #include "logger.h"
 #include "runnableModule.h"
 #include "taskManager.h"
-#include "nccl.h"
 #include "cuda_runtime.h"
 
 #include <grpcpp/grpcpp.h>
@@ -73,7 +72,7 @@ RuntimeServiceImpl::InitCommNCCL(ServerContext* context,
   if (msg_type == 0) { // Generate comm group ID
     if (rtctx->rank == 0) { // Only rank 0 generates ID
       rtctx->ncclGroupSize = group_size;
-      NCCL_API_CALL(ncclGetUniqueId(&rtctx->ncclGroupId));
+      torch::cuda::nccl::get_unique_id(rtctx->ncclGroupId);
 
       std::string replyMsg("Comm group ID generated at rank 0.");
       reply->set_message(replyMsg);
@@ -84,7 +83,7 @@ RuntimeServiceImpl::InitCommNCCL(ServerContext* context,
     if (rtctx->rank != 0) // Ranks 1+ need to receive ID before joining
       memcpy(&rtctx->ncclGroupId, request->group_id().c_str(), sizeof(rtctx->ncclGroupId));
 
-    NCCL_API_CALL(ncclCommInitRank(&rtctx->ncclCommObj, rtctx->worldSize, rtctx->ncclGroupId, rtctx->rank));
+    rtctx->ncclCommObj = torch::cuda::nccl::comm_init_rank(rtctx->worldSize, rtctx->ncclGroupId, rtctx->rank);
     rtctx->ncclCommReady = true;
 
     std::string replyMsg("Comm group ID broadcast & joined.");
