@@ -20,8 +20,34 @@
 #include "logger.h"
 #include "utils.h"
 #include "runtime.h"
+#include "Cycles.h"
 
 #define ENABLE_TIMERS 1
+
+class CpuTimer {
+ public:
+  CpuTimer(const char* name)
+    : name(name) {}
+
+  inline void start() {
+    lastStartTick = RAMCloud::Cycles::rdtsc();
+  }
+
+  inline void stop() {
+    totalCycles += RAMCloud::Cycles::rdtsc() - lastStartTick;
+    count++;
+  }
+
+  uint64_t avgMicros() {
+    return RAMCloud::Cycles::toMicroseconds(
+        totalCycles / count);
+  }
+
+  const char* name;
+  uint64_t lastStartTick;
+  uint64_t totalCycles;
+  uint64_t count;
+};
 
 class CudaTimer {
  public:

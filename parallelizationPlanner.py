@@ -1040,7 +1040,6 @@ class CostSim:
                 dpConfigCandidates = [(int(initCfg[0] / 2**bs), int(initCfg[1] / 2**int(whs/2)), int(initCfg[1] / 2**int(whs/2+0.5)), initCfg[3] )
                                     for bs in range(totalSplits + 1) for whs in [0] ]
 
-            print("layer %2d   config candidates:" % layer.id, configCandidates)
             for config in configCandidates:
                 # Check validity of config.
                 invalidConfig = False
@@ -1050,12 +1049,11 @@ class CostSim:
                         break
                     # add some other rules..
                 if invalidConfig:
-                    print("  Skipping.. ", config)
                     continue
                 
                 # Benchmark GPU time
                 gpuTime = self.benchGpuTime(layer, config)
-                print("  GPU Time of ", config, " : ", gpuTime)
+                # print("  GPU Time of ", config, " : ", gpuTime)
                 
                 # Computer all-reduce time
                 if layer.name in ["conv2d"]:
