@@ -63,7 +63,8 @@ class CostSim:
         self.profiler = profiler
         self.layers: List[Layer] = []
         self.NET_BANDWIDTH = netBw
-        self.NET_LATENCY = 140 #40
+        self.NET_LATENCY = 240 #40
+        # self.NET_LATENCY = 400 #40
         self.verbose = verbose
         self.layerProfileCache = {}
         if gpuProfileLoc != None:
@@ -571,8 +572,10 @@ class CostSim:
 
         if layer.name in ["conv2d"]:
             gpuTime = self.profiler.runConv2dBench(config, layer.params, profile)
+            print(" Something bad happened!! Missed queryLayerProfileCache")
         elif layer.name in ["linear"]:
             gpuTime = self.profiler.runLinearBench(config, profile)
+            print(" Something bad happened!! Missed queryLayerProfileCache")
         else:
             gpuTime = 0
         return gpuTime
@@ -1037,6 +1040,7 @@ class CostSim:
                 dpConfigCandidates = [(int(initCfg[0] / 2**bs), int(initCfg[1] / 2**int(whs/2)), int(initCfg[1] / 2**int(whs/2+0.5)), initCfg[3] )
                                     for bs in range(totalSplits + 1) for whs in [0] ]
 
+            print("layer %2d   config candidates:" % layer.id, configCandidates)
             for config in configCandidates:
                 # Check validity of config.
                 invalidConfig = False
@@ -1046,10 +1050,12 @@ class CostSim:
                         break
                     # add some other rules..
                 if invalidConfig:
+                    print("  Skipping.. ", config)
                     continue
                 
                 # Benchmark GPU time
                 gpuTime = self.benchGpuTime(layer, config)
+                print("  GPU Time of ", config, " : ", gpuTime)
                 
                 # Computer all-reduce time
                 if layer.name in ["conv2d"]:
