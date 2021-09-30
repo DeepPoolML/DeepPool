@@ -40,6 +40,7 @@ TsrXferFunc::forward(AutogradContext* ctx, Variable x, TsrXfer* xfer)
         x.split_with_sizes(xfer->splitSizes, xfer->splitCatDim);
     assert(splittedTsrs.size() == xfer->xferTagAndRank.size() + 1);
     size_t i;
+    xfer->commHandler->comm_start();
     for (i = 0; i < xfer->xferTagAndRank.size(); ++i) {
       Tag tag = xfer->xferTagAndRank[i].first;
       Rank dest = xfer->xferTagAndRank[i].second;
@@ -49,6 +50,7 @@ TsrXferFunc::forward(AutogradContext* ctx, Variable x, TsrXfer* xfer)
 
       xfer->commHandler->send(tsr, tag, dest, /*async*/ true);
     }
+    xfer->commHandler->comm_end();
     return splittedTsrs[i];
   }
   else if (xfer->type == TsrXfer::Recv) {
@@ -61,11 +63,12 @@ TsrXferFunc::forward(AutogradContext* ctx, Variable x, TsrXfer* xfer)
 
     for (i = 0; i < xfer->xferTagAndRank.size(); ++i) {
       inputSizes[xfer->splitCatDim] = xfer->splitSizes[i];
-      torch::Tensor tsr = torch::empty(inputSizes);
-      tsr = tsr.to(rtctx->c10dev, /*non_blocking*/ true, /*copy*/ false);
+      torch::TensorOptions topts(rtctx->c10dev);
+      torch::Tensor tsr = torch::empty(inputSizes, topts);
       tsrList.push_back(tsr);
     }
 
+    xfer->commHandler->comm_start();
     for (i = 0; i < xfer->xferTagAndRank.size(); ++i) {
       Tag tag = xfer->xferTagAndRank[i].first;
       Rank src = xfer->xferTagAndRank[i].second;
@@ -76,9 +79,9 @@ TsrXferFunc::forward(AutogradContext* ctx, Variable x, TsrXfer* xfer)
           tsrSizeToStr(tsr).c_str());
       xfer->commHandler->recv(tsr, tag, src, /*async*/ true);
     }
+    xfer->commHandler->comm_end();
     tsrList.push_back(x);
-    xfer->commHandler->sync();
-    DP_LOG(DEBUG, "Concating %d tensors", static_cast<int>(tsrList.size()));
+    DP_LOG(DEBUG, "Concating %lu tensors", tsrList.size());
     auto concated = torch::cat(tsrList, xfer->splitCatDim);
     DP_LOG(DEBUG, "Concated tensor: %s", tsrSizeToStr(concated).c_str());
     return concated;
@@ -100,6 +103,7 @@ TsrXferFunc::backward(AutogradContext* ctx, variable_list grad_output)
         x.split_with_sizes(xfer->splitSizes, xfer->splitCatDim);
     assert(splittedTsrs.size() == xfer->xferTagAndRank.size() + 1);
     size_t i;
+    xfer->commHandler->comm_start();
     for (i = 0; i < xfer->xferTagAndRankBack.size(); ++i) {
       Tag tag = xfer->xferTagAndRankBack[i].first;
       Rank dest = xfer->xferTagAndRankBack[i].second;
@@ -108,7 +112,8 @@ TsrXferFunc::backward(AutogradContext* ctx, variable_list grad_output)
           tsrSizeToStr(tsr).c_str());
       xfer->commHandler->send(tsr, tag, dest, /*async*/ true);
     }
-    
+    xfer->commHandler->comm_end();
+
     variable_list grad_inputs(2);
     grad_inputs[0] = splittedTsrs[i];
 
@@ -124,11 +129,12 @@ TsrXferFunc::backward(AutogradContext* ctx, variable_list grad_output)
     size_t i;
     for (i = 0; i < xfer->xferTagAndRankBack.size(); ++i) {
       inputSizes[xfer->splitCatDim] = xfer->splitSizes[i];
-      torch::Tensor tsr = torch::empty(inputSizes);
-      tsr = tsr.to(rtctx->c10dev, /*non_blocking*/ true, /*copy*/ false);
+      torch::TensorOptions topts(rtctx->c10dev);
+      torch::Tensor tsr = torch::empty(inputSizes, topts);
       tsrList.push_back(tsr);
     }
 
+    xfer->commHandler->comm_start();
     for (i = 0; i < xfer->xferTagAndRankBack.size(); ++i) {
       Tag tag = xfer->xferTagAndRankBack[i].first;
       Rank src = xfer->xferTagAndRankBack[i].second;
@@ -137,9 +143,10 @@ TsrXferFunc::backward(AutogradContext* ctx, variable_list grad_output)
           tsr.toString().c_str());
       xfer->commHandler->recv(tsr, tag, src, /*async*/ true);
     }
+    xfer->commHandler->comm_end();
+
     tsrList.push_back(x);
     // return { torch::cat(tsrList, xfer->splitCatDim) };
-    xfer->commHandler->sync();
 
     variable_list grad_inputs(2);
     grad_inputs[0] = torch::cat(tsrList, xfer->splitCatDim);
@@ -178,8 +185,8 @@ RunnableModule::RunnableModule(RuntimeContext* rtctx,
 {
   DP_LOG(DEBUG, "Constructing runnable module.. rank:%d", rank);
   DP_LOG(DEBUG, "             initialBatchSize:%d", initialBatchSize);
-  DP_LOG(DEBUG, "             layersInJson's size:%d (from spec)", static_cast<int>(spec["layers"].size()));
-  DP_LOG(DEBUG, "             layersInJson's size:%d", static_cast<int>(layersInJson.size()));
+  DP_LOG(DEBUG, "             layersInJson's size:%lu (from spec)", spec["layers"].size());
+  DP_LOG(DEBUG, "             layersInJson's size:%lu", layersInJson.size());
   
   // It's important to reserve the same, so that layers won't get copied over
   // to another address.. (layer's are pointing each other with raw pointer.)
@@ -281,8 +288,8 @@ RunnableModule::RunnableModule(RuntimeContext* rtctx,
         DP_LOG(DEBUG, "remainder: %d, sum: %d", remainder, xferSampleSum);
         xfer.splitSizes.push_back(remainder);
         layers.back().xferOuts.push_back(std::move(xfer));
-        DP_LOG(DEBUG, "xferOut registered. len(layer->xferOuts): %d",
-            static_cast<int>(layers.back().xferOuts.size()));
+        DP_LOG(DEBUG, "xferOut registered. len(layer->xferOuts): %lu",
+            layers.back().xferOuts.size());
       }
     }
 
@@ -331,7 +338,7 @@ RunnableModule::RunnableModule(RuntimeContext* rtctx,
         DP_LOG(DEBUG, "remainder: %d, sum: %d", remainder, xferSampleSum);
         xfer.splitSizes.push_back(remainder);
         layers.back().xferIns.push_back(std::move(xfer));
-        DP_LOG(DEBUG, "xferIn registered. len(layer->xferIns): %d", static_cast<int>(layers.back().xferIns.size()));
+        DP_LOG(DEBUG, "xferIn registered. len(layer->xferIns): %lu", layers.back().xferIns.size());
       }
     }
 
@@ -397,8 +404,8 @@ RunnableModule::RunnableModule(RuntimeContext* rtctx,
   }
 
   for (auto& layer : layers) {
-    DP_LOG(DEBUG, "lid: %d, xferOuts: %d, xferIns: %d", layer.id,
-        static_cast<int>(layer.xferOuts.size()), static_cast<int>(layer.xferIns.size()));
+    DP_LOG(DEBUG, "lid: %d, xferOuts: %lu, xferIns: %lu", layer.id,
+        layer.xferOuts.size(), layer.xferIns.size());
   }
 
 
@@ -540,7 +547,7 @@ RunnableModule::forwardAStep()
     }
 
     // Send samples after running this layer.
-    DP_LOG(DEBUG, "len(layer->xferOuts): %d", static_cast<int>(layer->xferOuts.size()));
+    DP_LOG(DEBUG, "len(layer->xferOuts): %lu", layer->xferOuts.size());
     layer->outputsAfterXfer.clear();
     for (TsrXfer& xfer : layer->xferOuts) {
       torch::Tensor remainingOutput = TsrXferFunc::apply(output, &xfer);
@@ -580,9 +587,9 @@ RunnableModule::forwardAStep()
     if (!localOut.defined()) {
       assert(!layer->active);
       DP_LOG(DEBUG, "localOut is not defined. Must be inactive? Using an empty tensor.");
-      localOut = torch::empty(layer->emptyOutSizes);
-      localOut = localOut.to(device, /*non_blocking*/ true, /*copy*/ false);
-      localOut.requires_grad_();
+      torch::TensorOptions topts(rtctx->c10dev);
+      topts = topts.requires_grad(true);
+      localOut = torch::empty(layer->emptyOutSizes, topts);
       DP_LOG(DEBUG, "Empty localOut tensor: %s", localOut.toString().c_str());
     }
     torch::Tensor remainingOutput = TsrXferFunc::apply(localOut, &xfer);
@@ -687,8 +694,8 @@ RunnableModule::backwardAStep()
             grad = nextLayerPtr->detachedInputs[layer->id].grad();
           } else {
             DP_LOG(DEBUG, "nextLayerPtr->detachInput is not defined. Using empty tensor.");
-            grad = torch::empty(layer->emptyOutSizes);
-            grad = grad.to(device, /*non_blocking*/ true, /*copy*/ false);
+            torch::TensorOptions topts(rtctx->c10dev);
+            grad = torch::empty(layer->emptyOutSizes, topts);
           }
           DP_LOG(DEBUG, "nextLayerPtr(%d)->detachedInputs[%d]: %s, grad: %s",
               nextLayerPtr->id, layer->id,

@@ -62,6 +62,8 @@ class CommunicationHandler {
   /* used to prepare streams for cuda graph capture, WIP */
   virtual void precapture() = 0;
   virtual void postcapture() = 0;
+  virtual void comm_start() = 0;
+  virtual void comm_end() = 0;
 
   /**
    * Returns the tag for p2p communication send/recv.
@@ -96,6 +98,9 @@ class CommunicationHandlerNCCL : public CommunicationHandler {
   void sync();
   void precapture();
   void postcapture();
+  void comm_start();
+  void comm_end();
+
   void all_reduce(torch::Tensor& tensor, c10d::ReduceOp op, bool async = false);
   void testRingP2P();
   void testAllReduce();
@@ -113,6 +118,7 @@ class CommunicationHandlerNCCL : public CommunicationHandler {
   std::vector<c10::cuda::CUDAStream> recv_streams;
   c10::cuda::CUDAStream comm_sync_stream;
   c10::cuda::CUDAStream all_reduce_stream;
+  bool in_group_call{false};
 };
 
 class CommunicationHandlerGRPC : public CommunicationHandler {
@@ -130,6 +136,9 @@ class CommunicationHandlerGRPC : public CommunicationHandler {
   void sync() {};
   void precapture() {};
   void postcapture() {};
+  void comm_start() {};
+  void comm_end() {};
+
   void all_reduce(torch::Tensor& tensor, c10d::ReduceOp op, bool async = false);
 
 

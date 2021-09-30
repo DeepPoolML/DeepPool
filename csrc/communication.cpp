@@ -221,6 +221,12 @@ CommunicationHandlerNCCL::send(const torch::Tensor& tensor, int tag, int dest,
 {
   UNUSED(tag);
 
+  if (in_group_call) {
+    assert(async);
+    torch::cuda::nccl::send(tensor, rtctx->ncclCommObj, all_reduce_stream, dest);
+    return;
+  }
+
   c10::cuda::CUDAStream send_stream = send_streams[dest];
 
   /* ensure ncclSend happens after most recent kernel has finished on rtctx->torch_stream */
@@ -244,6 +250,14 @@ CommunicationHandlerNCCL::recv(torch::Tensor& tensor, int tag, int src,
 {
   UNUSED(tag);
   DP_LOG(DEBUG, "NCCL recv.");
+
+  if (in_group_call) {
+    assert(async);
+    torch::cuda::nccl::recv(tensor, rtctx->ncclCommObj, all_reduce_stream, src);
+    return;
+  }
+
+
   c10::cuda::CUDAStream recv_stream = recv_streams[src];
 
   /* ensure ncclRecv happens after most recent kernel has finished on rtctx->torch_stream */
@@ -334,6 +348,8 @@ CommunicationHandlerNCCL::testRingP2P()
   torch::Tensor recv_tensor = torch::full({3,3}, src, rtctx->c10dev);
   torch::Tensor expected = torch::full({3,3}, src + 1, rtctx->c10dev);
 
+  comm_start();
+
   if (rtctx->rank == 0) {
     send(send_tensor, 1, dest, true);
     recv(recv_tensor, 1, src, true);
@@ -342,7 +358,7 @@ CommunicationHandlerNCCL::testRingP2P()
     send(send_tensor, 1, dest, true);
   }
 
-  sync();
+  comm_end();
 
   DP_LOG(DEBUG, "Sent tensor [%s] to %d.", tsrToStr(send_tensor).c_str(), dest);
   DP_LOG(DEBUG, "Received tensor [%s] from %d.", tsrToStr(recv_tensor).c_str(), src);
@@ -352,11 +368,26 @@ CommunicationHandlerNCCL::testRingP2P()
 }
 
 void
-CommunicationHandlerNCCL::precapture() {
-  size_t i = 0;
-
+CommunicationHandlerNCCL::comm_start() {
+  assert(!in_group_call);
+  in_group_call = true;
   sync_event.record(rtctx->torch_stream);
+  sync_event.block(all_reduce_stream);
+  NCCL_API_CALL(ncclGroupStart());
+}
 
+void
+CommunicationHandlerNCCL::comm_end() {
+  assert(in_group_call);
+  in_group_call = false;
+  NCCL_API_CALL(ncclGroupEnd());
+  sync_event.record(all_reduce_stream);
+  sync_event.block(rtctx->torch_stream);
+}
+
+void
+CommunicationHandlerNCCL::precapture() {
+  sync_event.record(rtctx->torch_stream);
   for (auto &sset : {recv_streams, send_streams, {comm_sync_stream, all_reduce_stream}}) {
     for (auto &stream : sset) {
       sync_event.block(stream);
@@ -366,7 +397,6 @@ CommunicationHandlerNCCL::precapture() {
 
 void
 CommunicationHandlerNCCL::postcapture() {
-  size_t i = 0;
   for (auto &sset : {recv_streams, send_streams, {comm_sync_stream, all_reduce_stream}}) {
     for (auto &stream : sset) {
       sync_event.record(stream);
