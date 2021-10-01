@@ -48,6 +48,8 @@ enum class JobState {
   FORWARD,
   BACKWARD,
   SYNC,
+  STEP,
+  FINISH,
   NUM_JOB_STATES // must be the last element in the enum
 };
 

@@ -337,44 +337,43 @@ int
 TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
 {
 
-  if (job->totiters == job->profile_iter_start)
-    CUDA_API_CALL(cudaProfilerStart());
-
-  /* record starting point for BE training */
-  if (job->totiters == 100) {
-    rtctx->torch_stream.synchronize();
-    job->be_img_start = becounter.load();
-    job->start = std::chrono::steady_clock::now();
-  }
-
-  if (job->iter >= job->itersToTrain) {
-    DP_LOG(DEBUG, "epoch is completed.");
-    job->iter = 0;
-    job->epoch++;
-  }
-  if (job->epoch >= job->epochsToTrain) {
-    DP_LOG(DEBUG, "training is completed.");
-    rtctx->torch_stream.synchronize();
-    job->end = std::chrono::steady_clock::now();
-    job->be_img_end = becounter.load();
-    *jobCompleted = true;
-    return 0;
-  }
   if (job->state == JobState::INIT) {
+
+    if (job->totiters == job->profile_iter_start)
+      CUDA_API_CALL(cudaProfilerStart());
+
+    /* record starting point for BE training */
+    if (job->totiters == 100) {
+      rtctx->torch_stream.synchronize();
+      job->be_img_start = becounter.load();
+      job->start = std::chrono::steady_clock::now();
+    }
+
+    if (job->iter >= job->itersToTrain) {
+      DP_LOG(DEBUG, "epoch is completed.");
+      job->iter = 0;
+      job->epoch++;
+    }
+    if (job->epoch >= job->epochsToTrain) {
+      DP_LOG(DEBUG, "training is completed.");
+      rtctx->torch_stream.synchronize();
+      job->end = std::chrono::steady_clock::now();
+      job->be_img_end = becounter.load();
+      *jobCompleted = true;
+      return 0;
+    }
+
     job->model->resetProfileTimers();
     for (int tpIdx = CT_NUM_OF_EVENTS - 1; tpIdx >= CT_START; --tpIdx) {
       DP_LOG(DEBUG, "timer.saveAndReset() for %d. recorded:%d", tpIdx, job->timers[tpIdx].isRecorded());
       job->timers[tpIdx].saveAndReset();
     }
     job->timers[CT_START].record();
-
     DP_LOG(DEBUG, "JobState::INIT.");
-    job->optimizer->zero_grad();
-    job->timers[CT_ZERO].record();
 
     job->model->iterInit();
-    job->state = JobState::FORWARD;
 
+    /* start graph capture */
     if (job->totiters == job->iters_before_graph_capture) {
       if (becounter.load()) be_controller.Pause();
       c10::cuda::device_synchronize();
@@ -386,9 +385,12 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
       static CUDAPipeline p(16);
       p.Lap();
       job->model->graph.replay();
-      job->state = JobState::SYNC;
+      job->state = JobState::FINISH;
       return 1;
     }
+
+    job->optimizer->zero_grad();
+    job->timers[CT_ZERO].record();
 
 
     if (rtctx->verify && job->iter == 0) {
@@ -403,9 +405,9 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
       inputVec.push_back(x2);
       job->outputToVerify = job->modelToVerify.forward(inputVec).toTensor();
     }
-    // cudaDeviceSynchronize();
 
     job->timers[CT_LOAD].record();
+    job->state = JobState::FORWARD;
     DP_LOG(DEBUG, "Foward pass is starting soon.");
   } else if (job->state == JobState::FORWARD) {
     DP_LOG(DEBUG, "JobState::FORWARD.");
@@ -447,24 +449,29 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
     }
   } else if (job->state == JobState::SYNC) {
     DP_LOG(DEBUG, "JobState::SYNC.");
+    DP_LOG(DEBUG, "All-reduce parameter sync is not implemented yet.");
+    job->timers[CT_SYNC].record();
+    job->state = JobState::STEP;
+  } else if (job->state == JobState::STEP) {
+    DP_LOG(DEBUG, "JobState::STEP");
+    job->optimizer->step();
+    job->timers[CT_OPT].record();
+    job->state = JobState::FINISH;
+  } else if (job->state == JobState::FINISH) {
+    DP_LOG(DEBUG, "JobState::FINISH");
+
+    if (job->totiters == job->profile_iter_start + job->niter_to_profile)
+      CUDA_API_CALL(cudaProfilerStop());
+
     if (job->totiters == job->iters_before_graph_capture) {
       job->commHandler->postcapture();
       job->model->graph.capture_end();
       if (becounter.load()) be_controller.Resume();
       DP_LOG(NOTICE, "Ending capture.");
     }
-
-    if (job->totiters == job->profile_iter_start + job->niter_to_profile)
-      CUDA_API_CALL(cudaProfilerStop());
-
     job->totiters++;
     job->iter++;
     fgcounter++;
-    DP_LOG(DEBUG, "All-reduce parameter sync is not implemented yet.");
-    job->timers[CT_SYNC].record();
-    
-    job->optimizer->step();
-    job->timers[CT_OPT].record();
 
     job->state = JobState::INIT;
     job->timers[CT_STOP].record();
