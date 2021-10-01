@@ -83,19 +83,21 @@ struct JobContext {
   std::unique_ptr<DataLoader> dataLoader;
   std::unique_ptr<CommunicationHandler> commHandler;
   std::unique_ptr<TargetShuffler> targetShuffler;
-  int epochsToTrain;
+  size_t epochsToTrain;
   std::unique_ptr<torch::optim::Optimizer> optimizer;
   c10::Device device;
   // self.dataLoaderIt = iter(self.dataLoader) if dataLoader != None else None
   // self.criterion = nn.CrossEntropyLoss().cuda(device) if criterion == None else criterion
-  int epoch;
-  int iter;
+  size_t epoch;
+  size_t iter;
   size_t totiters{0}; // total iters executed
-  int itersToTrain; // = len(dataLoader) if dataLoader != None else None #TODO: this is a temporary hack..
+  size_t itersToTrain; // = len(dataLoader) if dataLoader != None else None #TODO: this is a temporary hack..
   // self.itersPerPoll = 50
   // self.training_initialized = False
   // self.itersToCapture = set(range(250, 260))
-  int iters_before_graph_capture{5000}; // set high to disable graph capture
+  size_t profile_iter_start{5000};
+  size_t niter_to_profile{5};
+  size_t iters_before_graph_capture{50}; // set high to disable graph capture
   JobState state;
 
   std::vector<CudaTimer> timers;

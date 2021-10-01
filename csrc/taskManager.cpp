@@ -23,12 +23,52 @@
 #include "communication.h"
 #include "logger.h"
 
+#include <cuda_profiler_api.h>
+
 #include <ATen/autocast_mode.h>
 #include <ATen/cuda/CUDAGraph.h>
 #include <ATen/cuda/CUDAEvent.h>
 
 
 using Cycles = RAMCloud::Cycles;
+
+class CUDAPipeline {
+ public:
+  CUDAPipeline(size_t depth) : depth_(depth) {}
+  void Lap() {
+    if (cur_idx_++ % depth_ != 0) return;
+    while (!ev_.query()) usleep(50);
+    ev_ = at::cuda::CUDAEvent();
+    ev_.record();
+  }
+
+ private:
+  size_t depth_;
+  size_t cur_idx_{0};
+  at::cuda::CUDAEvent ev_;
+};
+
+class BeRunner {
+public:
+  void Lap() {
+    while (status.load() != 0) {
+      int s = 1;
+      if (status.load() != 2) status.compare_exchange_strong(s, 2);
+      usleep(100);
+    }
+  }
+  void Pause() {
+    assert(status.load() == 0);
+    status.store(1);
+    while (status.load() != 2) usleep(100);
+  }
+  void Resume() {
+    status.store(0);
+  }
+private:
+  std::atomic<int> status{0};
+};
+
 
 /**
  * Contructs context for a training job.
@@ -50,7 +90,7 @@ JobContext::JobContext(std::unique_ptr<RunnableModule> modelIn, std::string name
   , device(device)
   , epoch(0)
   , iter(0)
-  , itersToTrain(200) // = len(dataLoader) if dataLoader != None else None #TODO: this is a temporary hack..
+  , itersToTrain(2000) // = len(dataLoader) if dataLoader != None else None #TODO: this is a temporary hack..
   , state(JobState::INIT)
   , timers()
   , modelToVerify()
@@ -86,7 +126,9 @@ std::mutex mtx;
 std::condition_variable cv;
 bool beinited = false;
 
-std::atomic<uint64_t> becounter{0};
+static std::atomic<uint64_t> fgcounter{0};
+static std::atomic<uint64_t> becounter{0};
+static BeRunner be_controller;
 
 /* tremendous WIP */
 void BeRunner(long bsize) {
@@ -145,21 +187,19 @@ void BeRunner(long bsize) {
   fn();
   graph.capture_end();
   c10::cuda::device_synchronize();
-  // auto cgr_exec_ = graph.getGEXEC();
   {
     std::lock_guard<std::mutex> lk(mtx);
     beinited = true;
   }
   cv.notify_one();
 
-  cudaEvent_t waiter;
-  CUDACHECK(cudaEventCreateWithFlags(&waiter, cudaEventDisableTiming));
+  at::cuda::CUDAEvent waiter;
 
   while (true) {
+    be_controller.Lap();
     graph.replay();
-    // CUDACHECK(cudaGraphLaunch(cgr_exec_, cstream.stream()));
-    CUDACHECK(cudaEventRecord(waiter, cstream.stream()));
-    while (cudaEventQuery(waiter) != cudaSuccess) { usleep(100); }
+    waiter.record();
+    while (!waiter.query()) { usleep(100); }
     becounter.store(becounter.load() + bsize);
   }
 }
@@ -177,23 +217,28 @@ TaskManager::TaskManager(RuntimeContext* rtctx)
   if (rtctx->be_batch_size > 0) {
     long bsize = rtctx->be_batch_size;
     std::thread([=] { BeRunner(bsize); }).detach();
-    std::thread([&] {
-      using namespace std::chrono;
-      size_t lastc = becounter.load();
-      auto lastt = steady_clock::now();
-      while (true) {
-        sleep(5);
-        size_t newtr = becounter.load();
-        auto now = steady_clock::now();
-        auto s = duration_cast<seconds>(now - lastt).count();
-        std::cerr << "Trained " << (newtr - lastc) / s << " img/s" << std::endl;
-        lastt = now;
-        lastc = newtr;
-      }
-    }).detach();
     std::unique_lock<std::mutex> lk(mtx);
     cv.wait(lk, []{return beinited;});
   }
+
+  std::thread([&] {
+    using namespace std::chrono;
+    size_t lastc = becounter.load();
+    size_t lastfg = fgcounter.load();
+    auto lastt = steady_clock::now();
+    while (true) {
+      sleep(1);
+      size_t newtr = becounter.load();
+      size_t newfg = fgcounter.load();
+      auto now = steady_clock::now();
+      auto s = duration_cast<seconds>(now - lastt).count();
+      std::cerr << "BE im/s: " << (newtr - lastc) / s << " FG iter/s: " << (newfg - lastfg) / s << std::endl;
+      lastt = now;
+      lastc = newtr;
+      lastfg = newfg;
+    }
+  }).detach();
+
 }
 
 /**
@@ -253,8 +298,7 @@ TaskManager::poll()
         mainJob->timers[CT_STOP].getP50(warmupIters));
 
     jobList.erase(jobList.begin());
-    DP_LOG(NOTICE, "Removed the completed job. Remaining: %d",
-        static_cast<int>(jobList.size()));
+    DP_LOG(NOTICE, "Removed the completed job. Remaining: %lu", jobList.size());
   }
   jobsScheduled++;
   return jobsScheduled;
@@ -272,6 +316,10 @@ TaskManager::poll()
 int
 TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
 {
+
+  if (job->totiters == job->profile_iter_start)
+    CUDA_API_CALL(cudaProfilerStart());
+
   /* record starting point for BE training */
   if (job->totiters == 100) {
     rtctx->torch_stream.synchronize();
@@ -306,14 +354,16 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
     job->state = JobState::FORWARD;
 
     if (job->totiters == job->iters_before_graph_capture) {
+      if (becounter.load()) be_controller.Pause();
       c10::cuda::device_synchronize();
       DP_LOG(NOTICE, "Starting capture.");
       job->model->graph.capture_begin();
       job->commHandler->precapture();
-    } else if (job->iter > job->totiters) {
+    } else if (job->totiters > job->iters_before_graph_capture) {
       DP_LOG(DEBUG, "Replay iter.");
+      static CUDAPipeline p(16);
+      p.Lap();
       job->model->graph.replay();
-      c10::cuda::device_synchronize(); // TODO remove me
       job->state = JobState::SYNC;
       return 1;
     }
@@ -370,14 +420,19 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
     }
   } else if (job->state == JobState::SYNC) {
     DP_LOG(DEBUG, "JobState::SYNC.");
-    if (job->iter == job->iters_before_graph_capture) {
+    if (job->totiters == job->iters_before_graph_capture) {
       job->commHandler->postcapture();
       job->model->graph.capture_end();
+      if (becounter.load()) be_controller.Resume();
       DP_LOG(NOTICE, "Ending capture.");
     }
 
+    if (job->totiters == job->profile_iter_start + job->niter_to_profile)
+      CUDA_API_CALL(cudaProfilerStop());
+
     job->totiters++;
     job->iter++;
+    fgcounter++;
     DP_LOG(DEBUG, "All-reduce parameter sync is not implemented yet.");
     job->timers[CT_SYNC].record();
     job->state = JobState::INIT;
