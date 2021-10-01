@@ -140,6 +140,11 @@ void BeRunner(long bsize) {
   m.train();
   m.to(torch::Device("cuda:0"));
 
+  std::vector<torch::Tensor> params;
+  for (const auto &p : m.parameters()) params.push_back(p);
+
+  torch::optim::SGD optim(params, torch::optim::SGDOptions(0.1).momentum(0.9));
+
   long px = filename.find("inception") == std::string::npos ? 224 : 299;
   auto tensor = torch::rand({bsize, 3, px, px});
   tensor = tensor.to(torch::Device("cuda:0"));
@@ -158,6 +163,7 @@ void BeRunner(long bsize) {
 
   auto fn = [&] {
     auto orig_stream = c10::cuda::getCurrentCUDAStream();
+    optim.zero_grad();
     at::cuda::CUDAEvent ev;
     ev.record(orig_stream);
     for (size_t i = 0; i < tenss.size(); i++) {
@@ -173,6 +179,7 @@ void BeRunner(long bsize) {
     }
 
     c10::cuda::setCurrentCUDAStream(orig_stream);
+    optim.step();
 
     at::autocast::clear_cache();
   };

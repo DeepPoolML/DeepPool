@@ -216,6 +216,7 @@ int main(int argc, char** argv) {
   TaskManager taskMngr(&ctx);
 
   std::cout << "myAddr: " << ctx.myAddr << " rank: " << ctx.rank << std::endl;
+  std::cout << "myPID: " << getpid() << std::endl;
   initGrpcServer(&ctx);
 
   if (ctx.debug) {

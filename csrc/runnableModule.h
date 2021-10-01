@@ -140,37 +140,57 @@ public:
   TensorGeneratorPipeline(std::function<torch::Tensor()> gen) {
     for (size_t i = 0; i < 64; i++) cached_.push_back(gen());
 
+    CUDACHECK(cudaEventCreateWithFlags(&hToD_ev_, cudaEventDisableTiming));
+    CUDACHECK(cudaEventCreateWithFlags(&dToD_ev_, cudaEventDisableTiming));
+
     next_t_ = cached_[iter_idx_++ % 64];
     auto origstream = c10::cuda::getCurrentCUDAStream();
     c10::cuda::setCurrentCUDAStream(rtctx->xfer_stream);
     next_t_ = next_t_.to(rtctx->c10dev, /*non_blocking*/ true, /*copy*/ false);
-    CUDACHECK(cudaEventCreateWithFlags(&next_t_ev_, cudaEventDisableTiming));
-    CUDACHECK(cudaEventRecord(next_t_ev_, rtctx->xfer_stream.stream()));
+    CUDACHECK(cudaEventRecord(hToD_ev_, rtctx->xfer_stream));
     c10::cuda::setCurrentCUDAStream(origstream);
+
+    tensorbytes = next_t_.nbytes();
+    tensor_buf = c10::cuda::CUDACachingAllocator::raw_alloc(tensorbytes);
+    assert(!tensorbytes || tensor_buf);
   }
 
   torch::Tensor GetNext() {
-    /* make sure current stream waits for last one to be ready */
-    auto origstream = c10::cuda::getCurrentCUDAStream();
-    CUDACHECK(cudaStreamWaitEvent(origstream.stream(), next_t_ev_));
-    auto out = next_t_;
+    if (!tensorbytes)
+      return cached_[iter_idx_++ % 64].to(rtctx->c10dev, true, false);
 
-    /* generate next */
+    /* send last transmitted tensor into final buf */
+    auto origstream = c10::cuda::getCurrentCUDAStream();
+    CUDACHECK(cudaStreamWaitEvent(origstream, hToD_ev_));
+    CUDACHECK(cudaMemcpyAsync(tensor_buf, next_t_.data_ptr(), next_t_.nbytes(),
+                              cudaMemcpyDeviceToDevice, origstream));
+    CUDACHECK(cudaEventRecord(dToD_ev_, origstream));
+
+    auto tensor_out =
+        torch::from_blob(tensor_buf, next_t_.sizes(), next_t_.options());
+
+    /* wait for DtoD to finish before starting next HtoD transfer */
+    CUDACHECK(cudaStreamWaitEvent(rtctx->xfer_stream, dToD_ev_));
+
+    /* run next HtoD transfer */
     next_t_ = cached_[iter_idx_++ % 64];
     c10::cuda::setCurrentCUDAStream(rtctx->xfer_stream);
     next_t_ = next_t_.to(rtctx->c10dev, /*non_blocking*/ true, /*copy*/ false);
-    CUDACHECK(cudaEventRecord(next_t_ev_, rtctx->xfer_stream.stream()));
+    CUDACHECK(cudaEventRecord(hToD_ev_, rtctx->xfer_stream));
     c10::cuda::setCurrentCUDAStream(origstream);
-    return next_t_;
+
+    return tensor_out;
   }
 
 private:
+  size_t tensorbytes;
+  void* tensor_buf;
   torch::Tensor next_t_;
-  cudaEvent_t next_t_ev_{nullptr};
+  cudaEvent_t hToD_ev_{nullptr};
+  cudaEvent_t dToD_ev_{nullptr};
   std::vector<torch::Tensor> cached_;
   uint64_t iter_idx_{0};
 };
-
 
 /**
  * A module that holds parameters (or submodules) and
