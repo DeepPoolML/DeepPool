@@ -25,6 +25,7 @@
 
 #include "runtime.h"
 #include "utils.h"
+#include "tracer.h"
 
 #include <c10/cuda/CUDAStream.h>
 #include <ATen/cuda/CUDAGraph.h>
@@ -182,6 +183,7 @@ class RunnableModule : public torch::nn::Module {
       CommunicationHandler* commHandler, c10::Device device);
 
   void getParameters(std::vector<torch::Tensor>* parameters);
+  void getActiveParameters(std::vector<torch::Tensor>* parameters);
   void iterInit();
   bool forwardAStep();
   // bool forwardAStepOld();
@@ -217,6 +219,8 @@ class RunnableModule : public torch::nn::Module {
   TensorGeneratorPipeline input_pipeline, target_pipeline;
 
   at::cuda::CUDAGraph graph;
+  // Performance Stat
+  CpuTimer detachTimer;
 };
 
 #endif

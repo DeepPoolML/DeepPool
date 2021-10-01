@@ -182,6 +182,7 @@ RunnableModule::RunnableModule(RuntimeContext* rtctx,
   , fpTargets()
   , fpOutput()
   , fpLoss()
+  , detachTimer("detachTimer")
 {
   DP_LOG(DEBUG, "Constructing runnable module.. rank:%d", rank);
   DP_LOG(DEBUG, "             initialBatchSize:%d", initialBatchSize);
@@ -435,6 +436,22 @@ RunnableModule::getParameters(std::vector<torch::Tensor>* parameters)
 }
 
 /**
+ * Dumps the entire model parameters into the given vector.
+ */
+void
+RunnableModule::getActiveParameters(std::vector<torch::Tensor>* parameters)
+{
+  for (auto& layer : layers) {
+    if (layer.active) {
+      for (const auto& params : layer.module.parameters()) {
+        parameters->push_back(params);
+      }
+    }
+  }
+}
+
+
+/**
  * Initiate an iteration.
  */
 void
@@ -494,28 +511,17 @@ RunnableModule::forwardAStep()
         }
         if (!prevOut.defined()) {
           DIE("prevOut is not defined.");
-          // DP_LOG(DEBUG, "prevOut is not defined. Using empty tensor.");
-          // // prevOut = torch::empty(layer->emptyInSizes);
-          // prevOut = torch::empty(prevLayer->emptyOutSizes);
-          // prevOut = prevOut.to(device, /*non_blocking*/ true, /*copy*/ false);
-          // DP_LOG(DEBUG, "Empty input tensor: %s", prevOut.toString().c_str());
         }
         if (layer->detachInput) {
-          DP_LOG(DEBUG, "Detaching input");
+          // detachTimer.start();
           layer->detachedInputs[prevLayer->id] = prevOut.detach();
           layer->detachedInputs[prevLayer->id].requires_grad_();
           prevOut = layer->detachedInputs[prevLayer->id];
-          DP_LOG(DEBUG, "Detached input tensor: %s", prevOut.toString().c_str());
+          // detachTimer.stop();
+          DP_LOG(DEBUG, "Detached input tensor");
         }
         inputsByPid[prevLayer->id] = prevOut;
       }
-
-      // // Recv samples before running this layer.
-      // for (TsrXfer& xfer : layer->xferIns) {
-      //   inputsByPid[xfer.prevLayerId] =
-      //       TsrXferFunc::apply(inputsByPid[xfer.prevLayerId], &xfer);
-      //   DP_LOG(DEBUG, "Received & concatenated samples.");
-      // }
       
       for (auto& plidInputPair : inputsByPid) {
         DP_LOG(DEBUG, "Adding to inputVec: %s.", tsrSizeToStr(plidInputPair.second).c_str());
@@ -566,10 +572,6 @@ RunnableModule::forwardAStep()
 
   } else { // This rank doesn't participate for this layer.
     DP_LOG(DEBUG, "Layer %d is not active.", layer->id);
-    // output = torch::empty(0);
-    // output.to(device, /*non_blocking*/ true, /*copy*/ false);
-    // fpCtx.runCriterionAndLoss = false;
-    // fpCtx.fpTensorToReturn.reset();
   }
 
   // Recv parts of output processed by another GPU.

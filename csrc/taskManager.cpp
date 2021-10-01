@@ -284,18 +284,31 @@ TaskManager::poll()
     double be_img_ps = mainJob->be_img_end - mainJob->be_img_start;
     be_img_ps = 1e3 * be_img_ps / elapsed_ms;
     DP_LOG(NOTICE, "A training job %s is completed (%lu iters, %.2f ms/iter, %.2f iter/s, %.2f be img/s)."
-        " AverageTiming (ms) => load:%.1f, fp:%.1f, loss:%.1f, bp:%.1f, iter:%.1f"
+        " AverageTiming (ms) => zero: %.1f, load:%.1f, fp:%.1f, loss:%.1f, bp:%.1f, opt: %.1f, iter:%.1f"
         " P50 (ms) => fp:%.1f, loss:%.1f, bp:%.1f, iter:%.1f",
         mainJob->name.c_str(), totiters, total_iter_ms, total_iter_ps, be_img_ps,
+        mainJob->timers[CT_ZERO].getAvg(warmupIters),
         mainJob->timers[CT_LOAD].getAvg(warmupIters),
         mainJob->timers[CT_FP].getAvg(warmupIters),
         mainJob->timers[CT_LOSS].getAvg(warmupIters),
         mainJob->timers[CT_BP].getAvg(warmupIters),
+        mainJob->timers[CT_OPT].getAvg(warmupIters),
         mainJob->timers[CT_STOP].getAvg(warmupIters),
         mainJob->timers[CT_FP].getP50(warmupIters),
         mainJob->timers[CT_LOSS].getP50(warmupIters),
         mainJob->timers[CT_BP].getP50(warmupIters),
         mainJob->timers[CT_STOP].getP50(warmupIters));
+
+    // uint64_t forwardAStepUs = RAMCloud::Cycles::toMicroseconds(
+    //     mainJob->cyclesOnForwardAStep / mainJob->invocationsOnForwardAStep);
+    // uint64_t backwardAStepUs = RAMCloud::Cycles::toMicroseconds(
+    //     mainJob->cyclesOnBackwardAStep / mainJob->invocationsOnBackwardAStep);
+    // DP_LOG(NOTICE, "Perf stat -- forwardAStep: %" PRIu64" us (%" PRIu64" times)"
+    //     " backwardAStep %" PRIu64" us (%" PRIu64" times)", forwardAStepUs,
+    //     mainJob->invocationsOnForwardAStep, backwardAStepUs,
+    //     mainJob->invocationsOnBackwardAStep);
+
+    // DP_LOG(NOTICE, " -- detachTime: %" PRIu64" us", mainJob->model->detachTimer.avgMicros());
 
     jobList.erase(jobList.begin());
     DP_LOG(NOTICE, "Removed the completed job. Remaining: %lu", jobList.size());
@@ -349,6 +362,8 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
     job->timers[CT_START].record();
 
     DP_LOG(DEBUG, "JobState::INIT.");
+    job->optimizer->zero_grad();
+    job->timers[CT_ZERO].record();
 
     job->model->iterInit();
     job->state = JobState::FORWARD;
@@ -387,7 +402,10 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
     DP_LOG(DEBUG, "Foward pass is starting soon.");
   } else if (job->state == JobState::FORWARD) {
     DP_LOG(DEBUG, "JobState::FORWARD.");
+    // uint64_t startTick = RAMCloud::Cycles::rdtsc();
     bool completed = job->model->forwardAStep();
+    // job->cyclesOnForwardAStep += RAMCloud::Cycles::rdtsc() - startTick;
+    // job->invocationsOnForwardAStep++;
 
     if (completed) {
       job->timers[CT_FP].record();
@@ -398,8 +416,6 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
         DP_LOG(NOTICE, "Verify two outputs.. fpOutput: %s outputToVerify: %s",
             tsrSizeToStr(job->model->fpOutput).c_str(),
             tsrSizeToStr(job->outputToVerify).c_str());
-        // DP_LOG(NOTICE, "fpOutput:       %s", tsrToStr(job->model->fpOutput).c_str());
-        // DP_LOG(NOTICE, "outputToVerify: %s", tsrToStr(job->outputToVerify).c_str());
       }
       
       job->model->loss();
@@ -412,7 +428,11 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
   } else if (job->state == JobState::BACKWARD) {
     DP_LOG(DEBUG, "JobState::BACKWARD.");
     // DP_LOG(WARNING, "Backward pass is not implemented yet.");
+    // uint64_t startTick = RAMCloud::Cycles::rdtsc();
     bool completed = job->model->backwardAStep();
+    // job->cyclesOnBackwardAStep += RAMCloud::Cycles::rdtsc() - startTick;
+    // job->invocationsOnBackwardAStep++;
+
     if (completed) {
       job->timers[CT_BP].record();
       job->state = JobState::SYNC;
@@ -435,6 +455,10 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
     fgcounter++;
     DP_LOG(DEBUG, "All-reduce parameter sync is not implemented yet.");
     job->timers[CT_SYNC].record();
+    
+    job->optimizer->step();
+    job->timers[CT_OPT].record();
+
     job->state = JobState::INIT;
     job->timers[CT_STOP].record();
   }

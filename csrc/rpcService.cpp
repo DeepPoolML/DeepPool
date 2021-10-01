@@ -146,7 +146,7 @@ RuntimeServiceImpl::ScheduleTraining(ServerContext* context,
   auto runnableModule = std::make_unique<RunnableModule>(rtctx, jobSpec, commHandler.get(), dev);
   DP_LOG(DEBUG, "runnableModule constructed.");
   std::vector<torch::Tensor> parameters;
-  runnableModule->getParameters(&parameters);
+  runnableModule->getActiveParameters(&parameters);
   auto optimizer = std::make_unique<torch::optim::SGD>(parameters, /*lr=*/0.01);
   DP_LOG(DEBUG, "optimizer constructed.");
 

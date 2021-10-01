@@ -637,6 +637,10 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     print("Load/Dump returned the same output? %s" % ("true" if jobInJson == job2.dumpInJSON() else "false"))
     # print(jobInJson)
     
+    if maxGpusUsed > 8:
+        print("maxGpusUsed: ", maxGpusUsed, " is bigger than 8. Can't schedule this job.")
+        return
+    
     if not spatialSplit and not simOnly:
         cc = ClusterClient()
         jobName = "InceptionV3_%d_%d_%2.1f%s" % (gpuCount, globalBatch, amplificationLimit, "_DP" if dataParallelBaseline else "")

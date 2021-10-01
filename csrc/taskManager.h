@@ -53,11 +53,13 @@ enum class JobState {
 
 enum TracePoint {
   CT_START = 0,
+  CT_ZERO,
   CT_LOAD,
   CT_FP,
   CT_LOSS,
   CT_BP,
   CT_SYNC,
+  CT_OPT,
   CT_STOP,
   CT_NUM_OF_EVENTS // CT_NUM must be the last element.
 };
@@ -97,7 +99,7 @@ struct JobContext {
   // self.itersToCapture = set(range(250, 260))
   size_t profile_iter_start{5000};
   size_t niter_to_profile{5};
-  size_t iters_before_graph_capture{50}; // set high to disable graph capture
+  size_t iters_before_graph_capture{5000}; // set high to disable graph capture
   JobState state;
 
   std::vector<CudaTimer> timers;
@@ -106,6 +108,11 @@ struct JobContext {
 
   std::chrono::time_point<std::chrono::steady_clock> start, end;
   uint64_t be_img_start, be_img_end;
+  // Performance statistics.
+  uint64_t cyclesOnForwardAStep {0};
+  uint64_t invocationsOnForwardAStep {0};
+  uint64_t cyclesOnBackwardAStep {0};
+  uint64_t invocationsOnBackwardAStep {0};
 };
 
 /**
