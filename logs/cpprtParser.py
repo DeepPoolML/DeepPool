@@ -29,6 +29,7 @@ def scan(f):
             
         if job not in data:
             data[job] = {"count": 0, "iterMs": 0.0, "iterMsMax": 0.0, "tput": 0, "beTput": 0}
+            
         data[job]["count"] += 1
         data[job]["iterMs"] += iterMs
         data[job]["iterMsMax"] = max(data[job]["iterMsMax"], iterMs)
@@ -39,10 +40,15 @@ def scan(f):
 
 def printOut():
     global data
-    print("#                Job #GPUs maxIterMs avgIterMs   fgTput     bgTput")
+    print("#                     Job #GPUs batch maxIterMs avgIterMs   iter/s     fpTput     bgTput  totalTput")
     for job in data:
+        tokens = job.split('_')
+        minibatch = int(tokens[2])
         c = data[job]["count"]
-        print("%20s    %2d  %8.2f  %8.2f %8.2f %10.1f" % (job, c, data[job]["iterMsMax"], data[job]["iterMs"] / c, data[job]["tput"] / c, data[job]["beTput"]))
+        iterPerSec = 1000 / data[job]["iterMsMax"]
+        fpTput = iterPerSec * minibatch
+        print("%25s    %2d  %4d  %8.2f  %8.2f %8.2f %10.f %10.f %10.f" %
+        (job, c, minibatch, data[job]["iterMsMax"], data[job]["iterMs"] / c, iterPerSec, fpTput, data[job]["beTput"], fpTput + data[job]["beTput"]))
 
 
 if __name__ == "__main__":
