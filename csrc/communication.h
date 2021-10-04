@@ -21,6 +21,8 @@
 #include "json.hpp"
 #include "rpcService.h"
 
+#include "utils.h"
+
 #include <c10/cuda/CUDAStream.h>
 #include <ATen/cuda/CUDAEvent.h>
 #include <torch/csrc/cuda/nccl.h>
@@ -57,12 +59,12 @@ class CommunicationHandler {
   virtual void all_reduce(torch::Tensor& tensor, c10d::ReduceOp op, bool async = false) = 0;
 
   /* block until all outstanding send/recvs have completed */
-  virtual void sync() = 0;
+  virtual void sync(c10::optional<c10::cuda::CUDAStream> stream = {}) = 0;
 
   /* used to prepare streams for cuda graph capture, WIP */
   virtual void precapture() = 0;
   virtual void postcapture() = 0;
-  virtual void comm_start() = 0;
+  virtual void comm_start(c10::optional<c10::cuda::CUDAStream> stream = {}) = 0;
   virtual void comm_end() = 0;
 
   /**
@@ -95,10 +97,10 @@ class CommunicationHandlerNCCL : public CommunicationHandler {
             bool async = false);
   void recv(torch::Tensor& tensor, int tag, int src,
             bool async = false);
-  void sync();
+  void sync(c10::optional<c10::cuda::CUDAStream> stream = {});
   void precapture();
   void postcapture();
-  void comm_start();
+  void comm_start(c10::optional<c10::cuda::CUDAStream> stream = {});
   void comm_end();
 
   void all_reduce(torch::Tensor& tensor, c10d::ReduceOp op, bool async = false);
@@ -114,10 +116,9 @@ class CommunicationHandlerNCCL : public CommunicationHandler {
 
   at::cuda::CUDAEvent sync_event;
 
-  std::vector<c10::cuda::CUDAStream> send_streams;
-  std::vector<c10::cuda::CUDAStream> recv_streams;
-  c10::cuda::CUDAStream comm_sync_stream;
-  c10::cuda::CUDAStream all_reduce_stream;
+  c10::cuda::CUDAStream default_comm_stream;
+
+  c10::optional<c10::cuda::CUDAStream> group_call_stream;
   bool in_group_call{false};
 };
 
@@ -133,10 +134,10 @@ class CommunicationHandlerGRPC : public CommunicationHandler {
   void recv(torch::Tensor& tensor, int tag, int src,
             bool async = false);
   void testRingP2P();
-  void sync() {};
+  void sync(c10::optional<c10::cuda::CUDAStream> stream = {}) { UNUSED(stream); };
   void precapture() {};
   void postcapture() {};
-  void comm_start() {};
+  void comm_start(c10::optional<c10::cuda::CUDAStream> stream = {}) { UNUSED(stream); };
   void comm_end() {};
 
   void all_reduce(torch::Tensor& tensor, c10d::ReduceOp op, bool async = false);

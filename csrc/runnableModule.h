@@ -248,6 +248,8 @@ class RunnableModule : public torch::nn::Module {
 
   TensorGeneratorPipeline input_pipeline, target_pipeline;
 
+  bool backwards_did_sync{false};
+
   at::cuda::CUDAGraph graph;
   // Performance Stat
   CpuTimer detachTimer;

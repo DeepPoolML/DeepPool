@@ -52,13 +52,17 @@ def printOut():
 
 
 if __name__ == "__main__":
-    print(len(sys.argv))
+    # print(len(sys.argv))
     if len(sys.argv) == 2:
         scan(open(sys.argv[1]))
     else:
         for filename in ["cpprt%d.out" % r for r in range(8)]:
-            print("# Scanning ", filename)
-            scan(open(filename))
+            # print("# Scanning ", filename)
+            try:
+              scan(open(filename))
+            except FileNotFoundError:
+              continue
+
     printOut()
 
         

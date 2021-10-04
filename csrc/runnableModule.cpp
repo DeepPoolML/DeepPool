@@ -26,6 +26,10 @@ using torch::autograd::Variable;
 using torch::autograd::AutogradContext;
 using torch::autograd::variable_list;
 
+#define MIN_BYTES_FLUSH (10 * 1000 * 1000)
+static uint64_t bytes_inflight = 0;
+static std::vector<torch::Tensor> pending_grads;
+
 ////////////////////////////////////////////////
 // TsrXferFunc
 ////////////////////////////////////////////////
@@ -80,6 +84,7 @@ TsrXferFunc::forward(AutogradContext* ctx, Variable x, TsrXfer* xfer)
       xfer->commHandler->recv(tsr, tag, src, /*async*/ true);
     }
     xfer->commHandler->comm_end();
+    xfer->commHandler->sync();
     tsrList.push_back(x);
     DP_LOG(DEBUG, "Concating %lu tensors", tsrList.size());
     auto concated = torch::cat(tsrList, xfer->splitCatDim);
@@ -144,6 +149,7 @@ TsrXferFunc::backward(AutogradContext* ctx, variable_list grad_output)
       xfer->commHandler->recv(tsr, tag, src, /*async*/ true);
     }
     xfer->commHandler->comm_end();
+    xfer->commHandler->sync();
 
     tsrList.push_back(x);
     // return { torch::cat(tsrList, xfer->splitCatDim) };
@@ -231,7 +237,7 @@ RunnableModule::RunnableModule(RuntimeContext* rtctx,
       prevLayers.push_back(&layers[plid]);
     }
     bool detachOutput = ldsc["nextLayers"].size() > 1;
-    bool syncTwice = ldsc["gpuAssignment"].size() == 8;
+    bool syncTwice = ldsc["gpuAssignment"].size() > 1;
     if (!syncTwice) {
       DP_LOG(NOTICE, " %d-th layer's name: %s, syncTwice: %d", id, name.c_str(),
           syncTwice);
@@ -744,8 +750,21 @@ RunnableModule::backwardAStep()
 
   if (layer->syncTwice) {
     for (const auto& param : layer->module.parameters()) {
-      commHandler->all_reduce(param.mutable_grad(), c10d::ReduceOp::SUM, true);
+      auto grad = param.mutable_grad();
+      bytes_inflight += grad.nbytes();
+      pending_grads.push_back(grad);
+      backwards_did_sync = true;
     }
+
+    if (bytes_inflight >= MIN_BYTES_FLUSH) {
+      commHandler->comm_start(rtctx->grad_sync_stream);
+      for (auto &p : pending_grads)
+        commHandler->all_reduce(p, c10d::ReduceOp::SUM, true);
+      commHandler->comm_end();
+      bytes_inflight = 0;
+      pending_grads.clear();
+    }
+
   }
   
   for (auto& prevLayerPtr : layer->prevLayers) {
@@ -766,7 +785,18 @@ RunnableModule::backwardAStep()
 
 void
 RunnableModule::gradientSync() {
-  commHandler->sync();
+  if (bytes_inflight) {
+      commHandler->comm_start(rtctx->grad_sync_stream);
+      for (auto &p : pending_grads)
+        commHandler->all_reduce(p, c10d::ReduceOp::SUM, true);
+      commHandler->comm_end();
+      bytes_inflight = 0;
+      pending_grads.clear();
+  }
+  if (backwards_did_sync) {
+    commHandler->sync(rtctx->grad_sync_stream);
+    backwards_did_sync = false;
+  }
   // // First sync within a host & with fast networking.
   // for (auto& layer : layers) {
   //   if (layer.syncTwice) {
