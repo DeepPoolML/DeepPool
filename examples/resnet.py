@@ -437,7 +437,7 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     # job, iterMs, gpuMs = cs.searchBestSplits(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
     job, iterMs, gpuMs, maxGpusUsed = cs.searchBestSplitsV3(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
     jobInJson = job.dumpInJSON()
-
+    profiler.saveProfile()
     # for rank in range(4):
     #     print("GPU rank: %d"%rank)
     #     print(job.dumpSingleRunnableModule(rank))
@@ -453,7 +453,6 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
         jobName = "Resnet34_%d_%d_%2.1f%s" % (gpuCount, globalBatch, amplificationLimit, "_DP" if dataParallelBaseline else "")
         cc.submitTrainingJob(jobName, jobInJson)
 
-    profiler.saveProfile()
     if simResultFilename != None:
         f = open(simResultFilename, "a")
         f.write("  %2d    %2d   %4.1f  %4.1f\n" % (globalBatch, gpuCount, iterMs, gpuMs))

@@ -58,7 +58,9 @@ public:
     }
   }
   void Pause() {
-    assert(status.load() == 0);
+    auto stat = status.load();
+    if (stat == 2) return;
+    assert(stat == 0);
     status.store(1);
     while (status.load() != 2) usleep(100);
   }
@@ -66,7 +68,7 @@ public:
     status.store(0);
   }
 private:
-  std::atomic<int> status{0};
+  std::atomic<int> status{2};
 };
 
 
@@ -129,9 +131,11 @@ bool beinited = false;
 static std::atomic<uint64_t> fgcounter{0};
 static std::atomic<uint64_t> becounter{0};
 static BeRunner be_controller;
+static long be_bsize = 0;
 
 /* tremendous WIP */
 void BeRunner(long bsize) {
+  be_bsize = bsize;
   // assert(bsize % 32 == 0);
   // int samplePerKernel = 32;
   // assert(bsize % samplePerKernel == 0);
@@ -208,15 +212,15 @@ void BeRunner(long bsize) {
     std::lock_guard<std::mutex> lk(mtx);
     beinited = true;
   }
+
+  be_controller.Resume();
   cv.notify_one();
 
-  at::cuda::CUDAEvent waiter;
 
   while (true) {
     be_controller.Lap();
     graph.replay();
-    waiter.record();
-    while (!waiter.query()) { usleep(100); }
+    cstream.synchronize();
     becounter.store(becounter.load() + bsize);
   }
 }
@@ -349,6 +353,14 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
 
   if (job->state == JobState::INIT) {
 
+    if (be_bsize > 0 && job->totiters == 0) {
+      if (!job->run_with_be) {
+        be_controller.Pause();
+      } else {
+        be_controller.Resume();
+      }
+    }
+
     if (job->totiters == job->profile_iter_start)
       CUDA_API_CALL(cudaProfilerStart());
 
@@ -385,7 +397,7 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
 
     /* start graph capture */
     if (job->totiters == job->iters_before_graph_capture) {
-      if (becounter.load()) be_controller.Pause();
+      if (job->run_with_be && be_bsize > 0) be_controller.Pause();
       c10::cuda::device_synchronize();
       DP_LOG(NOTICE, "Starting capture.");
       job->model->graph.capture_begin();
@@ -477,7 +489,7 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
     if (job->totiters == job->iters_before_graph_capture) {
       job->commHandler->postcapture();
       job->model->graph.capture_end();
-      if (becounter.load()) be_controller.Resume();
+      if (job->run_with_be && be_bsize > 0) be_controller.Resume();
       DP_LOG(NOTICE, "Ending capture.");
     }
     job->totiters++;

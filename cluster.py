@@ -36,11 +36,11 @@ class CppRuntimeProxy:
         self.channel = grpc.insecure_channel(addressWithPort) # ex) 'localhost:50051'
         self.stub = runtime_pb2_grpc.RuntimeStub(self.channel)
 
-    def scheduleTraining(self, name, jobInJson, dataDir, tensorTagsInJson, jobRankToGlobalRankInJson):
+    def scheduleTraining(self, name, jobInJson, dataDir, tensorTagsInJson, jobRankToGlobalRankInJson, runbe):
         response = self.stub.ScheduleTraining(runtime_pb2.ScheduleTrainingRequest(
             name=name, job_in_json=jobInJson, data_dir=dataDir,
             tensor_tags_in_json=tensorTagsInJson,
-            job_rank_to_global_rank_in_json=jobRankToGlobalRankInJson))
+            job_rank_to_global_rank_in_json=jobRankToGlobalRankInJson, run_be=1 if runbe else 0))
         print("received: " + response.message)
     
     def poke(self):
@@ -191,7 +191,7 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
     def export_poke(self):
         return 'Returned from poke at %s' % self.myAddr
 
-    def export_scheduleTraining(self, jobName: str, trainingJobInJSON: str):
+    def export_scheduleTraining(self, jobName: str, trainingJobInJSON: str, runbe):
         job = TrainingJob("test", None, None, 0, 0, "")
         job.loadJSON(trainingJobInJSON)
         print("received job")
@@ -213,15 +213,13 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
 
         threadList = []
         def requestScheduleTraining(proxy, name, jobInJson, dataDir, tensorTagsInJson, jobRankToGlobalRankInJson):
-            proxy.scheduleTraining(name, jobInJson, dataDir, tensorTagsInJson, jobRankToGlobalRankInJson)
+            proxy.scheduleTraining(name, jobInJson, dataDir, tensorTagsInJson, jobRankToGlobalRankInJson, runbe)
         for rank in range(gpusUsed):
             location = self.locations[rank]
             moduleDesc = moduleDescList[rank]
             thread = threading.Thread(name='reqScheTrain%d'%rank, target=requestScheduleTraining, args=(location.getProxy(), jobName, moduleDesc, "SYNTHETIC", tensorTagsInJson, jobRankToGlobalRankInJson))
             threadList.append(thread)
-        for thread in threadList:
             thread.start()
-            time.sleep(1)
         for thread in threadList:
             thread.join()
 
@@ -381,10 +379,11 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
                 proxy.initCommNCCL("Join comm group", 1, group_id, commGrpRanksDict);
         for i, location in enumerate(self.locations):
             thread = threading.Thread(name='init_comm%d'%i, target=requestInitCommBackend, args=(location.getProxy(),))
-            threadList.append(thread)
-        for thread in threadList:
             thread.start()
-            time.sleep(1)
+            threadList.append(thread)
+        # for thread in threadList:
+        #     thread.start()
+        #     time.sleep(1)
         for thread in threadList:
             thread.join()
 
@@ -408,10 +407,11 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
         for i, location in enumerate(self.locations):
             thread = threading.Thread(name='init_commGroups%d'%i, target=requestInitCommGroups,
                                       args=(location.getProxy(), jobName, commGrpDictWithGlobalRanksInJson,))
-            threadList.append(thread)
-        for thread in threadList:
             thread.start()
-            time.sleep(1)
+            threadList.append(thread)
+        # for thread in threadList:
+            # thread.start()
+            # time.sleep(1)
         for thread in threadList:
             thread.join()
             

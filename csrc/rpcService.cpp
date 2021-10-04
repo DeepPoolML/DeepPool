@@ -152,6 +152,8 @@ RuntimeServiceImpl::ScheduleTraining(ServerContext* context,
 
   auto job = std::make_unique<JobContext>(std::move(runnableModule), name,
       nullptr, std::move(commHandler), nullptr, std::move(dev), 1, std::move(optimizer));
+  job->run_with_be = request->run_be() > 0;
+
   if (rtctx->verify) {
     job->modelToVerify = torch::jit::load(std::string(rtctx->homedir) +
         "/DeepPoolRuntime/modules/vgg16.pt");
