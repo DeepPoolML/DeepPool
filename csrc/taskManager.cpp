@@ -90,7 +90,7 @@ JobContext::JobContext(std::unique_ptr<RunnableModule> modelIn, std::string name
   , device(device)
   , epoch(0)
   , iter(0)
-  , itersToTrain(2000) // = len(dataLoader) if dataLoader != None else None #TODO: this is a temporary hack..
+  , itersToTrain(1900) // = len(dataLoader) if dataLoader != None else None #TODO: this is a temporary hack..
   , state(JobState::INIT)
   , timers()
   , modelToVerify()
@@ -132,10 +132,20 @@ static BeRunner be_controller;
 
 /* tremendous WIP */
 void BeRunner(long bsize) {
-  assert(bsize % 32 == 0);
-  long splitways = bsize / 32;
+  // assert(bsize % 32 == 0);
+  // int samplePerKernel = 32;
+  // assert(bsize % samplePerKernel == 0);
+  // long splitways = bsize / samplePerKernel;
+  long splitways = 1;
 
-  std::string filename("/home/friedj/mlsf/multimodel/resnet_dropped.jit");
+  // std::string filename("/home/friedj/mlsf/multimodel/resnet_dropped.jit");
+  // std::string filename("/home/friedj/mlsf/multimodel/resnet.jit");
+  // std::string filename("/home/friedj/mlsf/multimodel/vgg.jit");
+  // std::string filename("/home/friedj/mlsf/multimodel/inception.jit");
+  // std::string filename("/home/seojin/DeepPoolRuntime/modules/inception.pt");
+  // std::string filename("/home/seojin/DeepPoolRuntime/beModules/resnet.jit");
+  std::string filename("/home/seojin/DeepPoolRuntime/beModules/vgg.jit");
+  // std::string filename("beModules/vgg.jit");
   torch::jit::script::Module m = torch::jit::load(filename);
   m.train();
   m.to(torch::Device("cuda:0"));
@@ -412,11 +422,11 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
   } else if (job->state == JobState::FORWARD) {
     DP_LOG(DEBUG, "JobState::FORWARD.");
     // uint64_t startTick = RAMCloud::Cycles::rdtsc();
-    bool completed = job->model->forwardAStep();
+    JobStatus status = job->model->forwardAStep();
     // job->cyclesOnForwardAStep += RAMCloud::Cycles::rdtsc() - startTick;
     // job->invocationsOnForwardAStep++;
 
-    if (completed) {
+    if (status == COMPLETED) {
       job->timers[CT_FP].record();
       // TODO: add a loss calculation here? or as another state?
       DP_LOG(DEBUG, "Foward pass is completed. Calculating loss.");
@@ -438,18 +448,19 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
     DP_LOG(DEBUG, "JobState::BACKWARD.");
     // DP_LOG(WARNING, "Backward pass is not implemented yet.");
     // uint64_t startTick = RAMCloud::Cycles::rdtsc();
-    bool completed = job->model->backwardAStep();
+    JobStatus status = job->model->backwardAStep();
     // job->cyclesOnBackwardAStep += RAMCloud::Cycles::rdtsc() - startTick;
     // job->invocationsOnBackwardAStep++;
 
-    if (completed) {
+    if (status == COMPLETED) {
       job->timers[CT_BP].record();
       job->state = JobState::SYNC;
       DP_LOG(DEBUG, "Backward pass is completed. Moving to gradient all-reduce.");
     }
   } else if (job->state == JobState::SYNC) {
     DP_LOG(DEBUG, "JobState::SYNC.");
-    DP_LOG(DEBUG, "All-reduce parameter sync is not implemented yet.");
+    // DP_LOG(DEBUG, "All-reduce parameter sync is not implemented yet.");
+    job->model->gradientSync();
     job->timers[CT_SYNC].record();
     job->state = JobState::STEP;
   } else if (job->state == JobState::STEP) {

@@ -89,11 +89,12 @@ enum class SpecialModuleTypes {
  */
 struct Layer {
   Layer(torch::jit::Module module, SpecialModuleTypes specialModule, int id, bool active,
-      bool detachInput, bool detachOutput, std::vector<Layer*>& prevLayerVec)
+      bool detachInput, bool detachOutput, std::vector<Layer*>& prevLayerVec, bool syncTwice)
     : module(module)
     , specialModule(specialModule)
     , id(id)
     , active(active)
+    , syncTwice(syncTwice)
     , detachInput(detachInput)
     , detachOutput(detachOutput)
     , prevLayers()
@@ -115,8 +116,10 @@ struct Layer {
   const SpecialModuleTypes specialModule; // 0: not special, use module. 1: concat.
   const int id;
   const bool active; // Inactive means no samples assigned for this runtime.
+  const bool syncTwice; // Perform gradient all-reduce within a host. (all layers do all-reduce over NIC)
   const bool detachInput; // Detach input before running this layer.
   const bool detachOutput; // Detach output when output is used multiple times.
+  bool yieldOnFp;
   std::vector<Layer*> prevLayers;
   std::vector<Layer*> nextLayers;
   torch::Tensor output;  // Used during forward pass.
@@ -192,6 +195,12 @@ private:
   uint64_t iter_idx_{0};
 };
 
+enum JobStatus {
+  IN_PROGRESS = 0,
+  COMPLETED,
+  YIELD
+};
+
 /**
  * A module that holds parameters (or submodules) and
  * provides functionalities to run training iteration.
@@ -205,10 +214,11 @@ class RunnableModule : public torch::nn::Module {
   void getParameters(std::vector<torch::Tensor>* parameters);
   void getActiveParameters(std::vector<torch::Tensor>* parameters);
   void iterInit();
-  bool forwardAStep();
+  JobStatus forwardAStep();
   // bool forwardAStepOld();
-  bool backwardAStep();
+  JobStatus backwardAStep();
   void loss();
+  void gradientSync();
   void initProfileTimers(CudaTimer* ct_load, CudaTimer* ct_loss);
   void resetProfileTimers();
   void printProfileTimers(int warmupIters);

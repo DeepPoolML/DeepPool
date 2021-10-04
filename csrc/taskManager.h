@@ -101,7 +101,7 @@ struct JobContext {
   // self.itersToCapture = set(range(250, 260))
   size_t profile_iter_start{5000};
   size_t niter_to_profile{5};
-  size_t iters_before_graph_capture{5000}; // set high to disable graph capture
+  size_t iters_before_graph_capture{50}; // set high to disable graph capture
   JobState state;
 
   std::vector<CudaTimer> timers;

@@ -231,8 +231,13 @@ RunnableModule::RunnableModule(RuntimeContext* rtctx,
       prevLayers.push_back(&layers[plid]);
     }
     bool detachOutput = ldsc["nextLayers"].size() > 1;
+    bool syncTwice = ldsc["gpuAssignment"].size() == 8;
+    if (!syncTwice) {
+      DP_LOG(NOTICE, " %d-th layer's name: %s, syncTwice: %d", id, name.c_str(),
+          syncTwice);
+    }
     layers.emplace_back(module, specialModule, id, layerIsActive, detachInput,
-                        detachOutput, prevLayers);
+                        detachOutput, prevLayers, syncTwice);
 
     // EmptyTensorSizes.
     layers.back().emptyInSizes.push_back(0);
@@ -470,7 +475,7 @@ RunnableModule::iterInit()
  * 
  * \return Returns true if forward pass is completed.
  */
-bool
+JobStatus
 RunnableModule::forwardAStep()
 {
   DP_LOG(DEBUG, "layerQ size: %d", (int)layerQ.size());
@@ -482,14 +487,14 @@ RunnableModule::forwardAStep()
   // bool skipSinceNotReady = false;
   if (layer->status == LayerStatus::PENDING_BP) {
     DP_LOG(DEBUG, "%d-th layer is processed again.", layer->id);
-    return false;
+    return IN_PROGRESS;
   }
   DP_LOG(DEBUG, "lid:%d.", layer->id);
   for (auto& prevLayer : layer->prevLayers) {
     if (prevLayer->status == LayerStatus::PENDING_FP) {
       DP_LOG(DEBUG, "Layer %d is skipped for now, must do %d first.",
           layer->id, prevLayer->id);
-      return false;
+      return IN_PROGRESS;
     }
   }
   
@@ -622,9 +627,9 @@ RunnableModule::forwardAStep()
       fpOutput.reset();
       // runCriterionAndLoss = false;
     }
-    return true;
+    return COMPLETED;
   }
-  return false;
+  return IN_PROGRESS;
 }
 
 /**
@@ -646,7 +651,7 @@ RunnableModule::loss()
  * 
  * \return Returns true if backward pass is completed.
  */
-bool
+JobStatus
 RunnableModule::backwardAStep()
 {
   Layer* layer = layerQ.front();
@@ -656,14 +661,14 @@ RunnableModule::backwardAStep()
   // or probably finished.
   if (layer->status == LayerStatus::PENDING_FP) {
     DP_LOG(DEBUG, "%d-th layer is processed again.", layer->id);
-    return false;
+    return IN_PROGRESS;
   }
   DP_LOG(DEBUG, "lid:%d.", layer->id);
   for (auto& nextLayer : layer->nextLayers) {
     if (nextLayer->status == LayerStatus::PENDING_BP) {
       DP_LOG(DEBUG, "Layer %d is skipped for now, must do %d first.",
           layer->id, nextLayer->id);
-      return false;
+      return IN_PROGRESS;
     }
   }
 
@@ -736,6 +741,12 @@ RunnableModule::backwardAStep()
     layer->bpTimer->record();
   }
   layer->status = LayerStatus::PENDING_FP;
+
+  if (layer->syncTwice) {
+    for (const auto& param : layer->module.parameters()) {
+      commHandler->all_reduce(param.mutable_grad(), c10d::ReduceOp::SUM, true);
+    }
+  }
   
   for (auto& prevLayerPtr : layer->prevLayers) {
     if (prevLayerPtr->status == LayerStatus::PENDING_BP) {
@@ -748,9 +759,37 @@ RunnableModule::backwardAStep()
   // Forward pass is completed.
   if (layerQ.empty()) {
     DP_LOG(DEBUG, "no more layers to process.");
-    return true;
+    return COMPLETED;
   }
-  return false;
+  return IN_PROGRESS;
+}
+
+void
+RunnableModule::gradientSync() {
+  commHandler->sync();
+  // // First sync within a host & with fast networking.
+  // for (auto& layer : layers) {
+  //   if (layer.syncTwice) {
+  //     for (const auto& param : layer.module.parameters()) {
+  //       commHandler->all_reduce(param.mutable_grad(), c10d::ReduceOp::SUM, false);
+  //     }
+  //   }
+  // }
+  
+  // // Second sync to outside of box. Let's mimic that overhead by performing
+  // // intra-host sync again. (200Gbps * 8 GPUs = 1.6Tbps ~ NVSwitch bandwidth.)
+  // // Assuming each GPU has ConnectX-6, and a box has 8 GPUs.
+  // int64_t totalGradSize = 0;
+  // for (auto& layer : layers) {
+  //   for (const auto& param : layer.module.parameters()) {
+  //     totalGradSize += param.numel(); 
+  //   }
+  // }
+  // torch::TensorOptions topts(rtctx->c10dev);
+  // torch::Tensor grad = torch::empty({1, totalGradSize}, topts);
+  // // DP_LOG(NOTICE, "2nd tensor xfer: %s", tsrSizeToStr(grad).c_str());
+  // commHandler->all_reduce(grad, c10d::ReduceOp::SUM, false);
+  // // Need another internal sync? Included in the 1st sync?
 }
 
 /**
