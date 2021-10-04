@@ -15,7 +15,7 @@
 import json
 import torch
 import io
-# import torch.nn as nn
+from os.path import exists
 from typing import Optional, IO, List, Any
 
 class Layer:
@@ -32,6 +32,12 @@ class Layer:
         self.moduleScript = None
         self.inputDim = (0, 0, 0)   # (Channel, Width, Height) for 2d convolution
         self.outputDim = (0, 0, 0)  # (Channel, Width, Height)
+        self.must_trace = False
+
+    def getModuleId(self):
+        return self.name +\
+            json.dumps(self.params, sort_keys=True, separators=('_', '-')) +\
+            json.dumps(self.inputDim, sort_keys=False, separators=('_', '-'))
     
     def dumpForJSON(self):
         prop = {}
@@ -55,27 +61,37 @@ class Layer:
             prop["gpuAssignment"] = self.gpuAssignment
 
         if self.module != None:
-            if self.name == "concat":
-                fakeInputs = []
-                for prevLayer in self.prevLayers:
-                    inputSize = [1] + list(prevLayer.outputDim)
-                    # print("id: ", self.id, " Concat's inputSize: ", inputSize)
-                    fakeInputs.append(torch.zeros(inputSize))
-                traced = torch.jit.script(self.module, fakeInputs)
+            moduleId = self.getModuleId()
+            saveLocation = "modules/scriptmodule_%s.pt"%moduleId
+            if exists(saveLocation): # Skip if module file is already there.
+                prop["moduleSavedLocation"] = saveLocation
             else:
-                inputSize = [1] + (list(self.inputDim) if type(self.inputDim) == tuple else [self.inputDim])
-                # print("id: ", self.id, " non-concat inputSize: ", inputSize)
-                fakeInput = torch.zeros(tuple(inputSize))
-                traced = torch.jit.script(self.module, fakeInput)
-            saveLocation = "modules/scriptmodule_%d.pt"%self.id
-            torch.jit.save(traced, saveLocation)
-            prop["moduleSavedLocation"] = saveLocation
+                if self.name == "concat":
+                    fakeInputs = []
+                    for prevLayer in self.prevLayers:
+                        inputSize = [1] + list(prevLayer.outputDim)
+                        # print("id: ", self.id, " Concat's inputSize: ", inputSize)
+                        fakeInputs.append(torch.zeros(inputSize))
+                    traced = torch.jit.script(self.module, fakeInputs)
+                else:
+                    inputSize = [1] + (list(self.inputDim) if type(self.inputDim) == tuple else [self.inputDim])
+                    # print("id: ", self.id, " non-concat inputSize: ", inputSize)
+                    fakeInput = torch.zeros(tuple(inputSize))
+                    if self.must_trace:
+                        print("jit tracing...", self.name)
+                        traced = torch.jit.trace(self.module, fakeInput)
+                    else:
+                        print("jit scripting...", self.name)
+                        traced = torch.jit.script(self.module, fakeInput)
+                # saveLocation = "modules/scriptmodule_%d.pt"%self.id
+                torch.jit.save(traced, saveLocation)
+                prop["moduleSavedLocation"] = saveLocation
 
-            buffer = io.BytesIO()
-            torch.jit.save(traced, buffer)
-            self.moduleScript = buffer.getvalue()
-            # print("Layer%2d written %5d bytes." % (self.id, len(self.moduleScript)))
-            # print(" *** Code ***\n%s" % (traced.code))
+                buffer = io.BytesIO()
+                torch.jit.save(traced, buffer)
+                self.moduleScript = buffer.getvalue()
+                # print("Layer%2d written %5d bytes." % (self.id, len(self.moduleScript)))
+                # print(" *** Code ***\n%s" % (traced.code))
         elif hasattr(self, 'moduleSavedLocation'):
             prop["moduleSavedLocation"] = self.moduleSavedLocation
 
@@ -461,6 +477,8 @@ class TrainingJob:
             initCfg = (globalBatch, layer.inputDim, layer.outputDim)
         elif layer.name in ["flatten", "maxPool2d", "avgPool2d", "adAvgPool2d", "ReLU2d", "concat"]:
             initCfg = (globalBatch, layer.inputDim[1], layer.inputDim[2], layer.inputDim[0]) # (batch, width, height, channel, filter)
+        else:
+            initCfg = (globalBatch, *layer.inputDim) # (batch, width, height, channel)
         return initCfg
 
     def calcGpusNeeded(self, layer: Layer, config: tuple, globalBatch: int):

@@ -180,6 +180,12 @@ class CostSim:
                 layer.outputDim = int(numpy.prod(layer.inputDim))
             elif layer.name == "concat":
                 layer.outputDim = layer.inputDim
+            else:
+                inputSize = [1] + (list(layer.inputDim) if type(layer.inputDim) == tuple else [layer.inputDim])
+                fakeIn = torch.empty(inputSize)
+                outSize = list(layer.module(fakeIn).size())[1:]
+                print("Computed outputDim: ", outSize)
+                layer.outputDim = tuple(outSize)
 
             print("%3d %11s %20s %20s %s" % (i, layer.name, str(layer.inputDim), str(layer.outputDim), str(layer.params)) )
     
@@ -196,13 +202,14 @@ class CostSim:
                 destLayer.name in namesIn2d + ["flatten"]:
             actTime = self.calc2dActivationTime(srcLayer, destLayer, srcConfig, destConfig, noGpuOverlap)
             return (actTime[0] * reluMultiple, actTime[1])
-            
         elif srcLayer.name in namesIn1d + ["flatten"] and \
                 destLayer.name in namesIn1d:
             actTime = self.calcLinearActivationTime(srcLayer, destLayer, srcConfig, destConfig, noGpuOverlap)
             return (actTime[0] * reluMultiple, actTime[1])
         else:
-            print("Can't compute input transfer time from %s to %s." % (srcLayer.name, destLayer.name))
+            actTime = self.calcGeneralActivationTime(srcLayer, destLayer, srcConfig, destConfig, noGpuOverlap)
+            return (actTime[0] * reluMultiple, actTime[1])
+            # print("Can't compute input transfer time from %s to %s." % (srcLayer.name, destLayer.name))
 
     def calcSyncTime(self, layer, config, ctx):
         if layer.name in ["conv2d"]:
@@ -312,6 +319,29 @@ class CostSim:
             print("[calcLinearActivationTime] error! srcConfig dimensions is not correct.")
         destS = destConfig[0]
         destInFeatures = destConfig[1]
+
+        commonSize = bytesPerParam * min(srcS, destS) * min(srcOutFeatures, destInFeatures)
+        if noGpuOverlap:
+            commonSize = 0
+
+        # compute times
+        egressBytes = bytesPerParam * srcS * srcOutFeatures * splitFactor - commonSize
+        ingressBytes = bytesPerParam * destS * destInFeatures * splitFactor - commonSize
+        activationTime = max(egressBytes, ingressBytes) / self.NET_BANDWIDTH
+        activationTime += self.NET_LATENCY if activationTime > 0 else 0
+        # print("activationTime:%.1f, egressBytes:%d, ingressBytes:%d, splitFactor: %d, commonSize: %d" %\
+        #     (activationTime, egressBytes, ingressBytes, splitFactor, commonSize))
+        return (2 * activationTime, (egressBytes, ingressBytes, splitFactor)) # double to count both forward and backward passes.
+
+    def calcGeneralActivationTime(self, srcLayer: Layer, destLayer: Layer, srcConfig: tuple, destConfig: tuple, noGpuOverlap: bool):
+        print("srcConfig: ", srcConfig)
+        bytesPerParam = 4
+        # Prepare variables.
+        srcS = srcConfig[0]
+        srcOutFeatures = numpy.prod(srcLayer.outputDim)
+        destS = destConfig[0]
+        destInFeatures = numpy.prod(destLayer.inputDim)
+        splitFactor = 1
 
         commonSize = bytesPerParam * min(srcS, destS) * min(srcOutFeatures, destInFeatures)
         if noGpuOverlap:
@@ -452,13 +482,44 @@ class CostSim:
         self.layers.append(layer)
         return
 
+    def Dropout(self, dropout, custom_previous_layers: list = None):
+        module = nn.Dropout(dropout)
+
+        if custom_previous_layers == None and len(self.layers) > 0:
+            custom_previous_layers = [self.layers[-1]]
+        layer = Layer(module, "dropout", {"dropout": dropout}, prevLayers = custom_previous_layers)
+        self.layers.append(layer)
+        return module
+
+    def LayerNorm(self, dim, custom_previous_layers: list = None):
+        module = nn.LayerNorm(dim)
+
+        if custom_previous_layers == None and len(self.layers) > 0:
+            custom_previous_layers = [self.layers[-1]]
+        layer = Layer(module, "layerNorm", {"dim": dim}, prevLayers = custom_previous_layers)
+        self.layers.append(layer)
+        return module
+    
+    def GeneralLayer(self, module, name, params, custom_previous_layers: list = None, mustTrace=False):
+        if custom_previous_layers == None and len(self.layers) > 0:
+            custom_previous_layers = [self.layers[-1]]
+        layer = Layer(module, name, params, prevLayers = custom_previous_layers)
+        layer.must_trace = mustTrace
+        self.layers.append(layer)
+        return
+
     def getInitialConfig(self, layer, globalBatch: int):
         if layer.name in ["conv2d"]:
             initCfg = (globalBatch, layer.inputDim[1], layer.inputDim[2], layer.inputDim[0], layer.outputDim[2]) # (batch, width, height, channel, filter)
         elif layer.name in ["linear", "ReLU1d"]:
-            initCfg = (globalBatch, layer.inputDim, layer.outputDim)
+            if type(layer.inputDim) == tuple:
+                initCfg = (globalBatch, *layer.inputDim, layer.outputDim)
+            else:
+                initCfg = (globalBatch, layer.inputDim, layer.outputDim)
         elif layer.name in ["flatten", "maxPool2d", "avgPool2d", "adAvgPool2d", "ReLU2d", "concat"]:
             initCfg = (globalBatch, layer.inputDim[1], layer.inputDim[2], layer.inputDim[0]) # (batch, width, height, channel, filter)
+        else:
+            initCfg = (globalBatch, *layer.inputDim) # (batch, width, height, channel)
         return initCfg
 
     def listConfigOptions(self, layer, globalBatch: int, totalGpus: int, samplePo2=True, sampleSplit=True, spatialSplit=True, filterSplit=False, pruneHeuristics=False, dataParallelBaseline=False):
@@ -483,6 +544,9 @@ class CostSim:
             configCandidates = [(int(initCfg[0] / 2**bs), math.ceil(initCfg[1] / 2**int(whs/2)), math.ceil(initCfg[1] / 2**int(whs/2+0.5)), initCfg[3] )
                                 for bs in sampleSplitOptions \
                                     for whs in (range(totalSplits - bs + 1) if spatialSplit else [0]) ]
+        else:
+            configCandidates = [(int(initCfg[0] / 2**bs), *initCfg[1:] )
+                                for bs in sampleSplitOptions ]
 
         # if layer.name in ["conv2d"]:
         #     configCandidates = [(math.ceil(initCfg[0] / replicas), math.ceil(initCfg[1] / 2**int(whs/2)), math.ceil(initCfg[1] / 2**int(whs/2+0.5)), initCfg[3], math.ceil(initCfg[4] / 2**fs) )
