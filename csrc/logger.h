@@ -164,7 +164,7 @@ class Logger {
  */
 #define DP_LOG(level, format, ...) do { \
     Logger& _logger = Logger::get(); \
-    if (level != DEBUG && _logger.isLogging(level)) { \
+    if (_logger.isLogging(level)) { \
         _logger.logMessage(level, HERE, format "\n", ##__VA_ARGS__); \
     } \
 } while (0)

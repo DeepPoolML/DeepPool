@@ -272,7 +272,7 @@ int main(int argc, char** argv) {
   }
 
   taskMngr.addBgJob();
-  std::cout << "poller is starting." << std::endl;
+  std::cout << "poller is starting." << std::endl << std::flush;
   DP_LOG(DEBUG, "Poller is starting.");
   while (!ctx.shutdownRequested.load(std::memory_order_relaxed)) {
     taskMngr.poll();

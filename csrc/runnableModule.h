@@ -159,7 +159,7 @@ public:
     next_t_ = cached_[iter_idx_++ % 64];
     auto origstream = c10::cuda::getCurrentCUDAStream();
     c10::cuda::setCurrentCUDAStream(rtctx->xfer_stream);
-    next_t_ = next_t_.to(rtctx->c10dev, /*non_blocking*/ true, /*copy*/ false);
+    next_t_ = next_t_.to(rtctx->c10dev, /*non_blocking*/ false, /*copy*/ false);
     CUDACHECK(cudaEventRecord(hToD_ev_, rtctx->xfer_stream));
     c10::cuda::setCurrentCUDAStream(origstream);
 

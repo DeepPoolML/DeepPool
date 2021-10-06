@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.11 FATAL_ERROR)
 project(DeepPool)
 
+list(APPEND CMAKE_PREFIX_PATH "$ENV{HOME}/nfsnccl")
 list(APPEND CMAKE_PREFIX_PATH "$ENV{HOME}/libtorch")
 list(APPEND CMAKE_PREFIX_PATH "$ENV{HOME}/cuda")
 find_package(Torch REQUIRED)
@@ -65,6 +66,12 @@ add_custom_command(
 
 # Include generated *.pb.h files
 include_directories("${CMAKE_CURRENT_BINARY_DIR}")
+
+include_directories("$ENV{HOME}/nfsnccl/include")
+link_directories("$ENV{HOME}/nfsnccl/lib")
+
+include_directories("$ENV{HOME}/nfsnccl/include")
+link_directories("$ENV{HOME}/nfsnccl/lib")
 
 # dp_grpc_proto
 add_library(dp_grpc_proto

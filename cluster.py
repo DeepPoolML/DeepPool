@@ -47,7 +47,7 @@ class CppRuntimeProxy:
     
     def poke(self):
         response = self.stub.Poke(runtime_pb2.Empty())
-        print("received: " + response.message)
+        # print("received: " + response.message)
 
     def shutdown(self):
         response = self.stub.Shutdown(runtime_pb2.Empty())
@@ -56,7 +56,8 @@ class CppRuntimeProxy:
     def initCommBackend(self):
         # response = self.stub.(runtime_pb2.Empty())
         # print("received: " + response.message)
-        print("initCommBackend() not implemented")
+        pass
+        # print("initCommBackend() not implemented")
 
     def initCommNCCL(self, message, msgType, groupId, groupsDict):
         groupSize = len(groupsDict["world"])
@@ -90,7 +91,7 @@ class Location:
         
     def getProxy(self, maxRetry = 8, reuseCached = True):
         if reuseCached and self.proxy != None:
-            print("getProxy() returned from cached proxy value.")
+            # print("getProxy() returned from cached proxy value.")
             return self.proxy
 
         # Python runtime
@@ -100,7 +101,7 @@ class Location:
             try:
                 if self.isCpp: # CPP runtime
                     self.proxy = CppRuntimeProxy("%s:%d"%(self.address, self.port))
-                    print("cppProxy created for %s:%d"%(self.address, self.port))
+                    # print("cppProxy created for %s:%d"%(self.address, self.port))
                 else:
                     self.proxy = xmlrpc.client.ServerProxy("http://%s:%d/"%(self.address, self.port))
                 self.proxy.poke()
@@ -109,7 +110,7 @@ class Location:
                 print("Cannot connect to %s:%d. Will retry in %d sec." %
                     (self.address, self.port, retryGap))
                 time.sleep(retryGap)
-                retryGap *= 2 # exponential back off.
+                # retryGap += 2 # exponential back off.
                 retryCount += 1
         return None
 
@@ -202,6 +203,11 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
         moduleDescList = [job.dumpSingleRunnableModule(rank) for rank in range(gpusUsed)]
         tensorTags = self.buildCommTensorTags(moduleDescList)
         tensorTagsInJson = json.dumps(tensorTags)
+
+        for rank in range(gpusUsed):
+            with open(f"/tmp/rank{rank}.json", "wb") as f:
+                f.write(bytes(moduleDescList[rank].encode("utf-8")))
+
         jobRankToGlobalRank = list(range(gpusUsed))
         jobRankToGlobalRankInJson = json.dumps(jobRankToGlobalRank)
 
@@ -311,7 +317,7 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
             stdoutFp = open("logs/runtime%d.out"%i, "w", buffering=1)
             stderrFp = open("logs/runtime%d.err"%i, "w", buffering=1)
             if profile:# and location.device == 0: # Only run 1 nsys per host.
-                nsysPrefix = "nsys profile -f true -o net%d -c cudaProfilerApi --stop-on-range-end true -t cuda,nvtx --export sqlite " % i # -s none
+                nsysPrefix = "/home/friedj/cuda/bin/nsys profile -f true -o net%d -c cudaProfilerApi --capture-range-end=stop-shutdown -t cuda,nvtx --export sqlite " % i # -s none
             else:
                 nsysPrefix = ""
             if manualLaunch:
@@ -351,10 +357,10 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
             signal.signal(signal.SIGINT, sigkill_handler)
             # signal.signal(signal.SIGTERM, sigkill_handler)
         
-        time.sleep(5 + (15 if profile else 0))
+        time.sleep(2) ## + (15 if profile else 0))
         for location in self.locations:
             proxy = location.getProxy(reuseCached=False)
-            print(proxy.poke())
+            proxy.poke()
 
     def shutdownRuntimeAll(self):
         """ Ask all remote runtime servers to stop. Returns after all servers ack the shutdown request. """
@@ -374,7 +380,7 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
             group_id = self.locations[0].getProxy().initCommNCCL("Generate comm group ID", 0, bytes(128), commGrpRanksDict)
         threadList = []
         def requestInitCommBackend(proxy):
-            print(proxy.initCommBackend())
+            # print(proxy.initCommBackend())
             if c10dBackend == "grpc":
                 print(proxy.initCommGRPC(rankToIpMap))
             if c10dBackend == "nccl":
@@ -501,7 +507,6 @@ def main():
 
     coordinator.launchRuntimeAll(args.c10dBackend, profile=args.profile, cppRuntime=args.cpp, manualLaunch=args.manualLaunch)
     print("All runtime nodes are up and running. Now, initializing communication backend..")
-    time.sleep(5)
     coordinator.initCommBackendAll(args.c10dBackend, rankToIpMap, commGrpRanksDict)
     print("Communication backends are ready at all locations.")
     print("Now, cluster is ready to accept training jobs.")
