@@ -59,7 +59,7 @@ class SearchContext:
 
 
 class CostSim:
-    def __init__(self, profiler: GpuProfiler, netBw = 1.25E4, verbose=False, gpuProfileLoc=None):
+    def __init__(self, profiler: GpuProfiler, netBw = 1.25E4, verbose=False, gpuProfileLoc=None, gpuProfileLocSub=None):
         self.profiler = profiler
         self.layers: List[Layer] = []
         self.NET_BANDWIDTH = netBw
@@ -67,6 +67,8 @@ class CostSim:
         # self.NET_LATENCY = 400 #40
         self.verbose = verbose
         self.layerProfileCache = {}
+        if gpuProfileLocSub != None:
+            self.loadGpuProfile(gpuProfileLocSub)
         if gpuProfileLoc != None:
             self.loadGpuProfile(gpuProfileLoc)
         else:
@@ -80,7 +82,11 @@ class CostSim:
                     continue
                 layerInfo = items[0]
                 avgTime = float(items[1]) * 1000
+                # if layerInfo in self.layerProfileCache:
+                #     print("Updating cache with more accurate val. %100s  %.3f -> %.3f"%(layerInfo, self.layerProfileCache[layerInfo]["avg"], avgTime))
                 self.layerProfileCache[layerInfo] = {"avg": avgTime}
+                
+        #           p90Times[name], p99Times[name]);
                 # p50Time = items[2]
         #       printf("%100s  %.3f  %.3f  %.3f  %.3f\n", name, avgT, p50Times[name],
         #           p90Times[name], p99Times[name]);
@@ -628,7 +634,9 @@ class CostSim:
         cached = self.queryLayerProfileCache(layer, config)
         if cached > 0:
             return cached
-        else: return 1
+        else:
+            return 1
+
         # This is a hack for quickly generating a plan for initial layer profiling.
         if ctx != None and ctx.doNotBench:
             assert ctx.totalGpus == 1
