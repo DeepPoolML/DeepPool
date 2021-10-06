@@ -78,6 +78,8 @@ struct RuntimeContext {
   int samplePerKernel{32};
   int use_fg_graph{1};
   int use_be_graph{1};
+  size_t iters_per_capture{4};
+  std::string be_jit_file{"/home/seojin/DeepPoolRuntime/beModules/resnet.jit"};
 
   /**
    *  additional variables.

@@ -144,9 +144,10 @@ void parse_args(RuntimeContext* ctx, int argc, char** argv) {
       {"profile", no_argument, NULL, 'f'},
       {"debug", no_argument, NULL, 'g'},
       {"verify", no_argument, NULL, 'v'},
+      {"be_jit_file", required_argument, NULL, 'j'},
       {"use_fg_graph", required_argument, NULL, 'z'},
       {"use_be_graph", required_argument, NULL, 'y'},
-
+      {"iters_per_capture", required_argument, NULL, 'i'},
       {NULL, 0, NULL, 0}
   };
 
@@ -156,6 +157,12 @@ void parse_args(RuntimeContext* ctx, int argc, char** argv) {
     switch (ch) {
       case 'c':
         ctx->coordinatorAddr = optarg; // or copy it if you want to
+        break;
+      case 'i':
+        ctx->iters_per_capture = atol(optarg);
+        break;
+      case 'j':
+        ctx->be_jit_file = std::string(optarg);
         break;
       case 'm':
         ctx->myAddr = optarg;

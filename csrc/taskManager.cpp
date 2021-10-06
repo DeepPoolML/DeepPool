@@ -29,7 +29,6 @@
 #include <ATen/cuda/CUDAGraph.h>
 #include <ATen/cuda/CUDAEvent.h>
 
-
 using Cycles = RAMCloud::Cycles;
 
 class CUDAPipeline {
@@ -37,7 +36,7 @@ class CUDAPipeline {
   CUDAPipeline(size_t depth) : depth_(depth) {}
   void Lap() {
     if (cur_idx_++ % depth_ != 0) return;
-    while (!ev_.query()) usleep(50);
+    while (!ev_.query()) usleep(100);
     ev_ = at::cuda::CUDAEvent();
     ev_.record();
   }
@@ -142,41 +141,29 @@ static long be_bsize = 0;
 /* tremendous WIP */
 void BeRunner(long bsize) {
   be_bsize = bsize;
-  // assert(bsize % 32 == 0);
   int samplePerKernel = rtctx->samplePerKernel;
   assert(bsize % samplePerKernel == 0);
-   long splitways = bsize / samplePerKernel;
-  //long splitways = 1;
+  long splitways = bsize / samplePerKernel;
 
-  // std::string filename("/home/friedj/mlsf/multimodel/resnet_dropped.jit");
-  // std::string filename("/home/friedj/mlsf/multimodel/resnet.jit");
-  // std::string filename("/home/friedj/mlsf/multimodel/vgg.jit");
-  // std::string filename("/home/friedj/mlsf/multimodel/inception.jit");
-  // std::string filename("/home/seojin/DeepPoolRuntime/modules/inception.pt");
-  // std::string filename("/home/seojin/DeepPoolRuntime/beModules/resnet.jit");
-  std::string filename("/home/seojin/DeepPoolRuntime/beModules/vgg.jit");
-  // std::string filename("beModules/vgg.jit");
-  torch::jit::script::Module m = torch::jit::load(filename);
+  torch::jit::script::Module m = torch::jit::load(rtctx->be_jit_file);
   m.train();
-  m.to(torch::Device("cuda:0"));
+  m.to(rtctx->c10dev);
 
   std::vector<torch::Tensor> params;
   for (const auto &p : m.parameters()) params.push_back(p);
 
   torch::optim::SGD optim(params, torch::optim::SGDOptions(0.1).momentum(0.9));
 
-  long px = filename.find("inception") == std::string::npos ? 224 : 299;
-  auto tensor = torch::rand({bsize, 3, px, px});
-  tensor = tensor.to(torch::Device("cuda:0"));
+  long px = rtctx->be_jit_file.find("inception") == std::string::npos ? 224 : 299;
+  auto tensor = torch::rand({bsize, 3, px, px}).to(rtctx->c10dev);
 
-  // assert(bsize % splitways == 0);
   std::vector<int64_t> splitSizes(splitways, bsize / splitways);
   std::cerr << "split: " << splitSizes << std::endl;
   auto tenss = tensor.split_with_sizes(splitSizes);
   std::vector<c10::cuda::CUDAStream> streams;
   for (size_t i = 0; i < tenss.size(); i++) streams.push_back(c10::cuda::getStreamFromPool(false));
   auto target =
-        torch::empty(bsize).uniform_(0, 1000).to(at::kLong).to(torch::Device("cuda:0"));
+        torch::empty(bsize).uniform_(0, 1000).to(at::kLong).to(rtctx->c10dev);
   auto targs = target.split_with_sizes(splitSizes);
 
   at::autocast::set_enabled(true);
@@ -222,14 +209,15 @@ void BeRunner(long bsize) {
   be_controller.Resume();
   cv.notify_one();
 
+  CUDAPipeline p(1);
 
   while (true) {
     be_controller.Lap();
+    p.Lap();
     if (rtctx->use_be_graph)
       graph.replay();
     else
       fn();
-    cstream.synchronize();
     becounter.store(becounter.load() + bsize);
   }
 }
@@ -411,12 +399,9 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
       DP_LOG(NOTICE, "Starting capture.");
       job->model->graph.capture_begin();
       job->commHandler->precapture();
-    } else if (job->totiters > job->iters_before_graph_capture) {
-      DP_LOG(DEBUG, "Replay iter.");
-      static CUDAPipeline p(16);
-      p.Lap();
-      job->model->graph.replay();
-      job->state = JobState::FINISH;
+    } else if (job->totiters >= rtctx->iters_per_capture + job->iters_before_graph_capture) {
+      /* skip to forward phase */
+      job->state = JobState::FORWARD;
       return 1;
     }
 
@@ -442,6 +427,22 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
     DP_LOG(DEBUG, "Foward pass is starting soon.");
   } else if (job->state == JobState::FORWARD) {
     DP_LOG(DEBUG, "JobState::FORWARD.");
+    if (job->totiters >= rtctx->iters_per_capture + job->iters_before_graph_capture) {
+      DP_LOG(DEBUG, "Replay iter.");
+
+      if ((job->totiters - job->iters_before_graph_capture) % rtctx->iters_per_capture) {
+        /* advance state machine, no replay */
+        job->state = JobState::FINISH;
+        return 1;
+      }
+
+      static CUDAPipeline p(8);
+      p.Lap();
+      job->model->graph.replay();
+      job->state = JobState::FINISH;
+      return 1;
+    }
+
     // uint64_t startTick = RAMCloud::Cycles::rdtsc();
     JobStatus status = job->model->forwardAStep();
     // job->cyclesOnForwardAStep += RAMCloud::Cycles::rdtsc() - startTick;
@@ -495,7 +496,7 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
     if (job->totiters == job->profile_iter_start + job->niter_to_profile)
       CUDA_API_CALL(cudaProfilerStop());
 
-    if (job->totiters == job->iters_before_graph_capture) {
+    if (job->totiters == rtctx->iters_per_capture - 1 + job->iters_before_graph_capture) {
       job->commHandler->postcapture();
       job->model->graph.capture_end();
       if (job->run_with_be && be_bsize > 0) be_controller.Resume();
