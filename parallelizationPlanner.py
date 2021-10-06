@@ -628,7 +628,7 @@ class CostSim:
         cached = self.queryLayerProfileCache(layer, config)
         if cached > 0:
             return cached
-
+        else: return 1
         # This is a hack for quickly generating a plan for initial layer profiling.
         if ctx != None and ctx.doNotBench:
             assert ctx.totalGpus == 1

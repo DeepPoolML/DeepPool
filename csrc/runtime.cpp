@@ -140,9 +140,13 @@ void parse_args(RuntimeContext* ctx, int argc, char** argv) {
       {"worldSize", required_argument, NULL, 'w'},
       {"logdir", required_argument, NULL, 'l'},
       {"be_batch_size", required_argument, NULL, 'e'},
+      {"sample_per_kernel", required_argument, NULL, 's'},
       {"profile", no_argument, NULL, 'f'},
       {"debug", no_argument, NULL, 'g'},
       {"verify", no_argument, NULL, 'v'},
+      {"use_fg_graph", required_argument, NULL, 'z'},
+      {"use_be_graph", required_argument, NULL, 'y'},
+
       {NULL, 0, NULL, 0}
   };
 
@@ -166,6 +170,12 @@ void parse_args(RuntimeContext* ctx, int argc, char** argv) {
       case 'p':
         ctx->c10dMasterPort = atoi(optarg);
         break;
+      case 'z':
+        ctx->use_fg_graph = atoi(optarg);
+        break;
+      case 'y':
+        ctx->use_be_graph = atoi(optarg);
+        break;
       case 'r':
         ctx->rank = atoi(optarg);
         break;
@@ -174,6 +184,9 @@ void parse_args(RuntimeContext* ctx, int argc, char** argv) {
         break;
       case 'l':
         ctx->logdir = optarg;
+        break;
+      case 's':
+        ctx->samplePerKernel = atoi(optarg);
         break;
       case 'e':
         ctx->be_batch_size = atoi(optarg);

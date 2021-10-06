@@ -100,6 +100,12 @@ JobContext::JobContext(std::unique_ptr<RunnableModule> modelIn, std::string name
   // self.dataLoaderIt = iter(self.dataLoader) if dataLoader != None else None
   // self.criterion = nn.CrossEntropyLoss().cuda(device) if criterion == None else criterion
   
+  if (rtctx->use_fg_graph) {
+    iters_before_graph_capture = 50;
+  } else {
+    iters_before_graph_capture = 5000;
+  }
+
   timers.reserve(CT_NUM_OF_EVENTS);
   timers.emplace_back();
   CudaTimer* startTimer = &timers.back();
@@ -137,10 +143,10 @@ static long be_bsize = 0;
 void BeRunner(long bsize) {
   be_bsize = bsize;
   // assert(bsize % 32 == 0);
-  // int samplePerKernel = 32;
-  // assert(bsize % samplePerKernel == 0);
-  // long splitways = bsize / samplePerKernel;
-  long splitways = 1;
+  int samplePerKernel = rtctx->samplePerKernel;
+  assert(bsize % samplePerKernel == 0);
+   long splitways = bsize / samplePerKernel;
+  //long splitways = 1;
 
   // std::string filename("/home/friedj/mlsf/multimodel/resnet_dropped.jit");
   // std::string filename("/home/friedj/mlsf/multimodel/resnet.jit");
@@ -219,7 +225,10 @@ void BeRunner(long bsize) {
 
   while (true) {
     be_controller.Lap();
-    graph.replay();
+    if (rtctx->use_be_graph)
+      graph.replay();
+    else
+      fn();
     cstream.synchronize();
     becounter.store(becounter.load() + bsize);
   }

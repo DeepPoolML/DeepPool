@@ -75,6 +75,9 @@ struct RuntimeContext {
   bool verify;
   char *homedir;
   c10::Device c10dev;
+  int samplePerKernel{32};
+  int use_fg_graph{1};
+  int use_be_graph{1};
 
   /**
    *  additional variables.

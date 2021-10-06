@@ -31,6 +31,8 @@ import runtime_pb2_grpc
 
 # import examples.vgg as vgg  # TODO: this is used for debugging. Remove this later.
 
+extra_args = [] # unparsed arguments stored here are forwarded to runtimes
+
 class CppRuntimeProxy:
     def __init__(self, addressWithPort: str):
         self.channel = grpc.insecure_channel(addressWithPort) # ex) 'localhost:50051'
@@ -317,8 +319,8 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
             elif cppRuntime:
                 self.processes.append(location.rshAsync(
                     "CUDA_VISIBLE_DEVICES=" + str(location.device) + " " + self.workDir + "csrc/build/runtime" + \
-                    " --coordinatorAddr %s:%d --myAddr %s:%d --device 0 --c10dBackend %s --rank %d --worldSize %d --logdir %s --be_batch_size %d %s" % \
-                        (self.myAddr, self.myPort, location.address, location.port, c10dBackend, i, len(self.locations), logdir, self.be_batch_size, "--profile" if profile else "") #+ \
+                    " --coordinatorAddr %s:%d --myAddr %s:%d --device 0 --c10dBackend %s --rank %d --worldSize %d --logdir %s --be_batch_size %d %s %s" % \
+                        (self.myAddr, self.myPort, location.address, location.port, c10dBackend, i, len(self.locations), logdir, self.be_batch_size, "--profile" if profile else "", " ".join(extra_args)) #+ \
                     , stdout=stdoutFp, stderr=stderrFp))
             else:
                 self.processes.append(location.rshAsync(
@@ -464,10 +466,11 @@ def parse_args():
     # sudo apt-get update
     # sudo apt-get -y install cuda
 
-    return parser.parse_args()
+    return parser.parse_known_args()
 
 def main():
-    args = parse_args()
+    global extra_args
+    args, extra_args = parse_args()
     clusterConfig = json.load(open(args.pathToConfig))
     rankToIpMap = {}
     commGrpRanksDict = {}
