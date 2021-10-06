@@ -429,7 +429,7 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     profiler = GpuProfiler("cuda")
     profiler.loadProfile()
     global cs
-    cs = CostSim(profiler, netBw=netBw, verbose=True, gpuProfileLoc="resnetLayerGpuProfileA100.txt")
+    cs = CostSim(profiler, netBw=netBw, verbose=True, gpuProfileLoc="resnetLayerGpuProfileA100V2.txt", gpuProfileLocSub="resnetLayerGpuProfileA100.txt")
     model = resnet34()
     cs.printAllLayers(slient=True)
     cs.computeInputDimensions((3,224,224))
