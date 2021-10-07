@@ -148,6 +148,8 @@ void parse_args(RuntimeContext* ctx, int argc, char** argv) {
       {"use_fg_graph", required_argument, NULL, 'z'},
       {"use_be_graph", required_argument, NULL, 'y'},
       {"iters_per_capture", required_argument, NULL, 'i'},
+      {"min_layer_sync", required_argument, NULL, 'h'},
+      {"sync_bucket_size", required_argument, NULL, 'k'},
       {NULL, 0, NULL, 0}
   };
 
@@ -155,6 +157,12 @@ void parse_args(RuntimeContext* ctx, int argc, char** argv) {
   char ch;
   while ((ch = getopt_long(argc, argv, "t:a:", long_options, NULL)) != -1) {
     switch (ch) {
+      case 'h':
+        ctx->min_layer_sync = atol(optarg);
+        break;
+      case 'k':
+        ctx->sync_bucket_size = atol(optarg);
+        break;
       case 'c':
         ctx->coordinatorAddr = optarg; // or copy it if you want to
         break;

@@ -26,7 +26,6 @@ using torch::autograd::Variable;
 using torch::autograd::AutogradContext;
 using torch::autograd::variable_list;
 
-#define MIN_BYTES_FLUSH (10 * 1000 * 1000)
 static uint64_t bytes_inflight = 0;
 static std::vector<torch::Tensor> pending_grads;
 
@@ -237,7 +236,7 @@ RunnableModule::RunnableModule(RuntimeContext* rtctx,
       prevLayers.push_back(&layers[plid]);
     }
     bool detachOutput = ldsc["nextLayers"].size() > 1;
-    bool syncTwice = ldsc["gpuAssignment"].size() > 1;
+    bool syncTwice = ldsc["gpuAssignment"].size() >= rtctx->min_layer_sync;
     if (!syncTwice) {
       DP_LOG(NOTICE, " %d-th layer's name: %s, syncTwice: %d", id, name.c_str(),
           syncTwice);
@@ -756,7 +755,7 @@ RunnableModule::backwardAStep()
       backwards_did_sync = true;
     }
 
-    if (bytes_inflight >= MIN_BYTES_FLUSH) {
+    if (rtctx->sync_bucket_size > 0 && bytes_inflight >= rtctx->sync_bucket_size) {
       commHandler->comm_start(rtctx->grad_sync_stream);
       for (auto &p : pending_grads)
         commHandler->all_reduce(p, c10d::ReduceOp::SUM, true);
