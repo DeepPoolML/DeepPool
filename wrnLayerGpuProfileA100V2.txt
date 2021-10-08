@@ -1,0 +1,400 @@
+               conv2d{"in_channels":3,"kernel_size":7,"out_channels":64,"padding":3,"stride":2}[32][3,224,224]   0.471
+                                 ReLU2d{"inplace":true,"kernel_size":1,"padding":0,"stride":1}[32][64,112,112]   0.865
+                                             maxPool2d{"kernel_size":3,"padding":1,"stride":2}[32][64,112,112]   0.705
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[64,256,1],256],"groups":1,"inplanes":64,"planes":64,"stride":1}[32][64,56,56]   6.905
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":256,"planes":64}[32][256,56,56]   6.300
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":256,"planes":64}[32][256,56,56]   6.303
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[256,512,2],512],"groups":1,"inplanes":256,"planes":128,"stride":2}[32][256,56,56]   7.105
+         ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":512,"planes":128}[32][512,28,28]   3.535
+         ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":512,"planes":128}[32][512,28,28]   3.535
+         ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":512,"planes":128}[32][512,28,28]   3.539
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[512,1024,2],1024],"groups":1,"inplanes":512,"planes":256,"stride":2}[32][512,28,28]   4.304
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[32][1024,14,14]   2.299
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[32][1024,14,14]   2.298
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[32][1024,14,14]   2.302
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[32][1024,14,14]   2.302
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[32][1024,14,14]   2.298
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[32][1024,14,14]   2.300
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[32][1024,14,14]   2.297
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[32][1024,14,14]   2.298
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[32][1024,14,14]   2.302
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[32][1024,14,14]   2.299
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[32][1024,14,14]   2.301
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[32][1024,14,14]   2.296
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[32][1024,14,14]   2.299
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[32][1024,14,14]   2.302
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[32][1024,14,14]   2.300
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[32][1024,14,14]   2.301
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[32][1024,14,14]   2.301
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[32][1024,14,14]   2.302
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[32][1024,14,14]   2.304
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[32][1024,14,14]   2.302
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[32][1024,14,14]   2.302
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[32][1024,14,14]   2.300
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[1024,2048,2],2048],"groups":1,"inplanes":1024,"planes":512,"stride":2}[32][1024,14,14]   3.988
+         ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":2048,"planes":512}[32][2048,7,7]   2.887
+         ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":2048,"planes":512}[32][2048,7,7]   2.886
+                                                 adAvgPool2d{"output_height":1,"output_width":1}[32][2048,7,7]   0.045
+                                                                        flatten{"kernel_size":1}[32][2048,1,1]   0.012
+                                            linear{"bias":true,"in_features":2048,"out_features":1000}[32]2048   0.019
+                                                                                            SUM(avg)  104.005
+               conv2d{"in_channels":3,"kernel_size":7,"out_channels":64,"padding":3,"stride":2}[16][3,224,224]   0.245
+                                 ReLU2d{"inplace":true,"kernel_size":1,"padding":0,"stride":1}[16][64,112,112]   0.455
+                                             maxPool2d{"kernel_size":3,"padding":1,"stride":2}[16][64,112,112]   0.362
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[64,256,1],256],"groups":1,"inplanes":64,"planes":64,"stride":1}[16][64,56,56]   3.530
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":256,"planes":64}[16][256,56,56]   3.206
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":256,"planes":64}[16][256,56,56]   3.203
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[256,512,2],512],"groups":1,"inplanes":256,"planes":128,"stride":2}[16][256,56,56]   3.654
+         ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":512,"planes":128}[16][512,28,28]   1.743
+         ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":512,"planes":128}[16][512,28,28]   1.737
+         ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":512,"planes":128}[16][512,28,28]   1.737
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[512,1024,2],1024],"groups":1,"inplanes":512,"planes":256,"stride":2}[16][512,28,28]   2.378
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[16][1024,14,14]   1.357
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[16][1024,14,14]   1.359
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[16][1024,14,14]   1.359
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[16][1024,14,14]   1.358
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[16][1024,14,14]   1.359
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[16][1024,14,14]   1.359
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[16][1024,14,14]   1.358
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[16][1024,14,14]   1.357
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[16][1024,14,14]   1.359
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[16][1024,14,14]   1.359
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[16][1024,14,14]   1.358
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[16][1024,14,14]   1.358
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[16][1024,14,14]   1.358
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[16][1024,14,14]   1.357
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[16][1024,14,14]   1.357
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[16][1024,14,14]   1.358
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[16][1024,14,14]   1.356
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[16][1024,14,14]   1.359
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[16][1024,14,14]   1.359
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[16][1024,14,14]   1.358
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[16][1024,14,14]   1.357
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[16][1024,14,14]   1.357
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[1024,2048,2],2048],"groups":1,"inplanes":1024,"planes":512,"stride":2}[16][1024,14,14]   2.707
+         ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":2048,"planes":512}[16][2048,7,7]   1.939
+         ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":2048,"planes":512}[16][2048,7,7]   1.940
+                                                 adAvgPool2d{"output_height":1,"output_width":1}[16][2048,7,7]   0.028
+                                                                        flatten{"kernel_size":1}[16][2048,1,1]   0.012
+                                            linear{"bias":true,"in_features":2048,"out_features":1000}[16]2048   0.018
+                                                                                            SUM(avg)  58.769
+               conv2d{"in_channels":3,"kernel_size":7,"out_channels":64,"padding":3,"stride":2}[12][3,224,224]   0.185
+                                 ReLU2d{"inplace":true,"kernel_size":1,"padding":0,"stride":1}[12][64,112,112]   0.352
+                                             maxPool2d{"kernel_size":3,"padding":1,"stride":2}[12][64,112,112]   0.276
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[64,256,1],256],"groups":1,"inplanes":64,"planes":64,"stride":1}[12][64,56,56]   2.686
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":256,"planes":64}[12][256,56,56]   2.433
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":256,"planes":64}[12][256,56,56]   2.431
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[256,512,2],512],"groups":1,"inplanes":256,"planes":128,"stride":2}[12][256,56,56]   2.794
+         ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":512,"planes":128}[12][512,28,28]   1.376
+         ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":512,"planes":128}[12][512,28,28]   1.376
+         ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":512,"planes":128}[12][512,28,28]   1.376
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[512,1024,2],1024],"groups":1,"inplanes":512,"planes":256,"stride":2}[12][512,28,28]   1.963
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[12][1024,14,14]   1.195
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[12][1024,14,14]   1.196
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[12][1024,14,14]   1.196
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[12][1024,14,14]   1.197
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[12][1024,14,14]   1.196
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[12][1024,14,14]   1.196
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[12][1024,14,14]   1.196
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[12][1024,14,14]   1.198
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[12][1024,14,14]   1.197
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[12][1024,14,14]   1.195
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[12][1024,14,14]   1.196
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[12][1024,14,14]   1.195
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[12][1024,14,14]   1.195
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[12][1024,14,14]   1.196
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[12][1024,14,14]   1.198
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[12][1024,14,14]   1.196
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[12][1024,14,14]   1.197
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[12][1024,14,14]   1.196
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[12][1024,14,14]   1.196
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[12][1024,14,14]   1.196
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[12][1024,14,14]   1.198
+       ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[12][1024,14,14]   1.198
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[1024,2048,2],2048],"groups":1,"inplanes":1024,"planes":512,"stride":2}[12][1024,14,14]   2.521
+         ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":2048,"planes":512}[12][2048,7,7]   1.762
+         ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":2048,"planes":512}[12][2048,7,7]   1.763
+                                                 adAvgPool2d{"output_height":1,"output_width":1}[12][2048,7,7]   0.024
+                                                                        flatten{"kernel_size":1}[12][2048,1,1]   0.011
+                                            linear{"bias":true,"in_features":2048,"out_features":1000}[12]2048   0.018
+                                                                                            SUM(avg)  49.669
+                conv2d{"in_channels":3,"kernel_size":7,"out_channels":64,"padding":3,"stride":2}[8][3,224,224]   0.146
+                                  ReLU2d{"inplace":true,"kernel_size":1,"padding":0,"stride":1}[8][64,112,112]   0.231
+                                              maxPool2d{"kernel_size":3,"padding":1,"stride":2}[8][64,112,112]   0.190
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[64,256,1],256],"groups":1,"inplanes":64,"planes":64,"stride":1}[8][64,56,56]   1.746
+           ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":256,"planes":64}[8][256,56,56]   1.534
+           ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":256,"planes":64}[8][256,56,56]   1.538
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[256,512,2],512],"groups":1,"inplanes":256,"planes":128,"stride":2}[8][256,56,56]   1.889
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":512,"planes":128}[8][512,28,28]   0.952
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":512,"planes":128}[8][512,28,28]   0.949
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":512,"planes":128}[8][512,28,28]   0.951
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[512,1024,2],1024],"groups":1,"inplanes":512,"planes":256,"stride":2}[8][512,28,28]   1.454
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[8][1024,14,14]   0.905
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[8][1024,14,14]   0.904
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[8][1024,14,14]   0.906
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[8][1024,14,14]   0.905
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[8][1024,14,14]   0.904
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[8][1024,14,14]   0.904
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[8][1024,14,14]   0.904
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[8][1024,14,14]   0.904
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[8][1024,14,14]   0.905
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[8][1024,14,14]   0.906
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[8][1024,14,14]   0.906
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[8][1024,14,14]   0.905
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[8][1024,14,14]   0.906
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[8][1024,14,14]   0.907
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[8][1024,14,14]   0.905
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[8][1024,14,14]   0.904
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[8][1024,14,14]   0.905
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[8][1024,14,14]   0.904
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[8][1024,14,14]   0.905
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[8][1024,14,14]   0.905
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[8][1024,14,14]   0.906
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[8][1024,14,14]   0.904
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[1024,2048,2],2048],"groups":1,"inplanes":1024,"planes":512,"stride":2}[8][1024,14,14]   2.327
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":2048,"planes":512}[8][2048,7,7]   1.645
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":2048,"planes":512}[8][2048,7,7]   1.645
+                                                  adAvgPool2d{"output_height":1,"output_width":1}[8][2048,7,7]   0.019
+                                                                         flatten{"kernel_size":1}[8][2048,1,1]   0.012
+                                             linear{"bias":true,"in_features":2048,"out_features":1000}[8]2048   0.017
+                                                                                            SUM(avg)  37.154
+                conv2d{"in_channels":3,"kernel_size":7,"out_channels":64,"padding":3,"stride":2}[6][3,224,224]   0.106
+                                  ReLU2d{"inplace":true,"kernel_size":1,"padding":0,"stride":1}[6][64,112,112]   0.183
+                                              maxPool2d{"kernel_size":3,"padding":1,"stride":2}[6][64,112,112]   0.146
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[64,256,1],256],"groups":1,"inplanes":64,"planes":64,"stride":1}[6][64,56,56]   1.400
+           ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":256,"planes":64}[6][256,56,56]   1.211
+           ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":256,"planes":64}[6][256,56,56]   1.219
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[256,512,2],512],"groups":1,"inplanes":256,"planes":128,"stride":2}[6][256,56,56]   1.508
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":512,"planes":128}[6][512,28,28]   0.802
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":512,"planes":128}[6][512,28,28]   0.802
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":512,"planes":128}[6][512,28,28]   0.803
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[512,1024,2],1024],"groups":1,"inplanes":512,"planes":256,"stride":2}[6][512,28,28]   1.267
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[6][1024,14,14]   0.862
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[6][1024,14,14]   0.863
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[6][1024,14,14]   0.864
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[6][1024,14,14]   0.865
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[6][1024,14,14]   0.864
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[6][1024,14,14]   0.866
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[6][1024,14,14]   0.864
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[6][1024,14,14]   0.865
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[6][1024,14,14]   0.863
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[6][1024,14,14]   0.864
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[6][1024,14,14]   0.863
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[6][1024,14,14]   0.863
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[6][1024,14,14]   0.863
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[6][1024,14,14]   0.863
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[6][1024,14,14]   0.863
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[6][1024,14,14]   0.864
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[6][1024,14,14]   0.863
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[6][1024,14,14]   0.863
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[6][1024,14,14]   0.864
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[6][1024,14,14]   0.863
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[6][1024,14,14]   0.864
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[6][1024,14,14]   0.863
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[1024,2048,2],2048],"groups":1,"inplanes":1024,"planes":512,"stride":2}[6][1024,14,14]   2.053
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":2048,"planes":512}[6][2048,7,7]   1.457
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":2048,"planes":512}[6][2048,7,7]   1.456
+                                                  adAvgPool2d{"output_height":1,"output_width":1}[6][2048,7,7]   0.018
+                                                                         flatten{"kernel_size":1}[6][2048,1,1]   0.011
+                                             linear{"bias":true,"in_features":2048,"out_features":1000}[6]2048   0.017
+                                                                                            SUM(avg)  33.461
+                conv2d{"in_channels":3,"kernel_size":7,"out_channels":64,"padding":3,"stride":2}[5][3,224,224]   0.091
+                                  ReLU2d{"inplace":true,"kernel_size":1,"padding":0,"stride":1}[5][64,112,112]   0.161
+                                              maxPool2d{"kernel_size":3,"padding":1,"stride":2}[5][64,112,112]   0.119
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[64,256,1],256],"groups":1,"inplanes":64,"planes":64,"stride":1}[5][64,56,56]   1.207
+           ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":256,"planes":64}[5][256,56,56]   1.044
+           ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":256,"planes":64}[5][256,56,56]   1.045
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[256,512,2],512],"groups":1,"inplanes":256,"planes":128,"stride":2}[5][256,56,56]   1.300
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":512,"planes":128}[5][512,28,28]   0.743
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":512,"planes":128}[5][512,28,28]   0.744
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":512,"planes":128}[5][512,28,28]   0.743
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[512,1024,2],1024],"groups":1,"inplanes":512,"planes":256,"stride":2}[5][512,28,28]   1.207
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[5][1024,14,14]   0.793
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[5][1024,14,14]   0.795
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[5][1024,14,14]   0.794
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[5][1024,14,14]   0.793
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[5][1024,14,14]   0.794
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[5][1024,14,14]   0.794
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[5][1024,14,14]   0.794
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[5][1024,14,14]   0.794
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[5][1024,14,14]   0.795
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[5][1024,14,14]   0.794
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[5][1024,14,14]   0.795
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[5][1024,14,14]   0.794
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[5][1024,14,14]   0.794
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[5][1024,14,14]   0.795
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[5][1024,14,14]   0.795
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[5][1024,14,14]   0.795
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[5][1024,14,14]   0.794
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[5][1024,14,14]   0.795
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[5][1024,14,14]   0.795
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[5][1024,14,14]   0.795
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[5][1024,14,14]   0.795
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[5][1024,14,14]   0.794
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[1024,2048,2],2048],"groups":1,"inplanes":1024,"planes":512,"stride":2}[5][1024,14,14]   1.893
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":2048,"planes":512}[5][2048,7,7]   1.380
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":2048,"planes":512}[5][2048,7,7]   1.381
+                                                  adAvgPool2d{"output_height":1,"output_width":1}[5][2048,7,7]   0.017
+                                                                         flatten{"kernel_size":1}[5][2048,1,1]   0.012
+                                             linear{"bias":true,"in_features":2048,"out_features":1000}[5]2048   0.017
+                                                                                            SUM(avg)  30.580
+                conv2d{"in_channels":3,"kernel_size":7,"out_channels":64,"padding":3,"stride":2}[4][3,224,224]   0.076
+                                  ReLU2d{"inplace":true,"kernel_size":1,"padding":0,"stride":1}[4][64,112,112]   0.135
+                                              maxPool2d{"kernel_size":3,"padding":1,"stride":2}[4][64,112,112]   0.093
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[64,256,1],256],"groups":1,"inplanes":64,"planes":64,"stride":1}[4][64,56,56]   0.908
+           ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":256,"planes":64}[4][256,56,56]   0.793
+           ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":256,"planes":64}[4][256,56,56]   0.794
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[256,512,2],512],"groups":1,"inplanes":256,"planes":128,"stride":2}[4][256,56,56]   1.049
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":512,"planes":128}[4][512,28,28]   0.610
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":512,"planes":128}[4][512,28,28]   0.611
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":512,"planes":128}[4][512,28,28]   0.611
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[512,1024,2],1024],"groups":1,"inplanes":512,"planes":256,"stride":2}[4][512,28,28]   1.105
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[4][1024,14,14]   0.697
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[4][1024,14,14]   0.699
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[4][1024,14,14]   0.699
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[4][1024,14,14]   0.698
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[4][1024,14,14]   0.698
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[4][1024,14,14]   0.699
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[4][1024,14,14]   0.698
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[4][1024,14,14]   0.699
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[4][1024,14,14]   0.699
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[4][1024,14,14]   0.699
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[4][1024,14,14]   0.698
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[4][1024,14,14]   0.698
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[4][1024,14,14]   0.700
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[4][1024,14,14]   0.697
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[4][1024,14,14]   0.700
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[4][1024,14,14]   0.698
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[4][1024,14,14]   0.698
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[4][1024,14,14]   0.700
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[4][1024,14,14]   0.698
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[4][1024,14,14]   0.699
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[4][1024,14,14]   0.699
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[4][1024,14,14]   0.698
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[1024,2048,2],2048],"groups":1,"inplanes":1024,"planes":512,"stride":2}[4][1024,14,14]   1.862
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":2048,"planes":512}[4][2048,7,7]   1.354
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":2048,"planes":512}[4][2048,7,7]   1.355
+                                                  adAvgPool2d{"output_height":1,"output_width":1}[4][2048,7,7]   0.017
+                                                                         flatten{"kernel_size":1}[4][2048,1,1]   0.011
+                                             linear{"bias":true,"in_features":2048,"out_features":1000}[4]2048   0.017
+                                                                                            SUM(avg)  26.769
+                conv2d{"in_channels":3,"kernel_size":7,"out_channels":64,"padding":3,"stride":2}[3][3,224,224]   0.067
+                                  ReLU2d{"inplace":true,"kernel_size":1,"padding":0,"stride":1}[3][64,112,112]   0.112
+                                              maxPool2d{"kernel_size":3,"padding":1,"stride":2}[3][64,112,112]   0.072
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[64,256,1],256],"groups":1,"inplanes":64,"planes":64,"stride":1}[3][64,56,56]   0.758
+           ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":256,"planes":64}[3][256,56,56]   0.662
+           ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":256,"planes":64}[3][256,56,56]   0.663
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[256,512,2],512],"groups":1,"inplanes":256,"planes":128,"stride":2}[3][256,56,56]   0.917
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":512,"planes":128}[3][512,28,28]   0.556
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":512,"planes":128}[3][512,28,28]   0.557
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":512,"planes":128}[3][512,28,28]   0.557
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[512,1024,2],1024],"groups":1,"inplanes":512,"planes":256,"stride":2}[3][512,28,28]   0.989
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[3][1024,14,14]   0.665
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[3][1024,14,14]   0.664
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[3][1024,14,14]   0.665
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[3][1024,14,14]   0.664
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[3][1024,14,14]   0.665
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[3][1024,14,14]   0.666
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[3][1024,14,14]   0.665
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[3][1024,14,14]   0.665
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[3][1024,14,14]   0.666
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[3][1024,14,14]   0.666
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[3][1024,14,14]   0.665
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[3][1024,14,14]   0.664
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[3][1024,14,14]   0.665
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[3][1024,14,14]   0.664
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[3][1024,14,14]   0.665
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[3][1024,14,14]   0.665
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[3][1024,14,14]   0.666
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[3][1024,14,14]   0.665
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[3][1024,14,14]   0.666
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[3][1024,14,14]   0.665
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[3][1024,14,14]   0.665
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[3][1024,14,14]   0.666
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[1024,2048,2],2048],"groups":1,"inplanes":1024,"planes":512,"stride":2}[3][1024,14,14]   1.640
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":2048,"planes":512}[3][2048,7,7]   1.476
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":2048,"planes":512}[3][2048,7,7]   1.477
+                                                  adAvgPool2d{"output_height":1,"output_width":1}[3][2048,7,7]   0.017
+                                                                         flatten{"kernel_size":1}[3][2048,1,1]   0.012
+                                             linear{"bias":true,"in_features":2048,"out_features":1000}[3]2048   0.017
+                                                                                            SUM(avg)  25.183
+                conv2d{"in_channels":3,"kernel_size":7,"out_channels":64,"padding":3,"stride":2}[2][3,224,224]   0.044
+                                  ReLU2d{"inplace":true,"kernel_size":1,"padding":0,"stride":1}[2][64,112,112]   0.085
+                                              maxPool2d{"kernel_size":3,"padding":1,"stride":2}[2][64,112,112]   0.053
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[64,256,1],256],"groups":1,"inplanes":64,"planes":64,"stride":1}[2][64,56,56]   0.596
+           ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":256,"planes":64}[2][256,56,56]   0.521
+           ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":256,"planes":64}[2][256,56,56]   0.523
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[256,512,2],512],"groups":1,"inplanes":256,"planes":128,"stride":2}[2][256,56,56]   0.710
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":512,"planes":128}[2][512,28,28]   0.444
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":512,"planes":128}[2][512,28,28]   0.445
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":512,"planes":128}[2][512,28,28]   0.444
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[512,1024,2],1024],"groups":1,"inplanes":512,"planes":256,"stride":2}[2][512,28,28]   0.853
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[2][1024,14,14]   0.612
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[2][1024,14,14]   0.612
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[2][1024,14,14]   0.614
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[2][1024,14,14]   0.612
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[2][1024,14,14]   0.612
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[2][1024,14,14]   0.612
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[2][1024,14,14]   0.612
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[2][1024,14,14]   0.611
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[2][1024,14,14]   0.613
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[2][1024,14,14]   0.611
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[2][1024,14,14]   0.613
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[2][1024,14,14]   0.608
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[2][1024,14,14]   0.608
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[2][1024,14,14]   0.611
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[2][1024,14,14]   0.611
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[2][1024,14,14]   0.611
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[2][1024,14,14]   0.612
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[2][1024,14,14]   0.612
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[2][1024,14,14]   0.612
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[2][1024,14,14]   0.611
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[2][1024,14,14]   0.612
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[2][1024,14,14]   0.611
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[1024,2048,2],2048],"groups":1,"inplanes":1024,"planes":512,"stride":2}[2][1024,14,14]   1.609
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":2048,"planes":512}[2][2048,7,7]   1.338
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":2048,"planes":512}[2][2048,7,7]   1.339
+                                                  adAvgPool2d{"output_height":1,"output_width":1}[2][2048,7,7]   0.016
+                                                                         flatten{"kernel_size":1}[2][2048,1,1]   0.012
+                                             linear{"bias":true,"in_features":2048,"out_features":1000}[2]2048   0.017
+                                                                                            SUM(avg)  22.501
+                conv2d{"in_channels":3,"kernel_size":7,"out_channels":64,"padding":3,"stride":2}[1][3,224,224]   0.032
+                                  ReLU2d{"inplace":true,"kernel_size":1,"padding":0,"stride":1}[1][64,112,112]   0.056
+                                              maxPool2d{"kernel_size":3,"padding":1,"stride":2}[1][64,112,112]   0.034
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[64,256,1],256],"groups":1,"inplanes":64,"planes":64,"stride":1}[1][64,56,56]   0.422
+           ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":256,"planes":64}[1][256,56,56]   0.354
+           ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":256,"planes":64}[1][256,56,56]   0.354
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[256,512,2],512],"groups":1,"inplanes":256,"planes":128,"stride":2}[1][256,56,56]   0.535
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":512,"planes":128}[1][512,28,28]   0.358
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":512,"planes":128}[1][512,28,28]   0.360
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":512,"planes":128}[1][512,28,28]   0.359
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[512,1024,2],1024],"groups":1,"inplanes":512,"planes":256,"stride":2}[1][512,28,28]   0.708
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[1][1024,14,14]   0.543
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[1][1024,14,14]   0.544
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[1][1024,14,14]   0.542
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[1][1024,14,14]   0.544
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[1][1024,14,14]   0.542
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[1][1024,14,14]   0.544
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[1][1024,14,14]   0.543
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[1][1024,14,14]   0.543
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[1][1024,14,14]   0.541
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[1][1024,14,14]   0.544
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[1][1024,14,14]   0.543
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[1][1024,14,14]   0.540
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[1][1024,14,14]   0.540
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[1][1024,14,14]   0.542
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[1][1024,14,14]   0.542
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[1][1024,14,14]   0.543
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[1][1024,14,14]   0.542
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[1][1024,14,14]   0.543
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[1][1024,14,14]   0.542
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[1][1024,14,14]   0.543
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[1][1024,14,14]   0.541
+        ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":1024,"planes":256}[1][1024,14,14]   0.542
+ResnetBottleneck{"base_width":128,"dilation":1,"downsampleParams":[[1024,2048,2],2048],"groups":1,"inplanes":1024,"planes":512,"stride":2}[1][1024,14,14]   1.411
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":2048,"planes":512}[1][2048,7,7]   1.177
+          ResnetBottleneck{"base_width":128,"dilation":1,"groups":1,"inplanes":2048,"planes":512}[1][2048,7,7]   1.178
+                                                  adAvgPool2d{"output_height":1,"output_width":1}[1][2048,7,7]   0.017
+                                                                         flatten{"kernel_size":1}[1][2048,1,1]   0.012
+                                             linear{"bias":true,"in_features":2048,"out_features":1000}[1]2048   0.014
+                                                                                            SUM(avg)  19.313

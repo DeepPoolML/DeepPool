@@ -180,7 +180,7 @@ class GpuProfiler:
                 iterationCount += 1
 
     def benchModel(self, model, inputSize, batchSize, profile=False):
-        train_dataset = self.SyntheticDataset(inputSize, batchSize * 1000, 100) # 30) # 
+        train_dataset = self.SyntheticDataset(inputSize, batchSize * 1000, 1000) # 30) # 
         train_loader = torch.utils.data.DataLoader(
                 train_dataset, batch_size=batchSize, shuffle=False, pin_memory=True, drop_last=True)
         

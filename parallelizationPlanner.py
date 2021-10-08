@@ -78,7 +78,7 @@ class CostSim:
         with open(gpuProfileLoc, "r") as f:
             for line in f:
                 items = line.strip().split()
-                if len(items) != 5 or items[0] == "#config":
+                if (len(items) != 5 and len(items) != 2) or items[0] == "#config":
                     continue
                 layerInfo = items[0]
                 avgTime = float(items[1]) * 1000
@@ -190,10 +190,10 @@ class CostSim:
                 inputSize = [1] + (list(layer.inputDim) if type(layer.inputDim) == tuple else [layer.inputDim])
                 fakeIn = torch.empty(inputSize)
                 outSize = list(layer.module(fakeIn).size())[1:]
-                print("Computed outputDim: ", outSize)
-                layer.outputDim = tuple(outSize)
+                layer.outputDim = outSize[0] if len(outSize) == 1 else tuple(outSize)
+                print("Computed outputDim: ", layer.outputDim)
 
-            print("%3d %11s %20s %20s %s" % (i, layer.name, str(layer.inputDim), str(layer.outputDim), str(layer.params)) )
+            # print("%3d %11s %20s %20s %s" % (i, layer.name, str(layer.inputDim), str(layer.outputDim), str(layer.params)) )
     
     def calcInputXfer(self, srcLayer: Layer, destLayer: Layer, srcConfig: tuple, destConfig: tuple, noGpuOverlap = False):
         namesIn2d = ["conv2d", "maxPool2d", "avgPool2d", "adAvgPool2d", "ReLU2d", "concat"]
@@ -340,7 +340,7 @@ class CostSim:
         return (2 * activationTime, (egressBytes, ingressBytes, splitFactor)) # double to count both forward and backward passes.
 
     def calcGeneralActivationTime(self, srcLayer: Layer, destLayer: Layer, srcConfig: tuple, destConfig: tuple, noGpuOverlap: bool):
-        print("srcConfig: ", srcConfig)
+        # print("srcConfig: ", srcConfig)
         bytesPerParam = 4
         # Prepare variables.
         srcS = srcConfig[0]
@@ -488,8 +488,8 @@ class CostSim:
         self.layers.append(layer)
         return
 
-    def Dropout(self, dropout, custom_previous_layers: list = None):
-        module = nn.Dropout(dropout)
+    def Dropout(self, dropout, inplace: bool = False, custom_previous_layers: list = None):
+        module = nn.Dropout(dropout, inplace=inplace)
 
         if custom_previous_layers == None and len(self.layers) > 0:
             custom_previous_layers = [self.layers[-1]]
@@ -525,7 +525,7 @@ class CostSim:
         elif layer.name in ["flatten", "maxPool2d", "avgPool2d", "adAvgPool2d", "ReLU2d", "concat"]:
             initCfg = (globalBatch, layer.inputDim[1], layer.inputDim[2], layer.inputDim[0]) # (batch, width, height, channel, filter)
         else:
-            initCfg = (globalBatch, *layer.inputDim) # (batch, width, height, channel)
+            initCfg = (globalBatch, *layer.inputDim) if type(layer.inputDim) == tuple else (globalBatch, layer.inputDim) # (batch, width, height, channel)
         return initCfg
 
     def listConfigOptions(self, layer, globalBatch: int, totalGpus: int, samplePo2=True, sampleSplit=True, spatialSplit=True, filterSplit=False, pruneHeuristics=False, dataParallelBaseline=False):
@@ -1912,13 +1912,13 @@ class CostSim:
             if layer.name in ["conv2d"]:
                 print("%11s (b=%2d, w=%3d, h=%3d, c=%4d, f=%4d) => " % (layer.name, *layer.initCfg), end="")
                 print("(b=%2d, w=%3d, h=%3d, c=%4d, f=%4d) " % layer.bestCfg, end="")
-            elif layer.name in ["linear", "ReLU1d"]:
+            elif len(layer.initCfg) == 3: #layer.name in ["linear", "ReLU1d"]:
                 print("%11s (b=%2d, in=%6d, out=%6d)        => " % (layer.name, *layer.initCfg), end="")
                 print("(b=%2d, in=%6d, out=%6d)        " % layer.bestCfg, end="")
-            elif layer.name in ["flatten", "maxPool2d", "avgPool2d", "adAvgPool2d", "ReLU2d", "concat"]:
+            elif len(layer.initCfg) == 4: # layer.name in ["flatten", "maxPool2d", "avgPool2d", "adAvgPool2d", "ReLU2d", "concat"]:
                 print("%11s (b=%2d, w=%3d, h=%3d, c=%4d)         => " % (layer.name, *layer.initCfg), end="")
                 print("(b=%2d, w=%3d, h=%3d, c=%4d)         " % layer.bestCfg, end="")
-
+            
             gpusUsed = self.calcGpusNeeded(layer, layer.bestCfg, ctx.globalBatch)
             gpuTime = self.benchGpuTime(layer, layer.bestCfg, ctx=ctx)
             # gpuUsec = gpusUsed * (cumulativeTime - timeComposition[0])
