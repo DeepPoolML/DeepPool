@@ -91,6 +91,9 @@ struct Layer {
   Layer(torch::jit::Module module, SpecialModuleTypes specialModule, int id, bool active,
       bool detachInput, bool detachOutput, std::vector<Layer*>& prevLayerVec, bool syncTwice)
     : module(module)
+    , moduleFwGraph()
+    , moduleBwGraph()
+    , avgLayerTime(0)
     , specialModule(specialModule)
     , id(id)
     , active(active)
@@ -113,6 +116,9 @@ struct Layer {
   }
   
   torch::jit::Module module;
+  at::cuda::CUDAGraph moduleFwGraph; // Used only for layer-wise profiling.
+  at::cuda::CUDAGraph moduleBwGraph; // Used only for layer-wise profiling.
+  double avgLayerTime;
   const SpecialModuleTypes specialModule; // 0: not special, use module. 1: concat.
   const int id;
   const bool active; // Inactive means no samples assigned for this runtime.
@@ -159,6 +165,8 @@ public:
   }
 
   torch::Tensor GetNext() {
+    return next_t_;
+
     if (!tensorbytes)
       return cached_[iter_idx_++ % 64].to(rtctx->c10dev, true, false);
 
@@ -201,6 +209,44 @@ enum JobStatus {
   YIELD
 };
 
+// class ReduceBucket {
+//  public:
+//   ReduceBucket() {}
+//   bool holdGrad (torch::Tensor& grad) {
+//     elems += grad.numel();
+//     grads.push_back(&grad);
+//     flattened.push_back(grad.flatten());
+//     sizes.push_back(grad.numel());
+
+//     if (elems > ReduceBucket::elemLimit) {
+//       wrapUp();
+//       return true; // Perform all reduce.
+//     }
+//     return false;
+//   }
+
+//   void wrapUp() {
+//     buffer = torch::cat(flattened);
+//   }
+
+//   void splitAndUpdateGrads() {
+//     if (!buffer.defined())
+//       return;
+//     std::vector<torch::Tensor> splittedTsrs = buffer.split_with_sizes(sizes);
+//     for (size_t i = 0; i < grads.size(); ++i) {
+//       *grads[i] = splittedTsrs[i].reshape_as(*grads[i]);
+//     }
+//   }
+
+//   torch::Tensor buffer; // Flattened & concated.
+//   static const int64_t elemLimit = 2500000; // 10 MB bucket size.
+
+//   std::vector<torch::Tensor*> grads;
+//   std::vector<torch::Tensor> flattened;
+//   std::vector<int64_t> sizes;
+//   int64_t elems {0};
+// };
+
 /**
  * A module that holds parameters (or submodules) and
  * provides functionalities to run training iteration.
@@ -214,14 +260,14 @@ class RunnableModule : public torch::nn::Module {
   void getParameters(std::vector<torch::Tensor>* parameters);
   void getActiveParameters(std::vector<torch::Tensor>* parameters);
   void iterInit();
-  JobStatus forwardAStep();
-  // bool forwardAStepOld();
-  JobStatus backwardAStep();
+  JobStatus forwardAStep(bool captureLayer = false);
+  JobStatus backwardAStep(bool captureLayer = false);
   void loss();
   void gradientSync();
   void initProfileTimers(CudaTimer* ct_load, CudaTimer* ct_loss);
   void resetProfileTimers();
   void printProfileTimers(int warmupIters);
+  void printLayerInGraphTimes();
 
   ////////////////////////////////////////////
   // Internal data structure.
@@ -253,6 +299,8 @@ class RunnableModule : public torch::nn::Module {
   at::cuda::CUDAGraph graph;
   // Performance Stat
   CpuTimer detachTimer;
+
+  // std::vector<ReduceBucket> reduceBuckets;
 };
 
 #endif

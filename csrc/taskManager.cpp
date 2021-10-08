@@ -293,7 +293,8 @@ TaskManager::poll()
   trainSingleStep(mainJob, &jobCompleted);
   if (jobCompleted) {
     size_t warmupIters = 100;
-    mainJob->model->printProfileTimers(warmupIters);
+    // mainJob->model->printProfileTimers(warmupIters);
+    mainJob->model->printLayerInGraphTimes();
     size_t totiters = mainJob->totiters - warmupIters;
     using msec = std::chrono::duration<double, std::milli>;
     double elapsed_ms = std::chrono::duration_cast<msec>(mainJob->end - mainJob->start).count();
@@ -443,10 +444,8 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
       return 1;
     }
 
-    // uint64_t startTick = RAMCloud::Cycles::rdtsc();
-    JobStatus status = job->model->forwardAStep();
-    // job->cyclesOnForwardAStep += RAMCloud::Cycles::rdtsc() - startTick;
-    // job->invocationsOnForwardAStep++;
+    bool capture = rtctx->profile && job->totiters == job->iters_before_graph_capture - 1;
+    JobStatus status = job->model->forwardAStep(capture);
 
     if (status == COMPLETED) {
       job->timers[CT_FP].record();
@@ -468,12 +467,10 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
     }
   } else if (job->state == JobState::BACKWARD) {
     DP_LOG(DEBUG, "JobState::BACKWARD.");
-    // DP_LOG(WARNING, "Backward pass is not implemented yet.");
-    // uint64_t startTick = RAMCloud::Cycles::rdtsc();
-    JobStatus status = job->model->backwardAStep();
-    // job->cyclesOnBackwardAStep += RAMCloud::Cycles::rdtsc() - startTick;
-    // job->invocationsOnBackwardAStep++;
-
+    
+    bool capture = rtctx->profile && job->totiters == job->iters_before_graph_capture - 1;
+    JobStatus status = job->model->backwardAStep(capture);
+    
     if (status == COMPLETED) {
       job->timers[CT_BP].record();
       job->state = JobState::SYNC;

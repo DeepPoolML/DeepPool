@@ -44,9 +44,9 @@ class CpuTimer {
   }
 
   const char* name;
-  uint64_t lastStartTick;
-  uint64_t totalCycles;
-  uint64_t count;
+  uint64_t lastStartTick {0};
+  uint64_t totalCycles {0};
+  uint64_t count {0};
 };
 
 class CudaTimer {

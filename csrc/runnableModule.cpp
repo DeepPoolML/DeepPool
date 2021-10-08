@@ -353,53 +353,6 @@ RunnableModule::RunnableModule(RuntimeContext* rtctx,
       }
     }
 
-    // if (layerIsActive && ldsc.contains("tensorRx")) {
-    //   std::map<int, std::vector<json> > recvListDict;
-    //   for (auto& item : ldsc["tensorRx"]) {
-    //     int prevLayerId = item["prop"]["prevLayerId"].get<int>();
-    //     if (recvListDict.find(prevLayerId) == recvListDict.end()) {
-    //       recvListDict[prevLayerId] = std::vector<json>();
-    //     }
-    //     recvListDict[prevLayerId].push_back(item);
-    //   }
-    //   for (const auto& kv : recvListDict) {
-    //     const int prevLayerId = kv.first;
-    //     const std::vector<json>& recvList = kv.second;
-
-    //     TsrXfer xfer(commHandler);
-    //     xfer.type = TsrXfer::Recv;
-    //     xfer.splitCatDim = 0;
-    //     xfer.prevLayerId = prevLayerId;
-    //     xfer.nextLayerId = id;
-    //     xfer.recevingLayerForSend = &layers.back();
-    //     int xferSampleSum = 0;
-    //     for (const json& item : recvList) {
-    //       int xferSamples = item["prop"]["xferSamples"].get<int>();
-    //       xfer.splitSizes.push_back(xferSamples);
-    //       xferSampleSum += xferSamples;
-
-    //       auto xferName = item["name"].get<std::string>();
-    //       Tag tag = commHandler->getTag(xferName);
-    //       Tag tagB = commHandler->getTag(xferName + "_back");
-    //       Rank src = item["src"].get<Rank>();
-    //       xfer.xferTagAndRank.push_back(std::make_pair(tag, src));
-    //       xfer.xferTagAndRankBack.push_back(std::make_pair(tagB, src));
-    //     }
-
-    //     int remainder;
-    //     if (xfer.splitCatDim == 0) {
-    //       remainder = ldsc["config"][0].get<int>() - xferSampleSum;
-    //     } else { // Other than sample dimension, use inputDim as its dimension is ordered correctly.
-    //       remainder = ldsc["inputDim"][xfer.splitCatDim - 1].get<int>() - xferSampleSum;
-    //     }
-
-    //     DP_LOG(DEBUG, "remainder: %d, sum: %d", remainder, xferSampleSum);
-    //     xfer.splitSizes.push_back(remainder);
-    //     layers.back().xferIns.push_back(std::move(xfer));
-    //     DP_LOG(DEBUG, "xferIn registered. len(layer->xferIns): %d", static_cast<int>(layers.back().xferIns.size()));
-    //   }
-    // }
-
     if (rtctx->profile) {
       // TODO: if it's not that accurate, maybe add layer id?
       layers.back().moduleName = name + ldsc["params"].dump() +
@@ -473,6 +426,8 @@ RunnableModule::iterInit()
   fpTargets = target_pipeline.GetNext();
   fpOutput.reset();
   fpLoss.reset();
+  // reduceBuckets.clear();
+  // reduceBuckets.emplace_back();
 }
 
 /**
@@ -481,7 +436,7 @@ RunnableModule::iterInit()
  * \return Returns true if forward pass is completed.
  */
 JobStatus
-RunnableModule::forwardAStep()
+RunnableModule::forwardAStep(bool captureLayer)
 {
   DP_LOG(DEBUG, "layerQ size: %d", (int)layerQ.size());
   Layer* layer = layerQ.front();
@@ -548,7 +503,27 @@ RunnableModule::forwardAStep()
     } else {
       std::vector<torch::jit::IValue> ivalVec;
       ivalVec.push_back(inputVec[0]);
+
+      if (captureLayer) { // Used layer time profiling.
+        c10::cuda::device_synchronize();
+        layer->moduleFwGraph.capture_begin();
+      }
+
       output = layer->module.forward(ivalVec).toTensor();
+
+      if (captureLayer) { // Used layer time profiling.
+        layer->moduleFwGraph.capture_end();
+        c10::cuda::device_synchronize();
+        CpuTimer timer("fwTimer");
+        timer.start();
+        for (int i = 0; i < 1000; ++i) {
+          layer->moduleFwGraph.replay();
+        }
+        c10::cuda::device_synchronize();
+        timer.stop();
+        layer->avgLayerTime = static_cast<double>(timer.avgMicros())
+                              / 1000000.0;
+      }
       DP_LOG(DEBUG, "module.forward called.");
     }
 
@@ -657,7 +632,7 @@ RunnableModule::loss()
  * \return Returns true if backward pass is completed.
  */
 JobStatus
-RunnableModule::backwardAStep()
+RunnableModule::backwardAStep(bool captureLayer)
 {
   Layer* layer = layerQ.front();
   layerQ.pop_front();
@@ -714,6 +689,11 @@ RunnableModule::backwardAStep()
               nextLayerPtr->detachedInputs[layer->id].toString().c_str(),
               tsrSizeToStr(grad).c_str());
           
+          if (captureLayer) { // Used layer time profiling.
+            c10::cuda::device_synchronize();
+            layer->moduleBwGraph.capture_begin();
+          }
+          
           if (layer->outputsAfterXfer.count(nextLayerPtr->id)) {
             DP_LOG(DEBUG, "Backward on outputsAfterXfer:%s gradIn:%s", 
                 tsrSizeToStr(layer->outputsAfterXfer[nextLayerPtr->id]).c_str(),
@@ -727,6 +707,22 @@ RunnableModule::backwardAStep()
             DP_LOG(DEBUG, "Backward is not called since inactive layer & "
                 "no xferIn for layer %d", nextLayerPtr->id);
           }
+
+          if (captureLayer) { // Used layer time profiling.
+            layer->moduleBwGraph.capture_end();
+            c10::cuda::device_synchronize();
+
+            CpuTimer timer("bwTimer");
+            timer.start();
+            for (int i = 0; i < 1000; ++i) {
+              layer->moduleBwGraph.replay();
+            }
+            c10::cuda::device_synchronize();
+            timer.stop();
+            layer->avgLayerTime += static_cast<double>(timer.avgMicros())
+                                    / 1000000.0;
+          }
+
         } else {
           DP_LOG(DEBUG, "  nextLayerPtr(%d)->detachInput is false!", nextLayerPtr->id);
         }
@@ -747,7 +743,7 @@ RunnableModule::backwardAStep()
   }
   layer->status = LayerStatus::PENDING_FP;
 
-  if (layer->syncTwice) {
+  if (layer->syncTwice && layer->active) {
     for (const auto& param : layer->module.parameters()) {
       auto grad = param.mutable_grad();
       bytes_inflight += grad.nbytes();
@@ -762,6 +758,15 @@ RunnableModule::backwardAStep()
       commHandler->comm_end();
       bytes_inflight = 0;
       pending_grads.clear();
+
+      // if (param.mutable_grad().numel() > ReduceBucket::elemLimit) {
+      //   commHandler->all_reduce(param.mutable_grad(), c10d::ReduceOp::SUM, true);
+      // } else {
+      //   if (reduceBuckets.back().holdGrad(param.mutable_grad())) {
+      //     commHandler->all_reduce(reduceBuckets.back().buffer, c10d::ReduceOp::SUM, true);
+      //     reduceBuckets.emplace_back();
+      //   }
+      // }
     }
 
   }
@@ -796,6 +801,18 @@ RunnableModule::gradientSync() {
     commHandler->sync(rtctx->grad_sync_stream);
     backwards_did_sync = false;
   }
+
+  // if (reduceBuckets.back().grads.size() > 0) {
+  //   reduceBuckets.back().wrapUp();
+  //   commHandler->all_reduce(reduceBuckets.back().buffer, c10d::ReduceOp::SUM, true);
+  // }
+  // commHandler->sync();
+  // for (ReduceBucket& bucket : reduceBuckets) {
+  //   bucket.splitAndUpdateGrads();
+  // }
+
+  // DP_LOG(DEBUG, "reduceBuckets.size(): %d", reduceBuckets.size());
+
   // // First sync within a host & with fast networking.
   // for (auto& layer : layers) {
   //   if (layer.syncTwice) {
@@ -846,6 +863,20 @@ RunnableModule::resetProfileTimers() {
       layer.bpTimer->saveAndReset();
     }
   }
+}
+
+void
+RunnableModule::printLayerInGraphTimes() {
+  if (!rtctx->profile) {
+    return;
+  }
+
+  double sum = 0;
+  for (auto& layer : layers) {
+    printf("%110s  %6.3f\n", layer.moduleName.c_str(), layer.avgLayerTime);
+    sum += layer.avgLayerTime;
+  }
+  printf("%100s  %.3f\n", "SUM(avg)", sum);
 }
 
 /**
