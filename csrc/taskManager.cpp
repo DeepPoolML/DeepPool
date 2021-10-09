@@ -91,14 +91,10 @@ JobContext::JobContext(std::unique_ptr<RunnableModule> modelIn, std::string name
   , device(device)
   , epoch(0)
   , iter(0)
-  , itersToTrain(1900) // = len(dataLoader) if dataLoader != None else None #TODO: this is a temporary hack..
+  , itersToTrain(500) // = len(dataLoader) if dataLoader != None else None #TODO: this is a temporary hack..
   , state(JobState::INIT)
   , timers()
-  , modelToVerify()
 {
-  // self.dataLoaderIt = iter(self.dataLoader) if dataLoader != None else None
-  // self.criterion = nn.CrossEntropyLoss().cuda(device) if criterion == None else criterion
-  
   if (rtctx->use_fg_graph) {
     iters_before_graph_capture = 50;
   } else {
@@ -318,15 +314,6 @@ TaskManager::poll()
         mainJob->timers[CT_BP].getP50(warmupIters),
         mainJob->timers[CT_STOP].getP50(warmupIters));
 
-    // uint64_t forwardAStepUs = RAMCloud::Cycles::toMicroseconds(
-    //     mainJob->cyclesOnForwardAStep / mainJob->invocationsOnForwardAStep);
-    // uint64_t backwardAStepUs = RAMCloud::Cycles::toMicroseconds(
-    //     mainJob->cyclesOnBackwardAStep / mainJob->invocationsOnBackwardAStep);
-    // DP_LOG(NOTICE, "Perf stat -- forwardAStep: %" PRIu64" us (%" PRIu64" times)"
-    //     " backwardAStep %" PRIu64" us (%" PRIu64" times)", forwardAStepUs,
-    //     mainJob->invocationsOnForwardAStep, backwardAStepUs,
-    //     mainJob->invocationsOnBackwardAStep);
-
     // DP_LOG(NOTICE, " -- detachTime: %" PRIu64" us", mainJob->model->detachTimer.avgMicros());
 
     jobList.erase(jobList.begin());
@@ -409,20 +396,6 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
     job->optimizer->zero_grad();
     job->timers[CT_ZERO].record();
 
-
-    if (rtctx->verify && job->iter == 0) {
-      auto x2 = job->model->fpInput.clone();
-      x2 = x2.to(job->device);
-      DP_LOG(NOTICE, "Verify two inputs.. fpInput: %s x2: %s",
-            tsrSizeToStr(job->model->fpInput).c_str(),
-            tsrSizeToStr(x2).c_str());
-      // DP_LOG(NOTICE, "fpInput: %s", tsrToStr(job->model->fpInput).c_str());
-      // DP_LOG(NOTICE, "x2:      %s", tsrToStr(x2).c_str());
-      std::vector<torch::jit::IValue> inputVec;
-      inputVec.push_back(x2);
-      job->outputToVerify = job->modelToVerify.forward(inputVec).toTensor();
-    }
-
     job->timers[CT_LOAD].record();
     job->state = JobState::FORWARD;
     DP_LOG(DEBUG, "Foward pass is starting soon.");
@@ -451,12 +424,6 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
       job->timers[CT_FP].record();
       // TODO: add a loss calculation here? or as another state?
       DP_LOG(DEBUG, "Foward pass is completed. Calculating loss.");
-
-      if (rtctx->verify && job->iter == 0) {
-        DP_LOG(NOTICE, "Verify two outputs.. fpOutput: %s outputToVerify: %s",
-            tsrSizeToStr(job->model->fpOutput).c_str(),
-            tsrSizeToStr(job->outputToVerify).c_str());
-      }
       
       job->model->loss();
       job->timers[CT_LOSS].record();

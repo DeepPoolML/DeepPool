@@ -143,7 +143,6 @@ void parse_args(RuntimeContext* ctx, int argc, char** argv) {
       {"sample_per_kernel", required_argument, NULL, 's'},
       {"profile", no_argument, NULL, 'f'},
       {"debug", no_argument, NULL, 'g'},
-      {"verify", no_argument, NULL, 'v'},
       {"be_jit_file", required_argument, NULL, 'j'},
       {"use_fg_graph", required_argument, NULL, 'z'},
       {"use_be_graph", required_argument, NULL, 'y'},
@@ -211,9 +210,6 @@ void parse_args(RuntimeContext* ctx, int argc, char** argv) {
         break;
       case 'g':
         ctx->debug = true;
-        break;
-      case 'v':
-        ctx->verify = true;
         break;
       default:
         printf("?? getopt returned character code 0%o ??\n", ch);

@@ -154,13 +154,6 @@ RuntimeServiceImpl::ScheduleTraining(ServerContext* context,
       nullptr, std::move(commHandler), nullptr, std::move(dev), 1, std::move(optimizer));
   job->run_with_be = request->run_be() > 0;
 
-  if (rtctx->verify) {
-    job->modelToVerify = torch::jit::load(std::string(rtctx->homedir) +
-        "/DeepPoolRuntime/modules/vgg16.pt");
-    job->modelToVerify.to(dev);
-    job->modelToVerify.train();
-    DP_LOG(DEBUG, "model for verification is loaded.");
-  }
   DP_LOG(DEBUG, "job constructed.");
 
   rtctx->taskManager->addTrainingJob(std::move(job));

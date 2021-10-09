@@ -106,8 +106,6 @@ struct JobContext {
   JobState state;
 
   std::vector<CudaTimer> timers;
-  torch::jit::Module modelToVerify;
-  torch::Tensor outputToVerify;
 
   std::chrono::time_point<std::chrono::steady_clock> start, end;
   uint64_t be_img_start, be_img_end;
