@@ -285,8 +285,22 @@ TaskManager::poll()
 
   int jobsScheduled = 0;
   JobContext* mainJob = jobList[0].get();
+  JobContext* subJob = nullptr;
+  if (jobList.size() > 1) {
+    subJob = jobList[1].get();
+  }
   bool jobCompleted = false;
   trainSingleStep(mainJob, &jobCompleted);
+  // int idleUs = 0, spentUs = 0;
+  // trainSingleStep(mainJob, &jobCompleted, &idleUs, &spentUs);
+  // if (mainJob.totiters > 41 && idleTime > 0) {
+  //   if (subJob) {
+  //     int idleUs2 = 0, spentUs2 = 0;
+  //     trainSingleStep(subJob, &jobCompleted, &idleUs2, &spentUs2);
+  //   }
+  // }
+
+
   if (jobCompleted) {
     size_t warmupIters = 100;
     // mainJob->model->printProfileTimers(warmupIters);
@@ -335,7 +349,6 @@ TaskManager::poll()
 int
 TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
 {
-
   if (job->state == JobState::INIT) {
 
     if (be_bsize > 0 && job->totiters == 0) {
@@ -361,7 +374,8 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
       job->iter = 0;
       job->epoch++;
     }
-    if (job->epoch >= job->epochsToTrain) {
+    if (job->epoch >= job->epochsToTrain || 
+        (rtctx->profile && job->totiters == job->iters_before_graph_capture)) {
       DP_LOG(DEBUG, "training is completed.");
       rtctx->torch_stream.synchronize();
       job->end = std::chrono::steady_clock::now();
@@ -416,7 +430,7 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
       job->state = JobState::FINISH;
       return 1;
     }
-
+    
     bool capture = rtctx->profile && job->totiters == job->iters_before_graph_capture - 1;
     JobStatus status = job->model->forwardAStep(capture);
 
@@ -437,6 +451,7 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
     
     bool capture = rtctx->profile && job->totiters == job->iters_before_graph_capture - 1;
     JobStatus status = job->model->backwardAStep(capture);
+    // TODO: get idle time for backward separately.
     
     if (status == COMPLETED) {
       job->timers[CT_BP].record();

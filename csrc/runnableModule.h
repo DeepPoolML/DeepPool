@@ -119,6 +119,8 @@ struct Layer {
   at::cuda::CUDAGraph moduleFwGraph; // Used only for layer-wise profiling.
   at::cuda::CUDAGraph moduleBwGraph; // Used only for layer-wise profiling.
   double avgLayerTime;
+  int64_t fwUsec {0};
+  int64_t bwUsec {0};
   const SpecialModuleTypes specialModule; // 0: not special, use module. 1: concat.
   const int id;
   const bool active; // Inactive means no samples assigned for this runtime.

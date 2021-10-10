@@ -78,29 +78,35 @@ class CostSim:
         with open(gpuProfileLoc, "r") as f:
             for line in f:
                 items = line.strip().split()
-                if (len(items) != 5 and len(items) != 2) or items[0] == "#config":
+                if (len(items) != 5 and len(items) != 4) or items[0] == "#config":
                     continue
                 layerInfo = items[0]
                 avgTime = float(items[1]) * 1000
-                # if layerInfo in self.layerProfileCache:
-                #     print("Updating cache with more accurate val. %100s  %.3f -> %.3f"%(layerInfo, self.layerProfileCache[layerInfo]["avg"], avgTime))
-                self.layerProfileCache[layerInfo] = {"avg": avgTime}
-                
-        #           p90Times[name], p99Times[name]);
-                # p50Time = items[2]
-        #       printf("%100s  %.3f  %.3f  %.3f  %.3f\n", name, avgT, p50Times[name],
-        #           p90Times[name], p99Times[name]);
+                fwTime = float(items[2])
+                bwTime = float(items[3])
+                self.layerProfileCache[layerInfo] = {"avg": avgTime, "fwTime": fwTime, "bwTime": bwTime}
 
-    def queryLayerProfileCache(self, layer, config: tuple):
+    def getLayerIdentifier(self, layer, config: tuple):
         layerInfo = layer.name +\
             json.dumps(layer.params, sort_keys=True, separators=(',', ':')) +\
             "[" + str(config[0]) + "]" +\
             json.dumps(layer.inputDim, sort_keys=False, separators=(',', ':'))
-            # TODO: use config instead of inputDim to support operator splits.
+        return layerInfo
+        
+
+    def queryLayerProfileCache(self, layer, config: tuple):
+        layerInfo = self.getLayerIdentifier(layer, config)
         if layerInfo in self.layerProfileCache:
             return self.layerProfileCache[layerInfo]["avg"]
         else:
             return 0
+
+    def queryFwBwTime(self, layer, config: tuple):
+        layerInfo = self.getLayerIdentifier(layer, config)
+        if layerInfo in self.layerProfileCache:
+            return (self.layerProfileCache[layerInfo]["fwTime"], self.layerProfileCache[layerInfo]["bwTime"])
+        else:
+            return (0, 0)
 
     def generateModuleDescription(self, layerConfigs: list, globalBatch: int):
         # gpuTimeSum = 0
@@ -191,7 +197,7 @@ class CostSim:
                 fakeIn = torch.empty(inputSize)
                 outSize = list(layer.module(fakeIn).size())[1:]
                 layer.outputDim = outSize[0] if len(outSize) == 1 else tuple(outSize)
-                print("Computed outputDim: ", layer.outputDim)
+                # print("Computed outputDim: ", layer.outputDim)
 
             # print("%3d %11s %20s %20s %s" % (i, layer.name, str(layer.inputDim), str(layer.outputDim), str(layer.params)) )
     
@@ -1457,8 +1463,6 @@ class CostSim:
             layer.noParallelTime = self.benchGpuTime(layer, initCfg, ctx=ctx) + self.calcSyncTime(layer, initCfg, ctx)
             
             configCandidates = self.listConfigOptions(layer, ctx.globalBatch, ctx.totalGpus, sampleSplit=ctx.sampleSplit, spatialSplit=ctx.spatialSplit, filterSplit=ctx.filterSplit, dataParallelBaseline=ctx.dataParallelBaseline)
-            if self.verbose and layer.id < 3:
-                print(" %2d  configCandidates: %s" % (layer.id, str(configCandidates)))
             
             for config in configCandidates:
                 # Benchmark GPU time and all-reduce time
@@ -1743,6 +1747,7 @@ class CostSim:
             bestCfg = bestLastCfg
             while True:
                 layer.bestCfg = bestCfg
+                layer.gpuTime = self.queryFwBwTime(layer, bestCfg)
                 if layer == stopAtLayer:
                     # gpuUsecSum -= layer.t[bestCfg][1] * self.calcGpusNeeded(layer, bestCfg, ctx.globalBatch) # To avoid double-counting, add startLayer in backwardBranch.
                     return gpuUsecSum, maxGpusUsed, startNoOverlapAdjustment, sideBranchOvertimeSum

@@ -47,6 +47,7 @@ class Layer:
         prop["id"] = self.id
         prop["name"] = self.name
         prop["params"] = self.params
+        prop["gpuTime"] = self.gpuTime
         prop["prevLayers"] = []
         if self.prevLayers != None:
             for prevLayer in self.prevLayers:
@@ -120,6 +121,8 @@ class TrainingJob:
             # print(ldsc)
             prevLayers = [self.layers[prevLayerId] for prevLayerId in ldsc["prevLayers"]]
             l = Layer(None, ldsc["name"], ldsc["params"], prevLayers)
+            if 'gpuTime' in ldsc:
+                l.gpuTime = ldsc["gpuTime"]
             l.id = ldsc["id"]
             # l.nextLayers = ldsc["nextLayers"]
             l.inputDim = ldsc["inputDim"]

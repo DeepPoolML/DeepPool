@@ -359,7 +359,11 @@ RunnableModule::RunnableModule(RuntimeContext* rtctx,
           "[" + std::to_string(layerLocalBatch) + "]" + ldsc["inputDim"].dump();
       DP_LOG(DEBUG, "moduleName: %s", layers.back().moduleName.c_str());
     }
-    
+    // if (ldsc.contains("gpuTime")) {
+    layers.back().fwUsec = ldsc["gpuTime"][0].get<int>();
+    layers.back().bwUsec = ldsc["gpuTime"][1].get<int>();
+    // }    
+    // DP_LOG(DEBUG, " id: %d  fwUsec: %d, bwUsec: %d", id, layers.back().fwUsec, layers.back().bwUsec);
 
     moduleList.push_back(module);
     DP_LOG(DEBUG, " layer's module is pushed back.");
@@ -412,7 +416,6 @@ RunnableModule::getActiveParameters(std::vector<torch::Tensor>* parameters)
     }
   }
 }
-
 
 /**
  * Initiate an iteration.
@@ -523,6 +526,7 @@ RunnableModule::forwardAStep(bool captureLayer)
         timer.stop();
         layer->avgLayerTime = static_cast<double>(timer.avgMicros())
                               / 1000000.0;
+        layer->fwUsec = timer.avgMicros() / 1000;
       }
       DP_LOG(DEBUG, "module.forward called.");
     }
@@ -554,7 +558,6 @@ RunnableModule::forwardAStep(bool captureLayer)
     // fpCtx.fpTensorToReturn = output;
     // fpCtx.runCriterionAndLoss = true;
     // DP_LOG(DEBUG, "return values are set.");
-
   } else { // This rank doesn't participate for this layer.
     DP_LOG(DEBUG, "Layer %d is not active.", layer->id);
   }
@@ -601,11 +604,9 @@ RunnableModule::forwardAStep(bool captureLayer)
   if (layerQ.empty()) {
     DP_LOG(DEBUG, "no more layers to process.");
     if (layer->output.defined()) {
-      fpOutput = layer->output; // TODO: clean up.
-      // runCriterionAndLoss = true;
+      fpOutput = layer->output;
     } else {
       fpOutput.reset();
-      // runCriterionAndLoss = false;
     }
     return COMPLETED;
   }
@@ -721,6 +722,7 @@ RunnableModule::backwardAStep(bool captureLayer)
             timer.stop();
             layer->avgLayerTime += static_cast<double>(timer.avgMicros())
                                     / 1000000.0;
+            layer->bwUsec = timer.avgMicros() / 1000;
           }
 
         } else {
@@ -873,7 +875,8 @@ RunnableModule::printLayerInGraphTimes() {
 
   double sum = 0;
   for (auto& layer : layers) {
-    printf("%110s  %6.3f\n", layer.moduleName.c_str(), layer.avgLayerTime);
+    printf(" %110s  %6.3f  %8" PRId64 "  %8" PRId64 "\n", layer.moduleName.c_str(),
+        layer.avgLayerTime, layer.fwUsec, layer.bwUsec);
     sum += layer.avgLayerTime;
   }
   printf("%100s  %.3f\n", "SUM(avg)", sum);
