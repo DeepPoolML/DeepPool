@@ -66,6 +66,29 @@ enum TracePoint {
   CT_NUM_OF_EVENTS // CT_NUM must be the last element.
 };
 
+struct IdleTimeCtx {
+  enum Type {
+    FG,
+    BG
+  };
+  int64_t remainingIdleUsec {0};
+  int64_t* idleUsecOfMainPtr {nullptr}; // Used only for Subjob.
+  Type jobType {FG}; // 1: MainJob, 2: SubJob
+  void processLayerTime(int usec, bool isActive) {
+    if (jobType == FG) {
+      if (isActive) {
+        remainingIdleUsec = 0;
+      } else {
+        remainingIdleUsec += usec;
+      }
+    } else if (jobType == BG) {
+      if (isActive) {
+        *idleUsecOfMainPtr -= usec;
+      }
+    }
+  }
+};
+
 /**
  * Context holding data for each training task.
  */
@@ -109,11 +132,7 @@ struct JobContext {
 
   std::chrono::time_point<std::chrono::steady_clock> start, end;
   uint64_t be_img_start, be_img_end;
-  // Performance statistics.
-  uint64_t cyclesOnForwardAStep {0};
-  uint64_t invocationsOnForwardAStep {0};
-  uint64_t cyclesOnBackwardAStep {0};
-  uint64_t invocationsOnBackwardAStep {0};
+  IdleTimeCtx idleCtx;
 };
 
 /**
@@ -126,16 +145,19 @@ class TaskManager {
   TaskManager(RuntimeContext* rtctx);
   ~TaskManager() {} // TODO(seojin): implement
   int addTrainingJob(std::unique_ptr<JobContext> job);
+  int addBgJob();
   int poll();
  private:
   int trainSingleStep(JobContext* job, bool* jobCompleted);
+  int64_t getNextStepTime(JobContext* job);
+  void printJobStatistics(JobContext* job);
 
   RuntimeContext* rtctx;
   std::mutex _mutex;                // Monitor lock for TaskManager.
   std::vector< std::unique_ptr<JobContext> > jobList;  
                                     // Holds unfinished training jobs.
                                     // Assumes jobs are ordered by priority.
-  // pointer to comm.
+  std::unique_ptr<JobContext> bgJob {};
 };
 
 #endif // TASK_MANAGER_H

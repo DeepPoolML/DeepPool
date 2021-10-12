@@ -17,6 +17,7 @@
 #include "json.hpp"
 #include "runtime.h"
 #include "runnableModule.h"
+#include "taskManager.h"
 #include "logger.h"
 #include "utils.h"
 #include "communication.h"
@@ -224,6 +225,9 @@ RunnableModule::RunnableModule(RuntimeContext* rtctx,
 
     int layerLocalBatch = ldsc["config"][0].get<int>();
     bool layerIsActive = layerLocalBatch > 0;
+    if (!layerIsActive) {
+      hasInactiveLayer = true;
+    }
     bool detachInput = true;
     if (name == "ReLU2d" || name == "ReLU1d") {
       detachInput = false;
@@ -376,6 +380,10 @@ RunnableModule::RunnableModule(RuntimeContext* rtctx,
         layer.xferOuts.size(), layer.xferIns.size());
   }
 
+  for (auto& layer : layers) {
+    DP_LOG(DEBUG, "lid: %d, fwUsec: %" PRId64 ", bwUsec: %" PRId64 "",
+        layer.id, layer.fwUsec, layer.bwUsec);
+  }
 
   /* set up fake data pipelines for input + target */
   std::vector<int64_t> inputSizes;
@@ -431,6 +439,14 @@ RunnableModule::iterInit()
   fpLoss.reset();
   // reduceBuckets.clear();
   // reduceBuckets.emplace_back();
+}
+
+void
+RunnableModule::resetForNewIter()
+{
+  for (auto& layer : layers) {
+    layer.status = LayerStatus::PENDING_FP;
+  }
 }
 
 /**
@@ -554,12 +570,10 @@ RunnableModule::forwardAStep(bool captureLayer)
     // auto h = layer->output.register_hook([layer](torch::Tensor grad){
     //   DP_LOG(DEBUG, "lid:%d grad: %s", layer->id, tsrToStr(grad).c_str());
     // });
-
-    // fpCtx.fpTensorToReturn = output;
-    // fpCtx.runCriterionAndLoss = true;
-    // DP_LOG(DEBUG, "return values are set.");
+    idleCtxPtr->processLayerTime(layer->fwUsec, true);
   } else { // This rank doesn't participate for this layer.
     DP_LOG(DEBUG, "Layer %d is not active.", layer->id);
+    idleCtxPtr->processLayerTime(layer->fwUsec, false);
   }
 
   // Recv parts of output processed by another GPU.
@@ -624,6 +638,11 @@ RunnableModule::loss()
     // DP_LOG(DEBUG, "fpLoss: %s", tsrToStr(fpLoss).c_str());
     fpLoss.backward();
     DP_LOG(DEBUG, "fpLoss.backward() done. ");
+    idleCtxPtr->processLayerTime(1000, true);
+  } else {
+    if (idleCtxPtr->jobType == IdleTimeCtx::FG) { // Don't deduct time for BG.
+      idleCtxPtr->processLayerTime(3000, false);
+    }
   }
 }
 
@@ -736,8 +755,10 @@ RunnableModule::backwardAStep(bool captureLayer)
       }
     }
     DP_LOG(DEBUG, "Layer %d is active.", layer->id);
+    idleCtxPtr->processLayerTime(layer->bwUsec, true);
   } else { // This rank doesn't participate for this layer.
     DP_LOG(DEBUG, "Layer %d is not active.", layer->id);
+    idleCtxPtr->processLayerTime(layer->bwUsec, false);
   }
   
   if (rtctx->profile) {

@@ -149,6 +149,7 @@ void parse_args(RuntimeContext* ctx, int argc, char** argv) {
       {"iters_per_capture", required_argument, NULL, 'i'},
       {"min_layer_sync", required_argument, NULL, 'h'},
       {"sync_bucket_size", required_argument, NULL, 'k'},
+      {"bg_json_file", required_argument, NULL, 'o'},
       {NULL, 0, NULL, 0}
   };
 
@@ -170,6 +171,9 @@ void parse_args(RuntimeContext* ctx, int argc, char** argv) {
         break;
       case 'j':
         ctx->be_jit_file = std::string(optarg);
+        break;
+      case 'o':
+        ctx->bg_json_file = std::string(optarg);
         break;
       case 'm':
         ctx->myAddr = optarg;
@@ -263,6 +267,7 @@ int main(int argc, char** argv) {
     ncclCommTest(&ctx);
   }
 
+  taskMngr.addBgJob();
   std::cout << "poller is starting." << std::endl;
   DP_LOG(DEBUG, "Poller is starting.");
   while (!ctx.shutdownRequested.load(std::memory_order_relaxed)) {

@@ -82,6 +82,7 @@ struct RuntimeContext {
   std::string be_jit_file{"/home/seojin/DeepPoolRuntime/beModules/resnet.jit"};
   size_t min_layer_sync{8};
   size_t sync_bucket_size{10 * 1000 * 1000};
+  std::string bg_json_file {}; //{"/home/seojin/DeepPoolRuntime/beModules/wrnBgJobB32.json"};
 
   /**
    *  additional variables.

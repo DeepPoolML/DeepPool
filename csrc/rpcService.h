@@ -26,6 +26,7 @@ using grpc::ServerContext;
 using grpc::Status;
 
 class RuntimeContext;
+class JobContext;
 
 /**
  * GRPC service implementation for runtime.
@@ -53,6 +54,9 @@ class RuntimeServiceImpl final : public Runtime::Service {
   Status P2PCommunication(ServerContext* context,
                           const P2PCommunicationRequest* request,
                           StandardReply* reply) override;
+
+  std::unique_ptr<JobContext> parseAndCreateTrainingTask(
+      const ScheduleTrainingRequest* request);
 
  private:
   RuntimeContext* rtctx;

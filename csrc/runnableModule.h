@@ -41,6 +41,7 @@ using torch::autograd::variable_list;
 class CommunicationHandler;
 class CudaTimer;
 struct Layer;
+struct IdleTimeCtx;
 
 typedef int Tag;
 typedef int Rank;
@@ -262,8 +263,9 @@ class RunnableModule : public torch::nn::Module {
   void getParameters(std::vector<torch::Tensor>* parameters);
   void getActiveParameters(std::vector<torch::Tensor>* parameters);
   void iterInit();
-  JobStatus forwardAStep(bool captureLayer = false);
-  JobStatus backwardAStep(bool captureLayer = false);
+  void resetForNewIter();
+  JobStatus forwardAStep(bool captureLayer);
+  JobStatus backwardAStep(bool captureLayer);
   void loss();
   void gradientSync();
   void initProfileTimers(CudaTimer* ct_load, CudaTimer* ct_loss);
@@ -303,6 +305,8 @@ class RunnableModule : public torch::nn::Module {
   CpuTimer detachTimer;
 
   // std::vector<ReduceBucket> reduceBuckets;
+  IdleTimeCtx* idleCtxPtr;
+  bool hasInactiveLayer {false};
 };
 
 #endif
