@@ -26,6 +26,7 @@
 #include "runtime.h"
 #include "utils.h"
 #include "tracer.h"
+#include "GraphPieces.h"
 
 #include <c10/cuda/CUDAStream.h>
 #include <ATen/cuda/CUDAGraph.h>
@@ -300,7 +301,9 @@ class RunnableModule : public torch::nn::Module {
 
   bool backwards_did_sync{false};
 
-  at::cuda::CUDAGraph graph;
+  std::shared_ptr<GraphPieces> fullgraph;
+  at::cuda::CUDAGraph maingraph, syncgraph, stepgraph;
+  at::cuda::MempoolId_t graph_mempool;
   // Performance Stat
   CpuTimer detachTimer;
 

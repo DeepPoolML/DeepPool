@@ -140,9 +140,12 @@ static long be_bsize = 0;
 /* tremendous WIP */
 void BeRunner(long bsize) {
   be_bsize = bsize;
+  bool use_graph_partitioner = rtctx->be_graph_split_ms > 0.0;
   int samplePerKernel = rtctx->samplePerKernel;
   assert(bsize % samplePerKernel == 0);
   long splitways = bsize / samplePerKernel;
+  assert(!use_graph_partitioner || splitways == 1);
+  assert(!use_graph_partitioner || rtctx->use_be_graph);
 
   torch::jit::script::Module m = torch::jit::load(rtctx->be_jit_file);
   m.train();
@@ -167,6 +170,7 @@ void BeRunner(long bsize) {
 
   at::autocast::set_enabled(true);
 
+  assert(static_cast<size_t>(splitways) == tenss.size());
   auto fn = [&] {
     auto orig_stream = c10::cuda::getCurrentCUDAStream();
     optim.zero_grad();
@@ -174,14 +178,18 @@ void BeRunner(long bsize) {
     ev.record(orig_stream);
     for (size_t i = 0; i < tenss.size(); i++) {
       auto &st = streams.at(i);
-      c10::cuda::setCurrentCUDAStream(st);
-      ev.block(st);
+      if (splitways > 1) {
+        c10::cuda::setCurrentCUDAStream(st);
+        ev.block(st);
+      }
       auto ret = m.operator()({tenss.at(i)});
       auto loss = torch::nll_loss(ret.toTensor().log_softmax(1), targs.at(i));
       loss.backward();
-      at::cuda::CUDAEvent ev2;
-      ev2.record(st);
-      ev2.block(orig_stream);
+      if (splitways > 1) {
+        at::cuda::CUDAEvent ev2;
+        ev2.record(st);
+        ev2.block(orig_stream);
+      }
     }
 
     c10::cuda::setCurrentCUDAStream(orig_stream);
@@ -205,10 +213,24 @@ void BeRunner(long bsize) {
     beinited = true;
   }
 
+  CUDAPipeline p(1);
+
+  if (use_graph_partitioner) {
+    auto gr = GraphPieces::GraphToExecs(graph.getGRAPH(), rtctx->be_graph_split_ms);
+    be_controller.Resume();
+    cv.notify_one();
+    auto fn = [&]() {
+      be_controller.Lap();
+      p.Lap();
+    };
+    while (true) {
+      gr->LaunchInterleavedCallback(cstream, fn, {});
+      becounter.store(becounter.load() + bsize);
+    }
+  }
+
   be_controller.Resume();
   cv.notify_one();
-
-  CUDAPipeline p(1);
 
   while (true) {
     be_controller.Lap();
@@ -542,9 +564,10 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
       if (job->run_with_be && be_bsize > 0) be_controller.Pause();
       c10::cuda::device_synchronize();
       DP_LOG(NOTICE, "Starting capture.");
-      job->model->graph.capture_begin();
+      job->model->graph_mempool = at::cuda::graph_pool_handle();
+      job->model->maingraph.capture_begin(job->model->graph_mempool);
       job->commHandler->precapture();
-    } else if (job->totiters >= rtctx->iters_per_capture + job->iters_before_graph_capture) {
+    } else if (job->totiters > job->iters_before_graph_capture) {
       /* skip to forward phase */
       job->state = JobState::FORWARD;
       return 0;
@@ -558,10 +581,13 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
     DP_LOG(DEBUG, "Foward pass is starting soon.");
   } else if (job->state == JobState::FORWARD) {
     DP_LOG(DEBUG, "JobState::FORWARD.");
-    if (job->totiters >= rtctx->iters_per_capture + job->iters_before_graph_capture) {
+    if (job->totiters > job->iters_before_graph_capture) {
       DP_LOG(DEBUG, "Replay iter.");
 
-      if ((job->totiters - job->iters_before_graph_capture) % rtctx->iters_per_capture) {
+      if (rtctx->iters_per_capture > 1 &&
+          (job->totiters - job->iters_before_graph_capture) %
+                  rtctx->iters_per_capture !=
+              1) {
         /* advance state machine, no replay */
         job->state = JobState::FINISH;
         return 0;
@@ -569,7 +595,7 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
 
       static CUDAPipeline p(8);
       p.Lap();
-      job->model->graph.replay();
+      job->model->fullgraph->Launch(rtctx->torch_stream);
       job->state = JobState::FINISH;
       return 0;
     }
@@ -603,8 +629,18 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
     }
   } else if (job->state == JobState::SYNC) {
     DP_LOG(DEBUG, "JobState::SYNC.");
-    // DP_LOG(DEBUG, "All-reduce parameter sync is not implemented yet.");
-    job->model->gradientSync();
+
+    if (job->totiters == job->iters_before_graph_capture) {
+      job->commHandler->postcapture();
+      job->commHandler->sync(rtctx->grad_sync_stream);
+      job->model->maingraph.capture_end();
+      job->model->syncgraph.capture_begin(job->model->graph_mempool);
+      job->model->gradientSync();
+      job->model->syncgraph.capture_end();
+      job->model->stepgraph.capture_begin(job->model->graph_mempool);
+    } else {
+      job->model->gradientSync();
+    }
     job->timers[CT_SYNC].record();
     job->state = JobState::STEP;
   } else if (job->state == JobState::STEP) {
@@ -618,9 +654,31 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
     if (job->totiters == job->profile_iter_start + job->niter_to_profile)
       CUDA_API_CALL(cudaProfilerStop());
 
-    if (job->totiters == rtctx->iters_per_capture - 1 + job->iters_before_graph_capture) {
-      job->commHandler->postcapture();
-      job->model->graph.capture_end();
+    if (job->totiters == job->iters_before_graph_capture) {
+      job->model->stepgraph.capture_end();
+
+      if (rtctx->iters_per_capture > 1) {
+        std::vector<cudaGraph_t> subgraphs = {
+            job->model->maingraph.getGRAPH(),
+            job->model->syncgraph.getGRAPH(),
+            job->model->stepgraph.getGRAPH(),
+        };
+        job->model->fullgraph = GraphPieces::GraphsToSingleExec(
+            subgraphs, rtctx->iters_per_capture);
+      } else {
+        float maingraphsplit = -1.0;
+        float stepgraphsplit = -1.0;
+
+        auto maingraph = GraphPieces::GraphToExecs(
+            job->model->maingraph.getGRAPH(), maingraphsplit);
+        auto syncgraph =
+            GraphPieces::GraphToExecs(job->model->syncgraph.getGRAPH(), -1.0);
+        auto stepgraph = GraphPieces::GraphToExecs(
+            job->model->stepgraph.getGRAPH(), stepgraphsplit);
+        job->model->fullgraph =
+            GraphPieces::MergePieces({maingraph, syncgraph, stepgraph});
+      }
+
       if (job->run_with_be && be_bsize > 0) be_controller.Resume();
       DP_LOG(NOTICE, "Ending capture.");
     }

@@ -79,6 +79,7 @@ struct RuntimeContext {
   int use_fg_graph{1};
   int use_be_graph{1};
   size_t iters_per_capture{4};
+  double be_graph_split_ms{-1.0};
   std::string be_jit_file{"/home/seojin/DeepPoolRuntime/beModules/resnet.jit"};
   size_t min_layer_sync{8};
   size_t sync_bucket_size{10 * 1000 * 1000};
