@@ -490,10 +490,11 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
       job->epoch++;
     }
     
-    if (rtctx->profile && job->totiters == job->iters_before_graph_capture) {
+    if (job->epoch >= job->epochsToTrain || 
+        (rtctx->profile && job->totiters == job->iters_before_graph_capture)) {
       *jobCompleted = true;
       return 0;
-    }    
+    }
     // if (job->epoch >= job->epochsToTrain || 
     //     (rtctx->profile && job->totiters == job->iters_before_graph_capture)) {
     //   DP_LOG(DEBUG, "training is completed.");
@@ -551,7 +552,7 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
     //   return 0;
     // }
     
-    bool capture = rtctx->profile && job->totiters == job->iters_before_graph_capture - 1;
+    bool capture = rtctx->profile && job->totiters == job->iters_before_graph_capture - 5;
     JobStatus status = job->model->forwardAStep(capture);
 
     if (status == COMPLETED) {
@@ -569,7 +570,7 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
   } else if (job->state == JobState::BACKWARD) {
     DP_LOG(DEBUG, "JobState::BACKWARD.");
     
-    bool capture = rtctx->profile && job->totiters == job->iters_before_graph_capture - 1;
+    bool capture = rtctx->profile && job->totiters == job->iters_before_graph_capture - 5;
     JobStatus status = job->model->backwardAStep(capture);
     // TODO: get idle time for backward separately.
     

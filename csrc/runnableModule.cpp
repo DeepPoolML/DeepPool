@@ -535,14 +535,15 @@ RunnableModule::forwardAStep(bool captureLayer)
         c10::cuda::device_synchronize();
         CpuTimer timer("fwTimer");
         timer.start();
-        for (int i = 0; i < 1000; ++i) {
+        int repeat = 200;
+        for (int i = 0; i < repeat; ++i) {
           layer->moduleFwGraph.replay();
         }
         c10::cuda::device_synchronize();
         timer.stop();
         layer->avgLayerTime = static_cast<double>(timer.avgMicros())
-                              / 1000000.0;
-        layer->fwUsec = timer.avgMicros() / 1000;
+                              / 1000.0 / repeat;
+        layer->fwUsec = timer.avgMicros() / repeat;
       }
       DP_LOG(DEBUG, "module.forward called.");
     }
@@ -638,10 +639,11 @@ RunnableModule::loss()
     // DP_LOG(DEBUG, "fpLoss: %s", tsrToStr(fpLoss).c_str());
     fpLoss.backward();
     DP_LOG(DEBUG, "fpLoss.backward() done. ");
-    idleCtxPtr->processLayerTime(1000, true);
+    // idleCtxPtr->processLayerTime(1000, true);
   } else {
     if (idleCtxPtr->jobType == IdleTimeCtx::FG) { // Don't deduct time for BG.
-      idleCtxPtr->processLayerTime(3000, false);
+      idleCtxPtr->processLayerTime(3000, false);  // For WRN.
+      // idleCtxPtr->processLayerTime(2000, false);  // For VGG16.
     }
   }
 }
@@ -734,14 +736,15 @@ RunnableModule::backwardAStep(bool captureLayer)
 
             CpuTimer timer("bwTimer");
             timer.start();
-            for (int i = 0; i < 1000; ++i) {
+            int repeat = 200;
+            for (int i = 0; i < repeat; ++i) {
               layer->moduleBwGraph.replay();
             }
             c10::cuda::device_synchronize();
             timer.stop();
             layer->avgLayerTime += static_cast<double>(timer.avgMicros())
-                                    / 1000000.0;
-            layer->bwUsec = timer.avgMicros() / 1000;
+                                    / 1000.0 / repeat;
+            layer->bwUsec = timer.avgMicros() / repeat;
           }
 
         } else {

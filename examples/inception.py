@@ -610,7 +610,7 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     profiler = GpuProfiler("cuda")
     profiler.loadProfile()
     global cs
-    cs = CostSim(profiler, netBw=netBw, verbose=True, gpuProfileLoc="inceptionLayerGpuProfileA100V2.txt", gpuProfileLocSub="inceptionLayerGpuProfileA100.txt")
+    cs = CostSim(profiler, netBw=netBw, verbose=True, gpuProfileLoc="profile/A100_inception.prof") #"inceptionLayerGpuProfileA100V2.txt", gpuProfileLocSub="inceptionLayerGpuProfileA100.txt")
     model = Inception3(aux_logits=False)
     cs.printAllLayers(slient=True)
     cs.computeInputDimensions((3,299,299))
@@ -674,10 +674,10 @@ def runAllConfigs(modelName: str, clusterType: str, simOnly=True):
 
     gpuCounts = [1, 2, 4, 8]
     # gpuCounts = [1, 2, 4]
-    globalBatchSize = 64
+    globalBatchSize = 32
     # globalBatchSize = 16
     # globalBatchSize = 8
-    limitAndBaseline = [(2.0, True, False), (1.5, False, False), (2.0, False, False), (5.0, False, False), (10.0, False, False)]
+    limitAndBaseline = [(2.0, True, False), (1.5, False, False), (2.0, False, False), (2.5, False, False)]
     # limitAndBaseline = [(99, False, True)]
     # limitAndBaseline = []
     for lim, baseline, spatialSplit in limitAndBaseline:
