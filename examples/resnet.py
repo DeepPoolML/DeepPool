@@ -126,13 +126,14 @@ class Bottleneck(nn.Module):
         self.conv3 = conv1x1(width, planes * self.expansion)
         self.bn3 = norm_layer(planes * self.expansion)
         layerMainBranch = cs.layers[-1]
-        if downsampleParams is not None:
+        if False and downsampleParams is not None: # hack to test resnet152
             convDownsample = conv1x1(*(downsampleParams[0]), [layerSideBranch])
             layerSideBranch = cs.layers[-1]
             self.downsample = nn.Sequential(convDownsample, norm_layer((downsampleParams[1])))
         else:
             self.downsample = None
-        self.relu = cs.ReLU(inplace=True, custom_previous_layers=[layerMainBranch, layerSideBranch])
+        # self.relu = cs.ReLU(inplace=True, custom_previous_layers=[layerMainBranch, layerSideBranch])
+        self.relu = cs.ReLU(inplace=True)
         self.stride = stride
 
     def forward(self, x: Tensor) -> Tensor:
@@ -425,30 +426,33 @@ def wide_resnet101_2(pretrained: bool = False, progress: bool = True, **kwargs: 
 # profiler.saveProfile()
 
 
-def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=False, netBw=2.66E5, spatialSplit=False, simResultFilename=None, use_be=False):
+def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=False, netBw=2.66E5, spatialSplit=False, simResultFilename=None, simOnly=False, use_be=False):
     profiler = GpuProfiler("cuda")
     profiler.loadProfile()
     global cs
     cs = CostSim(profiler, netBw=netBw, verbose=True, gpuProfileLoc="resnetLayerGpuProfileA100V2.txt", gpuProfileLocSub="resnetLayerGpuProfileA100.txt")
     model = resnet34()
+    # model = resnet152()
+    # model = wide_resnet101_2()
     cs.printAllLayers(slient=True)
     cs.computeInputDimensions((3,224,224))
-    # job = cs.searchBestSplits(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline)
-    # job, iterMs, gpuMs = cs.searchBestSplits(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
+    job, iterMs, gpuMs = cs.searchBestSplits(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
     job, iterMs, gpuMs, maxGpusUsed = cs.searchBestSplitsV3(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
+    print("  %2d    %2d   %4.1f  %4.1f\n" % (globalBatch, maxGpusUsed, iterMs, gpuMs))
+
     jobInJson = job.dumpInJSON()
     profiler.saveProfile()
     # for rank in range(4):
     #     print("GPU rank: %d"%rank)
     #     print(job.dumpSingleRunnableModule(rank))
 
-    job2 = TrainingJob("test", None, None, 0, 0, "")
-    job2.loadJSON(jobInJson)
-    assert(jobInJson == job2.dumpInJSON())
-    print("Load/Dump returned the same output? %s" % ("true" if jobInJson == job2.dumpInJSON() else "false"))
+    # job2 = TrainingJob("test", None, None, 0, 0, "")
+    # job2.loadJSON(jobInJson)
+    # assert(jobInJson == job2.dumpInJSON())
+    # print("Load/Dump returned the same output? %s" % ("true" if jobInJson == job2.dumpInJSON() else "false"))
     # print(jobInJson)
     
-    if not spatialSplit:
+    if not spatialSplit and not simOnly:
         cc = ClusterClient()
         jobName = "Resnet34_%d_%d_%2.1f%s" % (gpuCount, globalBatch, amplificationLimit, "_DP" if dataParallelBaseline else "")
         jobName += "_BE" if use_be else ""
@@ -465,20 +469,22 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
             f.close()
 
 
-def runAllConfigs(modelName: str, clusterType: str):
+def runAllConfigs(modelName: str, clusterType: str, simOnly=True):
     if clusterType == "V100":
         netBw = 22937
     elif clusterType == "A100":
         netBw = 2.66E5
+    elif clusterType == "B100":
+        netBw = 2.66E5 * 5
     else:
         print("Wrong cluster type. Put either V100 or A100")
 
-    gpuCounts = [1, 2, 4, 8]
+    gpuCounts = [1, 2, 4, 8, 16]
     # gpuCounts = [1, 2, 4]
-    globalBatchSize = 64
+    globalBatchSize = 128
     # globalBatchSize = 16
     # globalBatchSize = 8
-    limitAndBaseline = [(2.0, True, False), (99, False, False), (2.5, False, False), (3.0, False, False)]
+    limitAndBaseline = [(2.0, True, False), (99, False, False), (1.5, False, False), (2.0, False, False), (2.5, False, False)]
     # limitAndBaseline = [(99, False, True)]
     # limitAndBaseline = []
     for lim, baseline, spatialSplit in limitAndBaseline:
@@ -488,15 +494,17 @@ def runAllConfigs(modelName: str, clusterType: str):
         f.close()
 
         for gpuCount in gpuCounts:
-            preSize = os.stat('runtimeResult.data').st_size
-            main(gpuCount, globalBatchSize, amplificationLimit=lim, dataParallelBaseline=baseline, netBw=netBw, spatialSplit=spatialSplit, simResultFilename=simResultFilename)
+            if not simOnly:
+                preSize = os.stat('runtimeResult.data').st_size
+            main(gpuCount, globalBatchSize, amplificationLimit=lim, dataParallelBaseline=baseline, netBw=netBw, spatialSplit=spatialSplit, simResultFilename=simResultFilename, simOnly=simOnly)
             # check exp finished.
-            print("runtimeResult.data's original size: ", preSize)
-            while os.stat('runtimeResult.data').st_size == preSize and not spatialSplit:
-                time.sleep(10)
-            print("runtimeResult.data's current size: ", os.stat('runtimeResult.data').st_size)
+            if not simOnly:
+                print("runtimeResult.data's original size: ", preSize)
+                while os.stat('runtimeResult.data').st_size == preSize and not spatialSplit:
+                    time.sleep(10)
+                print("runtimeResult.data's current size: ", os.stat('runtimeResult.data').st_size)
         
-        if not spatialSplit:
+        if not spatialSplit and not simOnly:
             fw = open("%s_%s_b%d_lim%2.1f_run.data" % (modelName, "DP" if baseline else "MP", globalBatchSize, lim), "w")
             fr = open('runtimeResult.data', "r")
             fw.write("#batch GPUs IterMs  GpuMs\n")
@@ -557,6 +565,26 @@ def runStrongScalingBench(modelName='resnet50'):
         print(" %8d  %6.1f  %6.1f  %6.1f" %
             (batchSize, iterTime / 1000, fpTime / 10000, bpTime / 1000))
 
+def generateJit():
+    global cs
+    netBw = 2.66E5
+    cs = CostSim(GpuProfiler("cuda"), netBw=netBw, verbose=False)
+
+    fakeInputSize = (16,3,224,224)
+    fakeInput = torch.zeros(fakeInputSize)
+
+    model = resnet152()
+    traced = torch.jit.trace(model, fakeInput)
+    torch.jit.save(traced, "beModules/resnet152.jit")
+    
+    model = resnext101_32x8d()
+    traced = torch.jit.trace(model, fakeInput)
+    torch.jit.save(traced, "beModules/resnext101_32x8d.jit")
+
+    model = wide_resnet101_2()
+    traced = torch.jit.trace(model, fakeInput)
+    torch.jit.save(traced, "beModules/wide_resnet101_2.jit")
+    
 
 if __name__ == "__main__":
     print(len(sys.argv))
@@ -572,7 +600,8 @@ if __name__ == "__main__":
         print("Run all configs")
         runAllConfigs("resnet34", sys.argv[1])
     elif len(sys.argv) == 1:
-        for modelName in ['resnet50', 'resnet34']:
-            runStrongScalingBench(modelName)
+        generateJit()
+        # for modelName in ['resnet50', 'resnet34']:
+        #     runStrongScalingBench(modelName)
     else:
         print("Wrong number of arguments.\nUsage: ")

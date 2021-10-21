@@ -541,6 +541,9 @@ def runStrongScalingBench(modelName='vgg16'):
         model = vgg11(pretrained=False)
     elif modelName == 'vgg16':
         model = vgg16(pretrained=False)
+
+    pytorch_total_params = sum(p.numel() for p in model.parameters())
+    print("Number of parameters: ", pytorch_total_params)
     
     print("Model: ", modelName)
     print("BatchSize  iterMs    fpMs    bpMs")

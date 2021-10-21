@@ -521,15 +521,18 @@ def generateJit():
     fakeInputSize = (16,3,224,224)
     fakeInput = torch.zeros(fakeInputSize)
 
-    model = resnet152()
-    traced = torch.jit.trace(model, fakeInput)
-    torch.jit.save(traced, "beModules/resnet152.jit")
+    # model = resnet152()
+    # traced = torch.jit.trace(model, fakeInput)
+    # torch.jit.save(traced, "beModules/resnet152.jit")
     
-    model = resnext101_32x8d()
-    traced = torch.jit.trace(model, fakeInput)
-    torch.jit.save(traced, "beModules/resnext101_32x8d.jit")
+    # model = resnext101_32x8d()
+    # traced = torch.jit.trace(model, fakeInput)
+    # torch.jit.save(traced, "beModules/resnext101_32x8d.jit")
 
     model = wide_resnet101_2()
+    pytorch_total_params = sum(p.numel() for p in model.parameters())
+    print("Number of parameters: ", pytorch_total_params)
+
     traced = torch.jit.trace(model, fakeInput)
     torch.jit.save(traced, "beModules/wide_resnet101_2.jit")
 
