@@ -148,6 +148,7 @@ class TaskManager {
   int addBgJob();
   int poll();
  private:
+  bool trainAllTheWayWithBg(JobContext* mainJob);
   int trainSingleStep(JobContext* job, bool* jobCompleted);
   int64_t getNextStepTime(JobContext* job);
   void printJobStatistics(JobContext* job);

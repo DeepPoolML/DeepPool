@@ -32,6 +32,8 @@
 
 using Cycles = RAMCloud::Cycles;
 
+#define EXPLICIT_INTERLEAVING 0
+
 class CUDAPipeline {
  public:
   CUDAPipeline(size_t depth) : depth_(depth) {}
@@ -309,7 +311,28 @@ TaskManager::poll()
   }
 
   JobContext* mainJob = jobList[0].get();
-  if (be_bsize > 0 && mainJob->totiters == 0) {
+  bool jobCompleted = false;
+  #if EXPLICIT_INTERLEAVING
+    jobCompleted = trainAllTheWayWithBg(mainJob);
+  #else
+    trainSingleStep(mainJob, &jobCompleted);
+  #endif
+
+  if (jobCompleted) {
+    rtctx->torch_stream.synchronize();
+    mainJob->end = std::chrono::steady_clock::now();
+    mainJob->be_img_end = becounter.load();  
+    printJobStatistics(mainJob);
+    jobList.erase(jobList.begin());
+    DP_LOG(NOTICE, "Removed the completed job. Remaining: %lu", jobList.size());
+  }
+  return 1;
+}
+
+bool
+TaskManager::trainAllTheWayWithBg(JobContext* mainJob)
+{
+    if (be_bsize > 0 && mainJob->totiters == 0) {
     if (!mainJob->run_with_be) {
       be_controller.Pause();
     } else {
@@ -421,20 +444,12 @@ TaskManager::poll()
       bgJob->iter += bgItersPerCapture;
     }
   }
-  rtctx->torch_stream.synchronize();
-  mainJob->end = std::chrono::steady_clock::now();
-  mainJob->be_img_end = becounter.load();
   if (bgJob) {
+    rtctx->torch_stream.synchronize();
     int bgImg = bgJob->model->globalBatchSize * (bgJob->totiters - bgCaptureStartIter);
     mainJob->be_img_end += bgImg; // Temporarily adding bg tput to be tput.
   }
-
-  // if (jobCompleted) {
-  printJobStatistics(mainJob);
-  jobList.erase(jobList.begin());
-  DP_LOG(NOTICE, "Removed the completed job. Remaining: %lu", jobList.size());
-  // }
-  return 1;
+  return jobCompleted;
 }
 
 void
@@ -481,8 +496,24 @@ int
 TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
 {
   if (job->state == JobState::INIT) {
+
+    if (be_bsize > 0 && job->totiters == 0) {
+      if (!job->run_with_be) {
+        be_controller.Pause();
+      } else {
+        be_controller.Resume();
+      }
+    }
+
     if (job->totiters == job->profile_iter_start)
       CUDA_API_CALL(cudaProfilerStart());
+
+    /* record starting point for BE training */
+    if (job->totiters == 200) {
+      rtctx->torch_stream.synchronize();
+      job->be_img_start = becounter.load();
+      job->start = std::chrono::steady_clock::now();
+    }
 
     if (job->iter >= job->itersToTrain) {
       DP_LOG(DEBUG, "epoch is completed.");
@@ -495,15 +526,6 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
       *jobCompleted = true;
       return 0;
     }
-    // if (job->epoch >= job->epochsToTrain || 
-    //     (rtctx->profile && job->totiters == job->iters_before_graph_capture)) {
-    //   DP_LOG(DEBUG, "training is completed.");
-    //   rtctx->torch_stream.synchronize();
-    //   job->end = std::chrono::steady_clock::now();
-    //   job->be_img_end = becounter.load();
-    //   *jobCompleted = true;
-    //   return 0;
-    // }
 
     job->model->resetProfileTimers();
     for (int tpIdx = CT_NUM_OF_EVENTS - 1; tpIdx >= CT_START; --tpIdx) {
@@ -516,17 +538,17 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
     job->model->iterInit();
 
     /* start graph capture */
-    // if (job->totiters == job->iters_before_graph_capture) {
-    //   if (job->run_with_be && be_bsize > 0) be_controller.Pause();
-    //   c10::cuda::device_synchronize();
-    //   DP_LOG(NOTICE, "Starting capture.");
-    //   job->model->graph.capture_begin();
-    //   job->commHandler->precapture();
-    // } else if (job->totiters >= rtctx->iters_per_capture + job->iters_before_graph_capture) {
-    //   /* skip to forward phase */
-    //   job->state = JobState::FORWARD;
-    //   return 0;
-    // }
+    if (job->totiters == job->iters_before_graph_capture) {
+      if (job->run_with_be && be_bsize > 0) be_controller.Pause();
+      c10::cuda::device_synchronize();
+      DP_LOG(NOTICE, "Starting capture.");
+      job->model->graph.capture_begin();
+      job->commHandler->precapture();
+    } else if (job->totiters >= rtctx->iters_per_capture + job->iters_before_graph_capture) {
+      /* skip to forward phase */
+      job->state = JobState::FORWARD;
+      return 0;
+    }
 
     job->optimizer->zero_grad();
     job->timers[CT_ZERO].record();
@@ -536,21 +558,21 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
     DP_LOG(DEBUG, "Foward pass is starting soon.");
   } else if (job->state == JobState::FORWARD) {
     DP_LOG(DEBUG, "JobState::FORWARD.");
-    // if (job->totiters >= rtctx->iters_per_capture + job->iters_before_graph_capture) {
-    //   DP_LOG(DEBUG, "Replay iter.");
+    if (job->totiters >= rtctx->iters_per_capture + job->iters_before_graph_capture) {
+      DP_LOG(DEBUG, "Replay iter.");
 
-    //   if ((job->totiters - job->iters_before_graph_capture) % rtctx->iters_per_capture) {
-    //     /* advance state machine, no replay */
-    //     job->state = JobState::FINISH;
-    //     return 0;
-    //   }
+      if ((job->totiters - job->iters_before_graph_capture) % rtctx->iters_per_capture) {
+        /* advance state machine, no replay */
+        job->state = JobState::FINISH;
+        return 0;
+      }
 
-    //   static CUDAPipeline p(8);
-    //   p.Lap();
-    //   job->model->graph.replay();
-    //   job->state = JobState::FINISH;
-    //   return 0;
-    // }
+      static CUDAPipeline p(8);
+      p.Lap();
+      job->model->graph.replay();
+      job->state = JobState::FINISH;
+      return 0;
+    }
     
     bool capture = rtctx->profile && job->totiters == job->iters_before_graph_capture - 5;
     JobStatus status = job->model->forwardAStep(capture);
@@ -596,12 +618,12 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
     if (job->totiters == job->profile_iter_start + job->niter_to_profile)
       CUDA_API_CALL(cudaProfilerStop());
 
-    // if (job->totiters == rtctx->iters_per_capture - 1 + job->iters_before_graph_capture) {
-    //   job->commHandler->postcapture();
-    //   job->model->graph.capture_end();
-    //   if (job->run_with_be && be_bsize > 0) be_controller.Resume();
-    //   DP_LOG(NOTICE, "Ending capture.");
-    // }
+    if (job->totiters == rtctx->iters_per_capture - 1 + job->iters_before_graph_capture) {
+      job->commHandler->postcapture();
+      job->model->graph.capture_end();
+      if (job->run_with_be && be_bsize > 0) be_controller.Resume();
+      DP_LOG(NOTICE, "Ending capture.");
+    }
     job->totiters++;
     job->iter++;
     fgcounter++;
