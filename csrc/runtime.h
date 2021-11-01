@@ -15,84 +15,91 @@
 #ifndef RUNTIME_H
 #define RUNTIME_H
 
+#include <c10/cuda/CUDAStream.h>
+#include <torch/csrc/cuda/nccl.h>
+
 #include <atomic>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <vector>
-#include <map>
 
-#include <c10/cuda/CUDAStream.h>
-#include <torch/csrc/cuda/nccl.h>
+#include "JobContext.h"
 
 #define VERBOSE 0
 
 /**
  * Forward declarations
  */
-class CommunicationHandler;
 class RuntimeServiceImpl;
-class RunnableModule;
-class TaskManager;
 namespace grpc {
-  class Server;
+class Server;
 };
-namespace torch {
-  namespace optim {
-    class Optimizer;
+
+struct NcclGroupConfig {
+  torch::cuda::nccl::ncclUniqueId ncclGroupId;
+  torch::cuda::nccl::ncclComm_t ncclCommObj;
+  std::vector<int> ranks;
+  int myRank;
+  size_t group_key;
+};
+
+/* Get 64-bit bitmap key for a set of ranks */
+static inline size_t RankVecToKey(std::vector<int> ranks) {
+  size_t key = 0;
+  for (auto& i : ranks) {
+    assert(i < 64);
+    key |= 1UL << i;
   }
+  return key;
 }
 
 /**
  * Context holding data for Runtime.
  */
 struct RuntimeContext {
-  RuntimeContext() : coordinatorAddr(0), myAddr(0), device(0), c10dBackend(0),
-      c10dMasterPort(0), rank(), worldSize(), logdir(), be_batch_size(0),
-      profile(false), debug(false), verify(false), homedir(0), c10dev(c10::DeviceType::CUDA, 0),
-      grpcService(), grpcServer(), taskManager(), shutdownRequested(),
-      commHandlerMap(), rankToIpAndPort(), grpcCommReady(),
-      ncclGroupId(), ncclGroupSize(), ranks(), ncclCommReady(), ncclCommObj(),
-      torch_stream(c10::cuda::getStreamFromPool(true)), xfer_stream(c10::cuda::getStreamFromPool(true)), grad_sync_stream(c10::cuda::getStreamFromPool(true)) {
-        c10::cuda::setCurrentCUDAStream(torch_stream);
-      }
+  RuntimeContext()
+      : c10dev(c10::DeviceType::CUDA, 0),
+        torch_stream(c10::cuda::getStreamFromPool(true)),
+        xfer_stream(c10::cuda::getStreamFromPool(true)),
+        grad_sync_stream(c10::cuda::getStreamFromPool(true)) {
+    c10::cuda::setCurrentCUDAStream(torch_stream);
+  }
 
-  ~RuntimeContext(); // Defined in cpp file because of incomplete unique_ptrs.
+  ~RuntimeContext();  // Defined in cpp file because of incomplete unique_ptrs.
 
   /**
    * Populated by commandline arguments
    */
-  char* coordinatorAddr;  // includes port number.
-  char* myAddr;           // includes port number.
   int device;
-  char* c10dBackend;
-  int c10dMasterPort;
+  std::string c10dBackend;
   int rank;
   int worldSize;
-  char* logdir;
-  int be_batch_size;
   bool profile;
   bool debug;
-  bool verify;
-  char *homedir;
+  char* homedir;
   c10::Device c10dev;
-  int samplePerKernel{32};
-  int use_fg_graph{1};
-  int use_be_graph{1};
-  size_t iters_per_capture{4};
-  double be_graph_split_ms{-1.0};
-  std::string be_jit_file{"/home/seojin/DeepPoolRuntime/beModules/resnet.jit"};
-  size_t min_layer_sync{8};
-  size_t sync_bucket_size{10 * 1000 * 1000};
-  std::string bg_json_file {}; //{"/home/seojin/DeepPoolRuntime/beModules/wrnBgJobB32.json"};
+  bool use_fg_graph;
+  size_t iters_per_capture;
+  double be_graph_split_ms;
+  size_t min_layer_sync;
+  size_t sync_bucket_size;
+  std::string bg_json_file;
+  std::atomic<uint64_t> fgcounter{0};
+
+  std::mutex jobListMutex;
+  std::vector<std::unique_ptr<JobContext>> jobList;
+  int addTrainingJob(std::unique_ptr<JobContext> job);
+  int poll();
 
   /**
    *  additional variables.
    */
   RuntimeServiceImpl* grpcService;
   grpc::Server* grpcServer;
-  TaskManager* taskManager;
-  std::atomic<bool> shutdownRequested;  // Set to true when coordinator shuts down.
-  std::map< std::string, CommunicationHandler* > commHandlerMap;
+  std::atomic<bool>
+      shutdownRequested;  // Set to true when coordinator shuts down.
+  std::map<std::string, CommunicationHandler*> commHandlerMap;
   std::vector<std::string> rankToIpAndPort;
   std::atomic<bool> grpcCommReady;
 
@@ -101,17 +108,13 @@ struct RuntimeContext {
    * need to be expanded if one node participates in more than one comm group
    */
 
-  torch::cuda::nccl::ncclUniqueId ncclGroupId;
-  int ncclGroupSize;
-  std::vector<int> ranks;
   std::atomic<bool> ncclCommReady{false};
-  torch::cuda::nccl::ncclComm_t ncclCommObj;
+  std::map<size_t, NcclGroupConfig> nccl_groups;
+  NcclGroupConfig maingroup;
   c10::cuda::CUDAStream torch_stream, xfer_stream;
   c10::cuda::CUDAStream grad_sync_stream;
-
 };
 
-extern RuntimeContext *rtctx;
+extern RuntimeContext* rtctx;
 
-
-#endif // RUNTIME_H
+#endif  // RUNTIME_H

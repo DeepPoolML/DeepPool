@@ -12,38 +12,37 @@
 // ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 // OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-
 #include "rpcService.h"
-#include <torch/torch.h>
-#include <memory>
-#include <string>
-#include "communication.h"
-#include "runtime.h"
-#include "json.hpp"
-#include "utils.h"
-#include "logger.h"
-#include "runnableModule.h"
-#include "taskManager.h"
-#include "cuda_runtime.h"
 
 #include <grpcpp/grpcpp.h>
+#include <torch/torch.h>
+
+#include <memory>
+#include <string>
+
+#include "JobContext.h"
+#include "communication.h"
+#include "cuda_runtime.h"
+#include "json.hpp"
+#include "logger.h"
+#include "runnableModule.h"
 #include "runtime.grpc.pb.h"
+#include "runtime.h"
+#include "utils.h"
 
 using json = nlohmann::json;
 using grpc::Server;
 using grpc::ServerContext;
 using grpc::Status;
 
-Status
-RuntimeServiceImpl::InitCommGRPC(ServerContext* context,
-    const InitCommGRPCRequest* request,
-    StandardReply* reply)
-{
+Status RuntimeServiceImpl::InitCommGRPC(ServerContext* context,
+                                        const InitCommGRPCRequest* request,
+                                        StandardReply* reply) {
   UNUSED(context);
   DP_LOG(DEBUG, "Received InitCommGRPC().");
 
   json rankToIpMapJson = json::parse(request->rank_to_ip_map_in_json());
-  
+
   rtctx->rankToIpAndPort.resize(rankToIpMapJson.size());
   for (auto& el : rankToIpMapJson.items()) {
     int rank = atoi(el.key().c_str());
@@ -58,33 +57,55 @@ RuntimeServiceImpl::InitCommGRPC(ServerContext* context,
   return Status::OK;
 }
 
-Status
-RuntimeServiceImpl::InitCommNCCL(ServerContext* context,
-    const InitCommNCCLMsg* request,
-    InitCommNCCLMsg* reply)
-{
+Status RuntimeServiceImpl::InitCommNCCL(ServerContext* context,
+                                        const InitCommNCCLMsg* request,
+                                        InitCommNCCLMsg* reply) {
   UNUSED(context);
   DP_LOG(DEBUG, "Received InitCommNCCL().");
 
   int msg_type = request->msg_type();
-  int group_size = request->group_size();
 
-  if (msg_type == 0) { // Generate comm group ID
-    if (rtctx->rank == 0) { // Only rank 0 generates ID
-      rtctx->ncclGroupSize = group_size;
-      torch::cuda::nccl::get_unique_id(rtctx->ncclGroupId);
+  if (msg_type == 0) {  // Generate comm group ID
+    // Coordinator has requested a new unique comm ID
+    DP_LOG(NOTICE, "Generate ID NCCL.");
 
-      std::string replyMsg("Comm group ID generated at rank 0.");
-      reply->set_message(replyMsg);
-      reply->set_group_id(&rtctx->ncclGroupId, sizeof(rtctx->ncclGroupId));
+    torch::cuda::nccl::ncclUniqueId id;
+    torch::cuda::nccl::get_unique_id(id);
+
+    std::string replyMsg("Comm group ID generated at rank 0.");
+    reply->set_message(replyMsg);
+    reply->set_group_id(&id, sizeof(id));
+  } else if (msg_type == 1) {  // Join comm group specified by ID
+
+    NcclGroupConfig cfg;
+    memcpy(&cfg.ncclGroupId, request->group_id().c_str(),
+           sizeof(cfg.ncclGroupId));
+    cfg.myRank = -1;
+
+    int lastRank = -1;
+    for (int i = 0; i < request->members_size(); i++) {
+      auto r = request->members(i);
+      /* ensure that member list is sorted */
+      assert(r > lastRank);
+      lastRank = r;
+      if (r == rtctx->rank) cfg.myRank = i;
+      cfg.ranks.push_back(r);
     }
-  }
-  else if (msg_type == 1) { // Join comm group specified by ID
-    if (rtctx->rank != 0) // Ranks 1+ need to receive ID before joining
-      memcpy(&rtctx->ncclGroupId, request->group_id().c_str(), sizeof(rtctx->ncclGroupId));
+    assert(cfg.myRank != -1);
 
-    rtctx->ncclCommObj = torch::cuda::nccl::comm_init_rank(rtctx->worldSize, rtctx->ncclGroupId, rtctx->rank);
-    rtctx->ncclCommReady = true;
+    cfg.ncclCommObj = torch::cuda::nccl::comm_init_rank(
+        cfg.ranks.size(), cfg.ncclGroupId, cfg.myRank);
+    cfg.group_key = RankVecToKey(cfg.ranks);
+
+    if (rtctx->nccl_groups.count(cfg.group_key) > 0)
+      DIE("NCCL (sub)group has already been created (%lu)", cfg.group_key);
+
+    rtctx->nccl_groups[cfg.group_key] = cfg;
+
+    if (rtctx->nccl_groups.size() == 1) {
+      rtctx->maingroup = cfg;
+      rtctx->ncclCommReady = true;
+    }
 
     std::string replyMsg("Comm group ID broadcast & joined.");
     reply->set_message(replyMsg);
@@ -93,16 +114,14 @@ RuntimeServiceImpl::InitCommNCCL(ServerContext* context,
   return Status::OK;
 }
 
-Status
-RuntimeServiceImpl::ScheduleTraining(ServerContext* context,
-    const ScheduleTrainingRequest* request,
-    StandardReply* reply)
-{
+Status RuntimeServiceImpl::ScheduleTraining(
+    ServerContext* context, const ScheduleTrainingRequest* request,
+    StandardReply* reply) {
   UNUSED(context);
 
   c10::cuda::setCurrentCUDAStream(rtctx->torch_stream);
 
-  //TODO(seojin): currently ignoring request->data_dir();
+  // TODO(seojin): currently ignoring request->data_dir();
   DP_LOG(DEBUG, "Received ScheduleTraining().");
 
   if (!rtctx->debug) {
@@ -118,7 +137,7 @@ RuntimeServiceImpl::ScheduleTraining(ServerContext* context,
   }
 
   auto job = parseAndCreateTrainingTask(request);
-  rtctx->taskManager->addTrainingJob(std::move(job));
+  rtctx->addTrainingJob(std::move(job));
   DP_LOG(DEBUG, "added the training job.");
 
   std::string replyMsg("ScheduleTraining invoked.");
@@ -126,10 +145,8 @@ RuntimeServiceImpl::ScheduleTraining(ServerContext* context,
   return Status::OK;
 }
 
-Status
-RuntimeServiceImpl::Poke(ServerContext* context, const Empty* request,
-    StandardReply* reply)
-{
+Status RuntimeServiceImpl::Poke(ServerContext* context, const Empty* request,
+                                StandardReply* reply) {
   UNUSED(context);
   UNUSED(request);
 
@@ -139,26 +156,24 @@ RuntimeServiceImpl::Poke(ServerContext* context, const Empty* request,
   return Status::OK;
 }
 
-Status
-RuntimeServiceImpl::Shutdown(ServerContext* context, const Empty* request,
-    StandardReply* reply)
-{
+Status RuntimeServiceImpl::Shutdown(ServerContext* context,
+                                    const Empty* request,
+                                    StandardReply* reply) {
   UNUSED(context);
   UNUSED(request);
 
   DP_LOG(NOTICE, "Shutdown requested.");
   rtctx->shutdownRequested = true;
-  std::cout << "shutdownRequested " << rtctx->shutdownRequested.load() << std::endl;
+  std::cout << "shutdownRequested " << rtctx->shutdownRequested.load()
+            << std::endl;
   std::string replyMsg("Shutdown invoked.");
   reply->set_message(replyMsg);
   return Status::OK;
 }
 
-Status
-RuntimeServiceImpl::P2PCommunication(ServerContext* context,
-    const P2PCommunicationRequest* request,
-    StandardReply* reply)
-{
+Status RuntimeServiceImpl::P2PCommunication(
+    ServerContext* context, const P2PCommunicationRequest* request,
+    StandardReply* reply) {
   UNUSED(context);
 
   DP_LOG(DEBUG, "P2PCommunication requested.");
@@ -176,15 +191,14 @@ RuntimeServiceImpl::P2PCommunication(ServerContext* context,
       reinterpret_cast<CommunicationHandlerGRPC*>(
           rtctx->commHandlerMap[taskName]);
   commHandler->saveData(tsrData, tag);
-  
+
   std::string replyMsg("P2PCommunication received.");
   reply->set_message(replyMsg);
   return Status::OK;
 }
 
-std::unique_ptr<JobContext>
-RuntimeServiceImpl::parseAndCreateTrainingTask(const ScheduleTrainingRequest* request) 
-{
+std::unique_ptr<JobContext> RuntimeServiceImpl::parseAndCreateTrainingTask(
+    const ScheduleTrainingRequest* request) {
   std::string name = request->name();
   DP_LOG(DEBUG, "retrieved name. %s", name.c_str());
   json jobSpec = json::parse(request->job_in_json());
@@ -194,33 +208,31 @@ RuntimeServiceImpl::parseAndCreateTrainingTask(const ScheduleTrainingRequest* re
   DP_LOG(DEBUG, "rank:%d worldSize: %d", rank, worldSize);
   json tensorTags = json::parse(request->tensor_tags_in_json());
   DP_LOG(DEBUG, "parsed tensorTags %s", tensorTags.dump().c_str());
-  json jobRankToGlobalRank = json::parse(request->job_rank_to_global_rank_in_json());
-  DP_LOG(DEBUG, "parsed jobRankToGlobalRank %s", jobRankToGlobalRank.dump().c_str());
-  
-  c10::Device dev(c10::DeviceType::CUDA, rtctx->device);
+  json jobRankToGlobalRank =
+      json::parse(request->job_rank_to_global_rank_in_json());
+  DP_LOG(DEBUG, "parsed jobRankToGlobalRank %s",
+         jobRankToGlobalRank.dump().c_str());
+
   DP_LOG(DEBUG, "dev constructed.");
 
-  std::unique_ptr<CommunicationHandler> commHandler;
-  if (strcmp(rtctx->c10dBackend, "nccl") == 0) {
-    commHandler = std::make_unique<CommunicationHandlerNCCL>(
-          rtctx, name, worldSize, tensorTags, rank, jobRankToGlobalRank, dev);
-  } else if (strcmp(rtctx->c10dBackend, "grpc") == 0) {
-    commHandler = std::make_unique<CommunicationHandlerGRPC>(
-          rtctx, name, worldSize, tensorTags, rank, jobRankToGlobalRank, dev);
+  std::shared_ptr<CommunicationHandler> commHandler;
+  if (rtctx->c10dBackend == "nccl") {
+    commHandler = std::make_shared<CommunicationHandlerNCCL>(
+        name, worldSize, tensorTags, rank, jobRankToGlobalRank);
+  } else if (rtctx->c10dBackend == "grpc") {
+    commHandler = std::make_shared<CommunicationHandlerGRPC>(
+        name, worldSize, tensorTags, rank, jobRankToGlobalRank);
   }
-  
-  DP_LOG(DEBUG, "commHandler constructed.");
-  auto runnableModule = std::make_unique<RunnableModule>(rtctx, jobSpec, commHandler.get(), dev);
-  DP_LOG(DEBUG, "runnableModule constructed.");
-  std::vector<torch::Tensor> parameters;
-  runnableModule->getActiveParameters(&parameters);
-  auto optimizer = std::make_unique<torch::optim::SGD>(parameters, /*lr=*/0.01);
-  DP_LOG(DEBUG, "optimizer constructed.");
 
-  auto job = std::make_unique<JobContext>(std::move(runnableModule), name,
-      nullptr, std::move(commHandler), nullptr, std::move(dev), 1, std::move(optimizer));
+  DP_LOG(DEBUG, "commHandler constructed.");
+  auto runnableModule = std::make_unique<RunnableModule>(jobSpec, commHandler);
+  DP_LOG(DEBUG, "runnableModule constructed.");
+
+  auto job =
+      std::make_unique<JobContext>(std::move(runnableModule), name, nullptr,
+                                   std::move(commHandler), nullptr, 1);
   job->run_with_be = request->run_be() > 0;
-  job->model->idleCtxPtr = &job->idleCtx;
+  // job->model->idleCtxPtr = &job->idleCtx;
 
   DP_LOG(DEBUG, "job constructed.");
   return job;
@@ -230,8 +242,7 @@ RuntimeServiceImpl::parseAndCreateTrainingTask(const ScheduleTrainingRequest* re
 // GRPC Client code.
 ////////////////////////////////////////////////////////
 
-std::string
-RuntimeClient::Poke() {
+std::string RuntimeClient::Poke() {
   Empty request;
   grpc::ClientContext context;
   StandardReply reply;
@@ -240,14 +251,14 @@ RuntimeClient::Poke() {
     return reply.message();
   } else {
     DP_LOG(ERROR, "Failed to invoke Poke. code: %d, msg: %s.",
-          status.error_code(), status.error_message().c_str());
+           status.error_code(), status.error_message().c_str());
     return "Failed to invoke Poke.";
   }
 }
 
-std::string
-RuntimeClient::P2PCommunication(const std::string& taskName,
-                                const std::string& tsrData, int tag) {
+std::string RuntimeClient::P2PCommunication(const std::string& taskName,
+                                            const std::string& tsrData,
+                                            int tag) {
   P2PCommunicationRequest request;
   request.set_task_name(taskName);
   request.set_tensor_data(tsrData);
@@ -260,7 +271,7 @@ RuntimeClient::P2PCommunication(const std::string& taskName,
     return reply.message();
   } else {
     DP_LOG(ERROR, "Failed to invoke P2PCommunication. code: %d, msg: %s.",
-          status.error_code(), status.error_message().c_str());
+           status.error_code(), status.error_message().c_str());
     return "Failed to invoke P2PCommunication.";
   }
 }

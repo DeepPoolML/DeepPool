@@ -15,60 +15,55 @@
 #ifndef RUNNABLE_MODULE_H
 #define RUNNABLE_MODULE_H
 
-#include <memory>
-#include <set>
-#include <vector>
-#include <deque>
-#include <torch/torch.h>
-#include <torch/script.h>
-#include "json.hpp"
-
-#include "runtime.h"
-#include "utils.h"
-#include "tracer.h"
-#include "GraphPieces.h"
-
-#include <c10/cuda/CUDAStream.h>
 #include <ATen/cuda/CUDAGraph.h>
+#include <c10/cuda/CUDAStream.h>
+#include <torch/script.h>
+#include <torch/torch.h>
+
+#include <deque>
+#include <vector>
+
+#include "GraphPieces.h"
+#include "json.hpp"
+#include "runtime.h"
+#include "tracer.h"
+#include "utils.h"
 
 using json = nlohmann::json;
-using torch::autograd::Variable;
 using torch::autograd::AutogradContext;
+using torch::autograd::Variable;
 using torch::autograd::variable_list;
 
 /**
  * Forward declarations. Do not include headers unless necessary.
  */
 class CommunicationHandler;
-class CudaTimer;
-struct Layer;
 struct IdleTimeCtx;
 
 typedef int Tag;
 typedef int Rank;
 
 struct TsrXfer {
-  TsrXfer(CommunicationHandler* comm) : commHandler(comm), type(None),
-      splitSizes(), splitCatDim(0), xferTagAndRank(), xferTagAndRankBack() {}
-  
-  CommunicationHandler* commHandler;
-  enum Type {
-    None, Send, Recv
-  };
-  Type type;
-  std::vector<int64_t> splitSizes; // used only for send's forward or recv's backward.
-  int splitCatDim;
-  int prevLayerId;
+  TsrXfer(std::shared_ptr<CommunicationHandler> comm) : commHandler(comm) {}
+
+  torch::Tensor DoSend(Variable& x);
+  torch::Tensor DoRecv(Variable& x);
+
+  std::shared_ptr<CommunicationHandler> commHandler;
+  enum Type { None, Send, Recv };
+  Type type{None};
+  // used only for send's forward or recv's backward.
+  std::vector<int64_t> splitSizes;
+  int splitCatDim{0};
   int nextLayerId;
-  std::vector<std::pair<Tag, Rank> > xferTagAndRank;
-  std::vector<std::pair<Tag, Rank> > xferTagAndRankBack;
-  Layer* recevingLayerForSend; // Used for delayed send.
+  std::vector<std::pair<Tag, Rank>> xferTagAndRank;
 };
 
 class TsrXferFunc : public torch::autograd::Function<TsrXferFunc> {
  public:
   static Variable forward(AutogradContext* ctx, Variable x, TsrXfer* xfer);
-  static variable_list backward(AutogradContext* ctx, variable_list grad_output);
+  static variable_list backward(AutogradContext* ctx,
+                                variable_list grad_output);
 };
 
 /**
@@ -77,78 +72,60 @@ class TsrXferFunc : public torch::autograd::Function<TsrXferFunc> {
  * the previous layer is executed so that its output tensor is valid.
  */
 enum class LayerStatus {
-  PENDING_FP = 0, // pending forward pass (last done job was backward).
-  PENDING_BP      // pending backward pass (last done job was forward).
+  PENDING_FP = 0,  // pending forward pass (last done job was backward).
+  PENDING_BP       // pending backward pass (last done job was forward).
 };
 
-enum class SpecialModuleTypes {
-  NOTSPECIAL = 0,
-  CONCAT
-};
+enum class SpecialModuleTypes { NOTSPECIAL = 0, CONCAT };
 
 /**
  * Description / context of a layer for training.
  */
 struct Layer {
-  Layer(torch::jit::Module module, SpecialModuleTypes specialModule, int id, bool active,
-      bool detachInput, bool detachOutput, std::vector<Layer*>& prevLayerVec, bool syncTwice)
-    : module(module)
-    , moduleFwGraph()
-    , moduleBwGraph()
-    , avgLayerTime(0)
-    , specialModule(specialModule)
-    , id(id)
-    , active(active)
-    , syncTwice(syncTwice)
-    , detachInput(detachInput)
-    , detachOutput(detachOutput)
-    , prevLayers()
-    , nextLayers()
-    , output()
-    , outputBeforeDetach()
-    , detachedInputs()
-    , status(LayerStatus::PENDING_FP)
-    , xferIns()
-    , xferOuts()
-  {
-    for (auto prevLayerPtr : prevLayerVec) {
-      prevLayers.push_back(prevLayerPtr);
-      prevLayerPtr->nextLayers.push_back(this);
-    }
-  }
-  
+  Layer(torch::jit::Module module, SpecialModuleTypes specialModule, int id,
+        bool active, bool detachInput, bool doLocalGradSync)
+      : module(module),
+        specialModule(specialModule),
+        id(id),
+        active(active),
+        doLocalGradSync(doLocalGradSync),
+        detachInput(detachInput) {}
+
+  void DoForward(RunnableModule* model, bool captureLayer);
+  void DoForwardXferIn();
+  void DoBackward(bool captureLayer);
+
   torch::jit::Module module;
-  at::cuda::CUDAGraph moduleFwGraph; // Used only for layer-wise profiling.
-  at::cuda::CUDAGraph moduleBwGraph; // Used only for layer-wise profiling.
-  double avgLayerTime;
-  int64_t fwUsec {0};
-  int64_t bwUsec {0};
-  const SpecialModuleTypes specialModule; // 0: not special, use module. 1: concat.
+  int64_t fwUsec{0};
+  int64_t bwUsec{0};
+  const SpecialModuleTypes
+      specialModule;  // 0: not special, use module. 1: concat.
   const int id;
-  const bool active; // Inactive means no samples assigned for this runtime.
-  const bool syncTwice; // Perform gradient all-reduce within a host. (all layers do all-reduce over NIC)
-  const bool detachInput; // Detach input before running this layer.
-  const bool detachOutput; // Detach output when output is used multiple times.
-  bool yieldOnFp;
-  std::vector<Layer*> prevLayers;
-  std::vector<Layer*> nextLayers;
-  torch::Tensor output;  // Used during forward pass.
-  torch::Tensor outputBeforeDetach; // Used during backward when output is used multple times. 
-  std::map<int, torch::Tensor> outputsAfterXfer;  // Output specific to the nextLayerId (key).
-  std::map<int, torch::Tensor> detachedInputs; // Used during backward pass.
-  LayerStatus status;
+  const bool active;  // Inactive means no samples assigned for this runtime.
+  const bool doLocalGradSync;  // Perform gradient all-reduce within a host.
+                               // (all layers do all-reduce over NIC)
+  size_t commGroupKey;
+  const bool detachInput;  // Detach input before running this layer.
+  std::vector<std::shared_ptr<Layer>> prevLayers;  // sorted by id
+  std::vector<std::shared_ptr<Layer>> nextLayers;
+  torch::Tensor output;              // Used during forward pass.
+  torch::Tensor outputBeforeDetach;  // Used during backward when output is used
+                                     // multple times.
+  std::map<int, torch::Tensor>
+      outputsToLayer;  // Output specific to the nextLayerId (key).
+  std::map<int, torch::Tensor> detachedInputs;  // Used during backward pass.
+  LayerStatus status{LayerStatus::PENDING_FP};
+  size_t nr_current_depedencies{0};
   std::vector<TsrXfer> xferIns;
   std::vector<TsrXfer> xferOuts;
-  std::vector<int64_t> emptyInSizes;  // primarily used for creating empty tensors for recv.
-  std::vector<int64_t> emptyOutSizes; // primarily used for creating empty tensors for recv.
-  std::unique_ptr<CudaTimer> fpTimer, bpTimer; // Used during profile mode only.
-  std::string moduleName; // Used to output profiled runtimes.
+  // primarily used for creating empty tensors for recv.
+  std::vector<int64_t> emptyOutSizes;
+  std::string moduleName;  // Used to output profiled runtimes.
 };
 
-
 class TensorGeneratorPipeline {
-public:
-  TensorGeneratorPipeline() {};
+ public:
+  TensorGeneratorPipeline(){};
 
   TensorGeneratorPipeline(std::function<torch::Tensor()> gen) {
     for (size_t i = 0; i < 64; i++) cached_.push_back(gen());
@@ -197,7 +174,7 @@ public:
     return tensor_out;
   }
 
-private:
+ private:
   size_t tensorbytes;
   void* tensor_buf;
   torch::Tensor next_t_;
@@ -207,110 +184,81 @@ private:
   uint64_t iter_idx_{0};
 };
 
-enum JobStatus {
-  IN_PROGRESS = 0,
-  COMPLETED,
-  YIELD
+enum JobStatus { IN_PROGRESS = 0, COMPLETED, YIELD };
+
+enum class JobState {
+  INIT = 0,
+  FORWARD,
+  BACKWARD,
+  SYNC,
+  STEP,
+  FINISH,
+  NUM_JOB_STATES  // must be the last element in the enum
 };
-
-// class ReduceBucket {
-//  public:
-//   ReduceBucket() {}
-//   bool holdGrad (torch::Tensor& grad) {
-//     elems += grad.numel();
-//     grads.push_back(&grad);
-//     flattened.push_back(grad.flatten());
-//     sizes.push_back(grad.numel());
-
-//     if (elems > ReduceBucket::elemLimit) {
-//       wrapUp();
-//       return true; // Perform all reduce.
-//     }
-//     return false;
-//   }
-
-//   void wrapUp() {
-//     buffer = torch::cat(flattened);
-//   }
-
-//   void splitAndUpdateGrads() {
-//     if (!buffer.defined())
-//       return;
-//     std::vector<torch::Tensor> splittedTsrs = buffer.split_with_sizes(sizes);
-//     for (size_t i = 0; i < grads.size(); ++i) {
-//       *grads[i] = splittedTsrs[i].reshape_as(*grads[i]);
-//     }
-//   }
-
-//   torch::Tensor buffer; // Flattened & concated.
-//   static const int64_t elemLimit = 2500000; // 10 MB bucket size.
-
-//   std::vector<torch::Tensor*> grads;
-//   std::vector<torch::Tensor> flattened;
-//   std::vector<int64_t> sizes;
-//   int64_t elems {0};
-// };
 
 /**
  * A module that holds parameters (or submodules) and
  * provides functionalities to run training iteration.
  */
-class RunnableModule : public torch::nn::Module {
+class RunnableModule {
  public:
-  // RunnableModule();
-  RunnableModule(RuntimeContext* rtctx, json specInJson,
-      CommunicationHandler* commHandler, c10::Device device);
+  RunnableModule(json specInJson,
+                 std::shared_ptr<CommunicationHandler> commHandler);
 
-  void getParameters(std::vector<torch::Tensor>* parameters);
-  void getActiveParameters(std::vector<torch::Tensor>* parameters);
+  int AdvanceTraining(bool doGraphCapture, bool layerProfile);
+
+  CudaTimerChain timers;
+  void printLayerInGraphTimes();
+
+ protected:
+  friend struct Layer;
+
+  inline void TimerRecord(std::string name) {
+    if (rtctx->profile && !has_graph && !graph_recording) timers.Record(name);
+  }
+
   void iterInit();
-  void resetForNewIter();
+  // void resetForNewIter();
   JobStatus forwardAStep(bool captureLayer);
   JobStatus backwardAStep(bool captureLayer);
   void loss();
   void gradientSyncSync();
   void gradientSync();
-  void initProfileTimers(CudaTimer* ct_load, CudaTimer* ct_loss);
-  void resetProfileTimers();
-  void printProfileTimers(int warmupIters);
-  void printLayerInGraphTimes();
+  void resetTimers();
+  std::vector<torch::Tensor> getActiveParameters();
 
   ////////////////////////////////////////////
   // Internal data structure.
   ////////////////////////////////////////////
-  RuntimeContext* rtctx;
-  int rank;
-  int globalBatchSize;
-  std::vector<torch::jit::Module> moduleList;
-  json layersInJson;
-  int initialBatchSize;
-  CommunicationHandler* commHandler;
-  c10::Device device;
-  std::vector<Layer> layers; // Topologically sorted list of layers.
-
+  std::shared_ptr<CommunicationHandler> commHandler;
+  // Topologically sorted list of layers.
+  std::vector<std::shared_ptr<Layer>> layers;
+  std::unique_ptr<torch::optim::SGD> optimizer;
   ////////////////////////////////////////////
-  // Context for tracking particial progress.
+  // Context for tracking partial progress.
   ////////////////////////////////////////////
   std::deque<Layer*> layerQ;
   torch::Tensor fpInput;
   torch::Tensor fpTargets;
   torch::Tensor fpOutput;
-  torch::Tensor fpLoss;
-  // bool runCriterionAndLoss;
+
+  JobState state{JobState::INIT};
 
   TensorGeneratorPipeline input_pipeline, target_pipeline;
 
   bool backwards_did_sync{false};
+  bool has_graph{false};
+  bool graph_recording{false};
 
   std::shared_ptr<GraphPieces> fullgraph;
   at::cuda::CUDAGraph maingraph, syncgraph, stepgraph;
   at::cuda::MempoolId_t graph_mempool;
   // Performance Stat
-  CpuTimer detachTimer;
+  // CpuTimer detachTimer;
 
   // std::vector<ReduceBucket> reduceBuckets;
-  IdleTimeCtx* idleCtxPtr;
-  bool hasInactiveLayer {false};
+  // IdleTimeCtx* idleCtxPtr;
+  // bool hasInactiveLayer {false};
 };
 
 #endif

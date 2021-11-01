@@ -59,10 +59,9 @@ class CppRuntimeProxy:
         pass
         # print("initCommBackend() not implemented")
 
-    def initCommNCCL(self, message, msgType, groupId, groupsDict):
-        groupSize = len(groupsDict["world"])
+    def initCommNCCL(self, message, msgType, groupId, members):
         response = self.stub.InitCommNCCL(runtime_pb2.InitCommNCCLMsg(
-            message=message, msg_type=msgType, group_id=groupId, group_size=groupSize))
+            message=message, msg_type=msgType, group_id=groupId, members=members))
         print("received: " + response.message)
         return response.group_id;
 
@@ -172,6 +171,7 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
         self.processes = []  # from subprocess calls used for launching runtime.
         self.nextTagStartOffset = 1
         self.be_batch_size = be_batch_size
+        self.commGroups = set()
         self.ongoingJobs = {} # Dict of contexts of ongoing jobs. Indexed by job name.
         f = open("runtimeResult.data", "w")
         f.close()
@@ -208,16 +208,17 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
             with open(f"/tmp/rank{rank}.json", "wb") as f:
                 f.write(bytes(moduleDescList[rank].encode("utf-8")))
 
+        commSets = self.buildNeededCommGroups(moduleDescList)
+
+        for s in commSets:
+            self.initCommBackendAll("nccl", s)
+
         jobRankToGlobalRank = list(range(gpusUsed))
         jobRankToGlobalRankInJson = json.dumps(jobRankToGlobalRank)
 
         # TODO: should pick locations that doesn't have other priority job scheduled.
         if len(self.locations) < gpusUsed:
             return "Not enough servers available. %d gpus available while %d needed" % (len(self.locations), gpusUsed)
-
-        # convert local ranks to global rank & invoke make groups.
-        commGroups = {'all': list(range(gpusUsed))} # TODO: replace this hardcoded one with something like self.buildCommTensorTags(moduleDescList).
-        self.initCommGroupsAll(jobName, commGroups, jobRankToGlobalRank)
 
         threadList = []
         def requestScheduleTraining(proxy, name, jobInJson, dataDir, tensorTagsInJson, jobRankToGlobalRankInJson):
@@ -276,7 +277,6 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
         tensorTags = {}
         for moduleDesc in moduleDescList:
             spec = json.loads(moduleDesc)
-            
             for ldsc in spec["layers"]:
                 if "tensorRx" in ldsc: # either sender or receiver need to assign tag.
                     for item in ldsc["tensorRx"]:
@@ -286,6 +286,15 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
                         tag += 3 #tag += 1
         self.nextTagStartOffset = (tag + 99) % 100
         return tensorTags
+
+    def buildNeededCommGroups(self, moduleDescList):
+        groups = set()
+        desc = json.loads(moduleDescList[0])
+        for l in desc['layers']:
+            activeset = tuple(sorted(l['gpuAssignment']))
+            if len(activeset) > 1:
+                groups.add(activeset)
+        return list(groups)
 
     ######################################################
     ## Runtime cluster management
@@ -375,23 +384,30 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
             except grpc.RpcError:
                 print("GRPC error while shuting down %s" % location.address)
 
-    def initCommBackendAll(self, c10dBackend, rankToIpMap, commGrpRanksDict):
+    def initCommBackendAll(self, c10dBackend, commGroupSet):
+
+        assert(sorted(commGroupSet) == list(commGroupSet))
+        assert(len(commGroupSet) > 1)
+        if tuple(commGroupSet) in self.commGroups:
+            return
+
+        self.commGroups.add(tuple(commGroupSet))
+
         if c10dBackend == "nccl":
-            group_id = self.locations[0].getProxy().initCommNCCL("Generate comm group ID", 0, bytes(128), commGrpRanksDict)
+            group_id = self.locations[commGroupSet[0]].getProxy().initCommNCCL("Generate comm group ID", 0, bytes(128), list(commGroupSet))
         threadList = []
         def requestInitCommBackend(proxy):
             # print(proxy.initCommBackend())
             if c10dBackend == "grpc":
                 print(proxy.initCommGRPC(rankToIpMap))
             if c10dBackend == "nccl":
-                proxy.initCommNCCL("Join comm group", 1, group_id, commGrpRanksDict);
-        for i, location in enumerate(self.locations):
+                proxy.initCommNCCL("Join comm group", 1, group_id, list(commGroupSet))
+
+        for i in commGroupSet:
+            location = self.locations[i]
             thread = threading.Thread(name='init_comm%d'%i, target=requestInitCommBackend, args=(location.getProxy(),))
             thread.start()
             threadList.append(thread)
-        # for thread in threadList:
-        #     thread.start()
-        #     time.sleep(1)
         for thread in threadList:
             thread.join()
 
@@ -479,7 +495,6 @@ def main():
     args, extra_args = parse_args()
     clusterConfig = json.load(open(args.pathToConfig))
     rankToIpMap = {}
-    commGrpRanksDict = {}
     commGrpRanksWorld = []
     locations = []
     for serverConfig in clusterConfig["serverList"]:
@@ -491,8 +506,6 @@ def main():
     addrToBindCombo = re.split('[-:]', args.addrToBind)
     addrToBind = addrToBindCombo[0]
     portToBind = int(addrToBindCombo[1])
-    commGrpRanksDict["world"] = commGrpRanksWorld
-    print(commGrpRanksDict)
 
     coordinator = ClusterCoordinator(addrToBind, portToBind, locations, clusterConfig["workDir"], args.be_batch_size)
     if args.install:
@@ -507,7 +520,7 @@ def main():
 
     coordinator.launchRuntimeAll(args.c10dBackend, profile=args.profile, cppRuntime=args.cpp, manualLaunch=args.manualLaunch)
     print("All runtime nodes are up and running. Now, initializing communication backend..")
-    coordinator.initCommBackendAll(args.c10dBackend, rankToIpMap, commGrpRanksDict)
+    coordinator.initCommBackendAll(args.c10dBackend, commGrpRanksWorld)
     print("Communication backends are ready at all locations.")
     print("Now, cluster is ready to accept training jobs.")
 

@@ -20,7 +20,8 @@
 #include <stdexcept>
 #include <cuda_runtime.h>
 #include <torch/torch.h>
-
+#include <ATen/cuda/CUDAEvent.h>
+#include <unistd.h>
 #include <nccl.h>
 
 #define UNUSED(expr) (void)(expr)
@@ -59,6 +60,23 @@ std::string tsrSizeToStr(torch::Tensor tensor)
   stream << "]";
   return stream.str();
 }
+
+class CUDAPipeline {
+ public:
+  CUDAPipeline(size_t depth) : depth_(depth) {}
+  void Lap() {
+    if (cur_idx_++ % depth_ != 0) return;
+    while (!ev_.query()) usleep(100);
+    ev_ = at::cuda::CUDAEvent();
+    ev_.record();
+  }
+
+ private:
+  size_t depth_;
+  size_t cur_idx_{0};
+  at::cuda::CUDAEvent ev_;
+};
+
 
 #define NCCL_API_CALL(apiFuncCall)                                            \
   do {                                                                        \

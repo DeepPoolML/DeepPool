@@ -25,7 +25,7 @@ message InitCommNCCLMsg {
   string message = 1;
   int32 msg_type = 2;
   bytes group_id = 3;
-  int32 group_size = 4;
+  repeated int32 members = 4;
 }
 
 message ScheduleTrainingRequest {

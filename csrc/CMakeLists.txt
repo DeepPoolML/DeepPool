@@ -86,12 +86,13 @@ target_link_libraries(dp_grpc_proto
 
 # Linking info for runtime.
 add_executable(runtime
-  "runtime.cpp" "runnableModule.cpp" "taskManager.cpp" "logger.cpp" 
-  "communication.cpp" "rpcService.cpp" "GraphPieces.cpp"
+  "runtime.cpp" "runnableModule.cpp" "JobContext.cpp" "logger.cpp"
+  "communication.cpp" "rpcService.cpp" "GraphPieces.cpp" "BeTask.cpp"
   "CodeLocation.cpp" "Cycles.cpp" "SpinLock.cpp" "ThreadId.cpp" )
 target_link_libraries(runtime
   dp_grpc_proto
   cudasleep
+  absl::flags absl::flags_parse
   ${_REFLECTION}
   ${_GRPC_GRPCPP}
   ${_PROTOBUF_LIBPROTOBUF}
