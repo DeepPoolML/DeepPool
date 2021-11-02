@@ -63,7 +63,7 @@ class CostSim:
         self.profiler = profiler
         self.layers: List[Layer] = []
         self.NET_BANDWIDTH = netBw
-        self.NET_LATENCY = 240 #40
+        self.NET_LATENCY = 40
         # self.NET_LATENCY = 400 #40
         self.verbose = verbose
         self.layerProfileCache = {}

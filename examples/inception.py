@@ -639,7 +639,7 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     
     if maxGpusUsed > 8:
         print("maxGpusUsed: ", maxGpusUsed, " is bigger than 8. Can't schedule this job.")
-        return
+        exit(-1)
     
     if not spatialSplit and not simOnly:
         cc = ClusterClient()

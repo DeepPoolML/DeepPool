@@ -88,7 +88,7 @@ class Location:
         self.proxy = None
         self.isCpp = isCpp
         
-    def getProxy(self, maxRetry = 8, reuseCached = True):
+    def getProxy(self, maxRetry = 32, reuseCached = True):
         if reuseCached and self.proxy != None:
             # print("getProxy() returned from cached proxy value.")
             return self.proxy
@@ -333,9 +333,9 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
                 print("Skipping ssh launching runtime. Must have launched them manually.")
             elif cppRuntime:
                 self.processes.append(location.rshAsync(
-                    "LD_LIBRARY_PATH=/home/friedj/cuda/lib64:/home/friedj/nfsnccl/lib  CUDA_VISIBLE_DEVICES=" + str(location.device) + " " + self.workDir + "csrc/build/runtime" + \
-                    " --coordinatorAddr %s:%d --myAddr %s:%d --device 0 --c10dBackend %s --rank %d --worldSize %d --logdir %s --be_batch_size %d --min_layer_sync %d %s %s" % \
-                        (self.myAddr, self.myPort, location.address, location.port, c10dBackend, i, len(self.locations), logdir, self.be_batch_size, len(self.locations), "--profile" if profile else "", " ".join(extra_args)) #+ \
+                    f"source ~/.bashrc; LD_LIBRARY_PATH=/home/friedj/cudnnold:/home/friedj/cuda/lib64:/home/friedj/local/pt3/build/nccl/lib CUDA_DEVICE_MAX_CONNECTIONS=32 CUDA_VISIBLE_DEVICES={location.device} {nsysPrefix} {self.workDir}/csrc/build/runtime" + \
+                    " --myAddr %s:%d --device 0 --c10dBackend %s --rank %d --worldSize %d --logdir %s --be_batch_size %d %s %s" % \
+                        (location.address, location.port, c10dBackend, i, len(self.locations), logdir, self.be_batch_size, "" if profile else "", " ".join(extra_args)) #+ \
                     , stdout=stdoutFp, stderr=stderrFp))
             else:
                 self.processes.append(location.rshAsync(
