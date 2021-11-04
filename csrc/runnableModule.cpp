@@ -159,7 +159,8 @@ variable_list TsrXferFunc::backward(AutogradContext* ctx,
  */
 RunnableModule::RunnableModule(
     json spec, std::shared_ptr<CommunicationHandler> commHandler)
-    : commHandler(commHandler) {
+    : commHandler(commHandler),
+      sync_manager_(commHandler, rtctx->sync_bucket_size) {
   auto& layersInJson = spec["layers"];
   long initialBatchSize = layersInJson[0]["config"][0];
 
@@ -203,6 +204,7 @@ RunnableModule::RunnableModule(
     }
 
     bool doLocalGradSync = layerIsActive && ldsc["gpuAssignment"].size() > 1;
+    doLocalGradSync &= rtctx->min_layer_sync <= rtctx->worldSize;
 
     auto layer = std::make_shared<Layer>(
         module, specialModule, id, layerIsActive, detachInput, doLocalGradSync);
@@ -482,7 +484,6 @@ void Layer::DoForwardXferIn() {
 }
 
 void Layer::DoBackward(bool captureLayer) {
-
 #if VERBOSE
   if (!active && outputsToLayer.size()) {
     DP_LOG(DEBUG,
@@ -633,6 +634,13 @@ JobStatus RunnableModule::backwardAStep(bool captureLayer) {
   layer->status = LayerStatus::PENDING_FP;
   layer->nr_current_depedencies = layer->prevLayers.size();
 
+  if (layer->doLocalGradSync) {
+    for (const auto& param : layer->module.parameters()) {
+      auto grad = param.mutable_grad();
+      sync_manager_.AddGradient(grad, layer->commGroupKey);
+    }
+  }
+
   for (auto& pl : layer->prevLayers) {
     assert(pl->nr_current_depedencies > 0);
     if (--pl->nr_current_depedencies == 0) layerQ.push_back(pl.get());
@@ -644,35 +652,6 @@ JobStatus RunnableModule::backwardAStep(bool captureLayer) {
     return COMPLETED;
   }
   return IN_PROGRESS;
-}
-
-void
-RunnableModule::gradientSyncSync() {
-  if (!backwards_did_sync) return;
-  commHandler->sync(rtctx->grad_sync_stream);
-  backwards_did_sync = false;
-}
-
-void RunnableModule::gradientSync() {
-  size_t cur_key = 0;
-
-  for (auto& layer : layers) {
-    if (!layer->doLocalGradSync) continue;
-    if (cur_key != layer->commGroupKey) {
-      if (cur_key) commHandler->comm_end();
-      commHandler->comm_start(rtctx->grad_sync_stream, layer->commGroupKey);
-      cur_key = layer->commGroupKey;
-    }
-    for (const auto& param : layer->module.parameters()) {
-      auto grad = param.mutable_grad();
-      commHandler->all_reduce(grad, c10d::ReduceOp::SUM);
-    }
-  }
-
-  if (cur_key) {
-    commHandler->comm_end();
-    commHandler->sync(rtctx->grad_sync_stream);
-  }
 }
 
 /**
@@ -754,12 +733,14 @@ int RunnableModule::AdvanceTraining(bool doGraphCapture, bool layerProfile) {
     DP_LOG(DEBUG, "JobState::SYNC.");
 
     if (doGraphCapture) {
+      sync_manager_.Join();
       commHandler->postcapture();
       maingraph.capture_end();
       syncgraph.capture_begin(graph_mempool);
     }
 
-    gradientSync();
+    sync_manager_.Flush();
+    sync_manager_.Join();
 
     if (doGraphCapture) {
       syncgraph.capture_end();

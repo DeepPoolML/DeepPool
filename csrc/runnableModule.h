@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "GraphPieces.h"
+#include "communication.h"
 #include "json.hpp"
 #include "runtime.h"
 #include "tracer.h"
@@ -184,6 +185,63 @@ class TensorGeneratorPipeline {
   uint64_t iter_idx_{0};
 };
 
+class GradientSyncManager {
+ public:
+  GradientSyncManager(std::shared_ptr<CommunicationHandler> commHandler,
+                      size_t flush_threshold_bytes)
+      : commHandler_(commHandler),
+        flush_threshold_bytes_(flush_threshold_bytes) {}
+
+  void Flush() {
+    if (cur_pending_bytes_) {
+      size_t curGroup = 0;
+      for (auto& gradp : pending_grads_) {
+        if (gradp.first != curGroup) {
+          if (curGroup) commHandler_->comm_end();
+          commHandler_->comm_start(rtctx->grad_sync_stream, gradp.first);
+          curGroup = gradp.first;
+        }
+        commHandler_->all_reduce(gradp.second, c10d::ReduceOp::SUM);
+      }
+      if (curGroup) {
+        commHandler_->comm_end();
+        has_unjoined_work_ = true;
+      }
+    }
+    cur_pending_bytes_ = 0;
+    last_comm_group_key_ = 0;
+    pending_grads_.clear();
+  }
+
+  void AddGradient(torch::Tensor grad, size_t comm_group_key) {
+    assert(comm_group_key > 0);
+    if (flush_threshold_bytes_ && comm_group_key != last_comm_group_key_) {
+      Flush();
+      last_comm_group_key_ = comm_group_key;
+    }
+    cur_pending_bytes_ += grad.nbytes();
+    pending_grads_.emplace_back(comm_group_key, grad);
+
+    if (flush_threshold_bytes_ && cur_pending_bytes_ >= flush_threshold_bytes_)
+      Flush();
+  }
+
+  void Join() {
+    if (has_unjoined_work_) {
+      commHandler_->sync(rtctx->grad_sync_stream);
+      has_unjoined_work_ = false;
+    }
+  }
+
+ private:
+  const std::shared_ptr<CommunicationHandler> commHandler_;
+  const size_t flush_threshold_bytes_;
+  size_t last_comm_group_key_{0};
+  size_t cur_pending_bytes_;
+  bool has_unjoined_work_{false};
+  std::vector<std::pair<size_t, torch::Tensor>> pending_grads_;
+};
+
 enum JobStatus { IN_PROGRESS = 0, COMPLETED, YIELD };
 
 enum class JobState {
@@ -222,8 +280,6 @@ class RunnableModule {
   JobStatus forwardAStep(bool captureLayer);
   JobStatus backwardAStep(bool captureLayer);
   void loss();
-  void gradientSyncSync();
-  void gradientSync();
   void resetTimers();
   std::vector<torch::Tensor> getActiveParameters();
 
@@ -231,6 +287,7 @@ class RunnableModule {
   // Internal data structure.
   ////////////////////////////////////////////
   std::shared_ptr<CommunicationHandler> commHandler;
+  GradientSyncManager sync_manager_;
   // Topologically sorted list of layers.
   std::vector<std::shared_ptr<Layer>> layers;
   std::unique_ptr<torch::optim::SGD> optimizer;
