@@ -268,6 +268,7 @@ class RunnableModule : public torch::nn::Module {
   JobStatus forwardAStep(bool captureLayer);
   JobStatus backwardAStep(bool captureLayer);
   void loss();
+  void gradientSyncSync();
   void gradientSync();
   void initProfileTimers(CudaTimer* ct_load, CudaTimer* ct_loss);
   void resetProfileTimers();

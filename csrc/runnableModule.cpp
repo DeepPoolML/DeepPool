@@ -774,7 +774,6 @@ RunnableModule::backwardAStep(bool captureLayer)
       auto grad = param.mutable_grad();
       bytes_inflight += grad.nbytes();
       pending_grads.push_back(grad);
-      backwards_did_sync = true;
     }
 
     if (rtctx->sync_bucket_size > 0 && bytes_inflight >= rtctx->sync_bucket_size) {
@@ -782,6 +781,7 @@ RunnableModule::backwardAStep(bool captureLayer)
       for (auto &p : pending_grads)
         commHandler->all_reduce(p, c10d::ReduceOp::SUM, true);
       commHandler->comm_end();
+      backwards_did_sync = true;
       bytes_inflight = 0;
       pending_grads.clear();
 
@@ -814,6 +814,13 @@ RunnableModule::backwardAStep(bool captureLayer)
 }
 
 void
+RunnableModule::gradientSyncSync() {
+  if (!backwards_did_sync) return;
+  commHandler->sync(rtctx->grad_sync_stream);
+  backwards_did_sync = false;
+}
+
+void
 RunnableModule::gradientSync() {
   if (bytes_inflight) {
       commHandler->comm_start(rtctx->grad_sync_stream);
@@ -822,11 +829,9 @@ RunnableModule::gradientSync() {
       commHandler->comm_end();
       bytes_inflight = 0;
       pending_grads.clear();
+      backwards_did_sync = true;
   }
-  if (backwards_did_sync) {
-    commHandler->sync(rtctx->grad_sync_stream);
-    backwards_did_sync = false;
-  }
+  gradientSyncSync();
 
   // if (reduceBuckets.back().grads.size() > 0) {
   //   reduceBuckets.back().wrapUp();

@@ -632,7 +632,7 @@ TaskManager::trainSingleStep(JobContext* job, bool* jobCompleted)
 
     if (job->totiters == job->iters_before_graph_capture) {
       job->commHandler->postcapture();
-      job->commHandler->sync(rtctx->grad_sync_stream);
+      job->model->gradientSyncSync(); // join any pending syncs
       job->model->maingraph.capture_end();
       job->model->syncgraph.capture_begin(job->model->graph_mempool);
       job->model->gradientSync();
