@@ -244,9 +244,6 @@ RunnableModule::RunnableModule(
       std::map<int, std::vector<json> > sendListDict;
       for (auto& item : ldsc["tensorTx"]) {
         int nextLayerId = item["prop"]["nextLayerId"].get<int>();
-        if (sendListDict.find(nextLayerId) == sendListDict.end()) {
-          sendListDict[nextLayerId] = std::vector<json>();
-        }
         sendListDict[nextLayerId].push_back(item);
       }
       for (const auto& kv : sendListDict) {
@@ -292,9 +289,6 @@ RunnableModule::RunnableModule(
       std::map<int, std::vector<json> > recvListDict;
       for (auto& item : ldsc["tensorRxJit"]) {
         int nextLayerId = item["prop"]["nextLayerId"].get<int>();
-        if (recvListDict.find(nextLayerId) == recvListDict.end()) {
-          recvListDict[nextLayerId] = std::vector<json>();
-        }
         recvListDict[nextLayerId].push_back(item);
       }
 
@@ -372,14 +366,21 @@ RunnableModule::RunnableModule(
   };
   target_pipeline = TensorGeneratorPipeline(targetFn);
 
-  optimizer =
-      std::make_unique<torch::optim::SGD>(getActiveParameters(), /*lr=*/0.01);
+  SetupOptimizer();
+
+
+  for (auto &l : layers) {
+    for (auto &p : l->prevLayers)
+      assert(std::find(p->nextLayers.begin(), p->nextLayers.end(), l) != p->nextLayers.end());
+    for (auto &p : l->nextLayers)
+      assert(std::find(p->prevLayers.begin(), p->prevLayers.end(), l) != p->prevLayers.end());
+  }
 }
 
 /**
  * Dumps the entire model parameters into the given vector.
  */
-std::vector<torch::Tensor> RunnableModule::getActiveParameters() {
+void RunnableModule::SetupOptimizer() {
   std::vector<torch::Tensor> parameters;
   for (auto& layer : layers) {
     if (!layer->active) continue;
@@ -387,7 +388,7 @@ std::vector<torch::Tensor> RunnableModule::getActiveParameters() {
       parameters.push_back(params);
     }
   }
-  return parameters;
+  optimizer = std::make_unique<torch::optim::SGD>(parameters, /*lr=*/0.01);
 }
 
 /**

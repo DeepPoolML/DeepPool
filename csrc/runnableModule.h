@@ -281,7 +281,7 @@ class RunnableModule {
   JobStatus backwardAStep(bool captureLayer);
   void loss();
   void resetTimers();
-  std::vector<torch::Tensor> getActiveParameters();
+  void SetupOptimizer();
 
   ////////////////////////////////////////////
   // Internal data structure.
