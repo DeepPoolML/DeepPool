@@ -519,8 +519,10 @@ void Layer::DoBackward(bool captureLayer) {
     }
 
     bool retainGraph = nli < nextLayers.size() - 1;
-    torch::Tensor grad = nextLayerPtr->detachedInputs[id];
-    if (!grad.defined()) {
+    torch::Tensor grad;
+    if (nextLayerPtr->detachedInputs[id].defined()) {
+      grad = nextLayerPtr->detachedInputs[id].grad();
+    } else {
       DP_LOG(DEBUG,
              "nextLayerPtr->detachInput is not defined. Using empty "
              "tensor.");

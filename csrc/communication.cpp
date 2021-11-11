@@ -167,6 +167,7 @@ CommunicationHandlerNCCL::CommunicationHandlerNCCL(std::string taskName,
 
 void CommunicationHandlerNCCL::sync(
     c10::optional<c10::cuda::CUDAStream> stream) {
+  if (in_group_call) return;
   sync_event.record(stream ? stream.value() : default_comm_stream);
   sync_event.block(rtctx->torch_stream);
 }
@@ -302,7 +303,8 @@ void CommunicationHandlerNCCL::testRingP2P() {
 
 void CommunicationHandlerNCCL::comm_start(
     c10::optional<c10::cuda::CUDAStream> stream, size_t commKey) {
-  assert(!in_group_call);
+  if (++in_group_call != 1)
+    return;
 
   if (commKey > 0) {
     auto& config = rtctx->nccl_groups.at(commKey);
@@ -311,7 +313,6 @@ void CommunicationHandlerNCCL::comm_start(
     group_call_commObj = rtctx->maingroup.ncclCommObj;
   }
 
-  in_group_call = true;
   group_call_stream = stream ? stream : default_comm_stream;
   sync_event.record(rtctx->torch_stream);
   sync_event.block(group_call_stream.value());
@@ -319,8 +320,8 @@ void CommunicationHandlerNCCL::comm_start(
 }
 
 void CommunicationHandlerNCCL::comm_end() {
-  assert(in_group_call);
-  in_group_call = false;
+  if (--in_group_call != 0)
+    return;
   group_call_stream = {};
   NCCL_API_CALL(ncclGroupEnd());
 }

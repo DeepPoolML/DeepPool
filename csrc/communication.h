@@ -96,7 +96,7 @@ class CommunicationHandlerNCCL : public CommunicationHandler {
   at::cuda::CUDAEvent sync_event;
   c10::cuda::CUDAStream default_comm_stream;
   c10::optional<c10::cuda::CUDAStream> group_call_stream;
-  bool in_group_call{false};
+  size_t in_group_call{0};
   torch::cuda::nccl::ncclComm_t group_call_commObj;
 };
 

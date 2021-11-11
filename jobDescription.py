@@ -250,29 +250,33 @@ class TrainingJob:
                         
                         xferBytes = xferSamples * self.bytesPerParam
                         
+                        xfer = {
+                            "name": "%d_from_%d_sample_%d" % (l.id, prevLayer.id, xferNum),
+                            "prop": {
+                                "xferSamples": xferSamples,
+                                "prevLayerId": prevLayer.id, # prevLayerId is necessary for Concat inputs.
+                                "nextLayerId": l.id,
+                            },
+                            "dest": dstRank,
+                            "src": srcRank,
+                            "bytes": xferBytes
+                        }
+
+
                         assert(dstRank != srcRank)
                         if targetRank == dstRank:
                             # TODO: remove "tensorRx". It's left for python runtime compatibility.
                             if "tensorRx" not in prop:
                                 prop["tensorRx"] = []    
-                            prop["tensorRx"].append({"name": "%d_from_%d_sample_%d" % (l.id, prevLayer.id, xferNum),
-                                                    "prop": {"xferSamples": xferSamples, "prevLayerId": prevLayer.id}, # prevLayerId is necessary for Concat inputs.
-                                                    "src": srcRank,
-                                                    "bytes": xferBytes})
+                            prop["tensorRx"].append(xfer)
                             # tensorRxJit is used for CPP runtime.
                             if "tensorRxJit" not in allProps[prevLayer.id]:
                                 allProps[prevLayer.id]["tensorRxJit"] = []
-                            allProps[prevLayer.id]["tensorRxJit"].append({"name": "%d_from_%d_sample_%d" % (l.id, prevLayer.id, xferNum),
-                                                    "prop": {"xferSamples": xferSamples, "nextLayerId": l.id}, # prevLayerId is necessary for Concat inputs.
-                                                    "src": srcRank,
-                                                    "bytes": xferBytes})
+                            allProps[prevLayer.id]["tensorRxJit"].append(xfer)
                         if targetRank == srcRank:
                             if "tensorTx" not in allProps[prevLayer.id]:
                                 allProps[prevLayer.id]["tensorTx"] = []
-                            allProps[prevLayer.id]["tensorTx"].append({"name": "%d_from_%d_sample_%d" % (l.id, prevLayer.id, xferNum),
-                                                    "prop": {"xferSamples": xferSamples, "nextLayerId": l.id},
-                                                    "dest": dstRank,
-                                                    "bytes": xferBytes})
+                            allProps[prevLayer.id]["tensorTx"].append(xfer)
             allProps.append(prop)
 
         # Compute dataLoaderOffset & worldSize.

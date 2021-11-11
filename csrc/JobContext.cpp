@@ -50,11 +50,8 @@ JobContext::JobContext(std::unique_ptr<RunnableModule> modelIn,
       commHandler(std::move(commHandler)),
       targetShuffler(std::move(targetShuffler)),
       epochsToTrain(epochsToTrain) {
-  if (rtctx->use_fg_graph) {
-    iters_before_graph_capture = 50;
-  } else {
-    iters_before_graph_capture = 5000;
-  }
+  if (!rtctx->use_fg_graph)
+    iters_before_graph_capture = itersToTrain * epochsToTrain;
 }
 
 /**
