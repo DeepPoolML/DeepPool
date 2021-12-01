@@ -35,6 +35,8 @@ class GraphTimer {
   GraphTimer(){};
   void StartCapture() {
     c10::cuda::device_synchronize();
+    c10::cuda::CUDACachingAllocator::emptyCache();
+    c10::cuda::device_synchronize();
     graph.capture_begin();
   }
   int64_t EndCaptureAndTime() {
@@ -185,8 +187,7 @@ RunnableModule::RunnableModule(
     SpecialModuleTypes specialModule = SpecialModuleTypes::NOTSPECIAL;
     if (name == "concat") specialModule = SpecialModuleTypes::CONCAT;
 
-    torch::jit::Module module = torch::jit::load(
-        std::string(rtctx->homedir) + "/DeepPoolRuntime/" + moduleLoc);
+    torch::jit::Module module = torch::jit::load(moduleLoc);
 
     DP_LOG(DEBUG, " layer's module is loaded.");
     DP_LOG(DEBUG, " layer is%s concat.", name == "concat" ? "" : " not");
@@ -432,11 +433,13 @@ void Layer::DoForward(RunnableModule* model, bool captureLayer) {
   if (captureLayer) fwdtimer.StartCapture();
 
   std::vector<c10::IValue> iVec;
-  if (specialModule == SpecialModuleTypes::CONCAT) {
+  if (specialModule == SpecialModuleTypes::CONCAT &&
+      module.get_method("forward").function().getSchema().arguments().size() <=
+          2) {
+    /* old list-argument concat */
     iVec.emplace_back(vec);
   } else {
-    assert(vec.size() == 1);
-    iVec.emplace_back(vec[0]);
+    for (auto& v : vec) iVec.emplace_back(v);
   }
 
   output = module.forward(iVec).toTensor();

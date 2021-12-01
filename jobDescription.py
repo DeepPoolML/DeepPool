@@ -15,6 +15,7 @@
 import json
 import torch
 import io
+import os
 from os.path import exists
 from typing import Optional, IO, List, Any
 
@@ -33,6 +34,7 @@ class Layer:
         self.inputDim = (0, 0, 0)   # (Channel, Width, Height) for 2d convolution
         self.outputDim = (0, 0, 0)  # (Channel, Width, Height)
         self.must_trace = False
+        self.moduleSavedLocation = None
 
     def getModuleId(self):
         return self.name +\
@@ -61,9 +63,11 @@ class Layer:
         if hasattr(self, 'gpuAssignment'):
             prop["gpuAssignment"] = self.gpuAssignment
 
-        if self.module != None:
+        if self.moduleSavedLocation:
+            prop["moduleSavedLocation"] = self.moduleSavedLocation
+        elif self.module != None:
             moduleId = self.getModuleId()
-            saveLocation = "modules/scriptmodule_%s.pt"%moduleId
+            saveLocation = os.getcwd() + "/modules/scriptmodule_%s.pt"%moduleId
             if exists(saveLocation): # Skip if module file is already there.
                 prop["moduleSavedLocation"] = saveLocation
             else:
@@ -93,8 +97,6 @@ class Layer:
                 self.moduleScript = buffer.getvalue()
                 # print("Layer%2d written %5d bytes." % (self.id, len(self.moduleScript)))
                 # print(" *** Code ***\n%s" % (traced.code))
-        elif hasattr(self, 'moduleSavedLocation'):
-            prop["moduleSavedLocation"] = self.moduleSavedLocation
 
         return prop
 

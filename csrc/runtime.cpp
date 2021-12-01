@@ -166,6 +166,14 @@ int RuntimeContext::poll() {
     else
       BePause();
   }
+
+  /* empty allocator caches for profiling */
+  if (rtctx->profile) {
+    c10::cuda::device_synchronize();
+    c10::cuda::CUDACachingAllocator::emptyCache();
+    c10::cuda::device_synchronize();
+  }
+
   mainJob->TrainToCompletion();
   torch_stream.synchronize();
   mainJob->printJobStatistics();

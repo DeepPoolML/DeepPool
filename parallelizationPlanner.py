@@ -166,7 +166,24 @@ class CostSim:
                                 print("prevLayer.outputDim: %15s, non-matching other input: %15s" % (prevLayer.outputDim, pl.outputDim))
                         layer.inputDim = prevLayer.outputDim
 
-            if layer.name in ["conv2d", "maxPool2d", "avgPool2d"]:
+            if layer.name == "linear":
+                layer.outputDim = layer.params["out_features"]
+                layer.inputDim = layer.params["in_features"]
+
+            if layer.module:
+                if layer.prevLayers:
+                    args = [torch.empty(sz.outputDim if type(sz.outputDim) == tuple else [sz.outputDim]).unsqueeze(0) for sz in layer.prevLayers]
+                else:
+                    args = [torch.empty(list(layer.inputDim)).unsqueeze(0)]
+                try:
+                    outSize = list(layer.module(*args).size())[1:]
+                except:
+                    outSize = list(layer.module(args).size())[1:]
+                layer.outputDim = outSize[0] if len(outSize) == 1 else tuple(outSize)
+                if type(layer.inputDim) in [tuple, list] and len(layer.inputDim) == 1:
+                    layer.inputDim = layer.inputDim[0]
+
+            elif layer.name in ["conv2d", "maxPool2d", "avgPool2d"]:
                 paddingW = layer.params["padding"][0] if type(layer.params["padding"]) is tuple else layer.params["padding"]
                 paddingH = layer.params["padding"][1] if type(layer.params["padding"]) is tuple else layer.params["padding"]
                 strideW = layer.params["stride"][0] if type(layer.params["stride"]) is tuple else layer.params["stride"]
@@ -518,7 +535,7 @@ class CostSim:
         layer = Layer(module, name, params, prevLayers = custom_previous_layers)
         layer.must_trace = mustTrace
         self.layers.append(layer)
-        return
+        return layer
 
     def getInitialConfig(self, layer, globalBatch: int):
         if layer.name in ["conv2d"]:
@@ -1292,6 +1309,8 @@ class CostSim:
         return (moduleDesc, finalTime / 1000., gpuUsecSum / 1000.)
 
     def searchBestSplitsV2(self, totalGpus: int, globalBatch: int = 16, useZhihaoAlgo = False):
+        assert False
+        """
         t = [[] for i in range(len(self.layers))] # [layer] = list of (config, cumulativeTime, prevConfigIndex)
 
         initialConfigs = []
@@ -1452,6 +1471,7 @@ class CostSim:
                     sum(initialTimes) / sum(t[i][bestConfigChain[i]][3][2] for i in range(len(bestConfigChain)))
                     ))
 
+        """
 
     def searchLinear(self, preStartLayer, preStartConfig, startLayer, ctx: SearchContext):
         layer = startLayer
@@ -1544,6 +1564,7 @@ class CostSim:
                 if len(layer.prevLayers) > 1: # Joining layer.
                     return layer
             else:
+                assert False
                 print("Error!")
         return
     
