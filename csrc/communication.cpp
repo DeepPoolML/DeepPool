@@ -103,6 +103,7 @@ void CommunicationHandlerGRPC::send(const torch::Tensor& tensor, int tag,
 
   std::string tsrData;
   tsrData.resize(tensor.nbytes());
+  c10::cuda::device_synchronize(); /* ensure data is ready to be copied out */
   CUDACHECK(cudaMemcpy(&tsrData[0], tensor.data_ptr(), tensor.nbytes(),
                        cudaMemcpyDefault));
   DP_LOG(DEBUG, "Copied tensor data (potentially CUDA) to CPU.");
@@ -177,6 +178,7 @@ void CommunicationHandlerNCCL::send(const torch::Tensor& tensor, int tag,
   UNUSED(tag);
 
   assert(in_group_call);
+  tensor.record_stream(group_call_stream.value());
   torch::cuda::nccl::send(tensor, group_call_commObj, group_call_stream.value(),
                           dest);
 }
@@ -186,6 +188,7 @@ void CommunicationHandlerNCCL::recv(torch::Tensor& tensor, int tag, int src) {
   DP_LOG(DEBUG, "NCCL recv.");
 
   assert(in_group_call);
+  tensor.record_stream(group_call_stream.value());
   torch::cuda::nccl::recv(tensor, group_call_commObj, group_call_stream.value(),
                           src);
 }

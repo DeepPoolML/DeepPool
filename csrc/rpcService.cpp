@@ -136,7 +136,14 @@ Status RuntimeServiceImpl::ScheduleTraining(
     DP_LOG(DEBUG, "Saved the serialized ScheduleTrainingRequest.");
   }
 
-  auto job = parseAndCreateTrainingTask(request);
+
+  std::unique_ptr<JobContext> job;
+  try {
+    job = parseAndCreateTrainingTask(request);
+  } catch (std::exception& e) {
+    std::cerr << "exception: " << e.what() << std::endl;
+    throw e;
+  }
   rtctx->addTrainingJob(std::move(job));
   DP_LOG(DEBUG, "added the training job.");
 
@@ -225,7 +232,7 @@ std::unique_ptr<JobContext> RuntimeServiceImpl::parseAndCreateTrainingTask(
   }
 
   DP_LOG(DEBUG, "commHandler constructed.");
-  auto runnableModule = std::make_unique<RunnableModule>(jobSpec, commHandler);
+  auto runnableModule = std::make_unique<RunnableModule>(jobSpec, commHandler, name);
   DP_LOG(DEBUG, "runnableModule constructed.");
 
   auto job =
