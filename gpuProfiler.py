@@ -13,7 +13,6 @@ import json
 
 import torch.cuda.profiler as profiler
 import torch.cuda.nvtx as nvtx
-import pyprof
 
 class Perf(object):
     def __init__(self, eidToStr = {}):

@@ -75,7 +75,7 @@ def uploadCode():
             #     '-rh', "--exclude=*__pycache__", "--exclude=results", localPath, "%s@%s:%s" % (userId, host, remotePath)],
             #     stderr=subprocess.STDOUT)
             subprocess.check_call(['rsync', '--progress', '-e', 'ssh -i %s -o StrictHostKeyChecking=no' % pkeyPath,
-                '-rh', "--exclude=*__pycache__", "--exclude=csrc/build/_deps", "--exclude=be_training", "--exclude=be_training/pytorch", "--exclude=be_training/build", "--exclude=results", localPath, "%s@%s:%s" % (userId, host, remotePath)],
+                '-rh', "--exclude=*__pycache__", "--exclude=.git", "--exclude=csrc/build/_deps", "--exclude=be_training", "--exclude=be_training/pytorch", "--exclude=be_training/build", "--exclude=results", localPath, "%s@%s:%s" % (userId, host, remotePath)],
                 stderr=subprocess.STDOUT)
         except subprocess.CalledProcessError as e:
             output = e.output

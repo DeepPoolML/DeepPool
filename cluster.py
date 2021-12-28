@@ -87,6 +87,7 @@ class Location:
         self.serverId = None
         self.proxy = None
         self.isCpp = isCpp
+        self.is_local = address == "127.0.0.1"
         
     def getProxy(self, maxRetry = 32, reuseCached = True):
         if reuseCached and self.proxy != None:
@@ -114,6 +115,7 @@ class Location:
         return None
 
     def downloadFile(self, remotePath: str, localPath: str):
+        assert not self.is_local
         print("  Downloading %s to %s at %s" % (remotePath, localPath, self.address))
         kwargs = dict()
         kwargs['stderr'] = subprocess.STDOUT
@@ -123,6 +125,7 @@ class Location:
         subprocess.check_call(sh_command, **kwargs)
 
     def uploadFile(self, localFilePath, remotePath):
+        assert not self.is_local
         print("  Uploading %s to %s at %s" % (localFilePath, remotePath, self.address))
         kwargs = dict()
         # kwargs['shell'] = True
@@ -135,7 +138,11 @@ class Location:
         kwargs['stderr'] = subprocess.STDOUT
         
         # sh_command = ['ssh', '-v', '-i', '~/.ssh/ulma-sjp.pem', 'ubuntu@%s' % self, '%s' % command]
-        sh_command = ['ssh', '-i', self.sshKeyPath, '-o', 'StrictHostKeyChecking=no', '%s@%s' % (self.userId, self.address), '%s' % command]
+        if self.is_local:
+            sh_command = command
+            kwargs["shell"] = True
+        else:
+            sh_command = ['ssh', '-i', self.sshKeyPath, '-o', 'StrictHostKeyChecking=no', '%s@%s' % (self.userId, self.address), '%s' % command]
         try:
             subprocess.check_call(sh_command, **kwargs)
         except subprocess.CalledProcessError as e:
@@ -145,12 +152,19 @@ class Location:
     
     def rshAsync(self, command, **kwargs):
         print("Sending cmd: %s" % command)
-        sh_command = ['ssh', '-i', self.sshKeyPath, '-o StrictHostKeyChecking=no', '%s@%s' % (self.userId, self.address),
+        if self.is_local:
+            sh_command = command
+            kwargs["shell"] = True
+        else:
+            sh_command = ['ssh', '-i', self.sshKeyPath, '-o StrictHostKeyChecking=no', '%s@%s' % (self.userId, self.address),
                     '%s' % command]
         p = subprocess.Popen(sh_command, **kwargs)
         return p
 
     def upSync(self, localPath, remotePath):
+        if self.is_local:
+            assert False
+            return
         try:
             subprocess.check_call(['rsync', '-e', 'ssh -i %s -o StrictHostKeyChecking=no' % self.sshKeyPath,
                 '-rh', "--exclude=*__pycache__", localPath, "%s@%s:%s" % (self.userId, self.address, remotePath)],
@@ -273,18 +287,17 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
     ######################################################
     def buildCommTensorTags(self, moduleDescList):
         # TODO: need tag allocator that can recycle tags.
-        tag = self.nextTagStartOffset
+        tag = 0
         tensorTags = {}
         for moduleDesc in moduleDescList:
             spec = json.loads(moduleDesc)
             for ldsc in spec["layers"]:
-                if "tensorRx" in ldsc: # either sender or receiver need to assign tag.
-                    for item in ldsc["tensorRx"]:
+                if "xfers" in ldsc: # either sender or receiver need to assign tag.
+                    for item in ldsc["xfers"]:
                         tensorTags[item["name"]] = tag
-                        tag += 3 #tag += 1
+                        tag += item["prop"]["xferSamples"]
                         tensorTags[item["name"] + "_back"] = tag
-                        tag += 3 #tag += 1
-        self.nextTagStartOffset = (tag + 99) % 100
+                        tag += item["prop"]["xferSamples"]
         return tensorTags
 
     def buildNeededCommGroups(self, moduleDescList):
@@ -494,6 +507,7 @@ def main():
     global extra_args
     args, extra_args = parse_args()
     clusterConfig = json.load(open(args.pathToConfig))
+    global rankToIpMap
     rankToIpMap = {}
     commGrpRanksWorld = []
     locations = []
