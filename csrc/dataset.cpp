@@ -10,29 +10,30 @@ ABSL_FLAG(std::string, cifar_dataset,
 
 class FakeDataset : public Dataset {
  public:
-  FakeDataset(long globalBatchSize, std::vector<long> inputShape,
-              size_t target_classes, size_t images_per_epoch_train,
-              size_t images_per_eval);
+  FakeDataset(size_t rank, long globalBatchSize,
+              std::vector<long> initialBatchSizes,
+              std::vector<long> sampleIndices, std::vector<long> inputShape,
+              size_t target_classes, size_t images_per_epoch);
   torch::data::Example<> getNext() override;
   bool IsDone() override;
-  void Reset(bool eval = false) override;
+  void Reset() override;
 
  private:
-  size_t batches_per_training_epoch_;
-  size_t batches_per_testing_epoch_;
+  size_t batches_per_epoch_;
   size_t ctr_;
   std::vector<torch::data::Example<>> cached_;
 };
 
 class CifarDataset : public Dataset {
  public:
-  CifarDataset(long globalBatchSize);
+  CifarDataset(size_t rank, long globalBatchSize,
+               std::vector<long> initialBatchSizes,
+               std::vector<long> sampleIndices, bool is_eval);
   torch::data::Example<> getNext() override;
   bool IsDone() override;
-  void Reset(bool eval = false) override;
+  void Reset() override;
 
  private:
-  long globalBatchSize_;
   c10::optional<torch::data::Iterator<torch::data::Example<>>> cur_iter;
 
   std::unique_ptr<torch::data::StatelessDataLoader<
@@ -41,12 +42,15 @@ class CifarDataset : public Dataset {
               CIFAR10, torch::data::transforms::Normalize<>>,
           torch::data::transforms::Stack<torch::data::Example<>>>,
       torch::data::samplers::SequentialSampler>>
-      train_loader, eval_loader;
+      loader;
 };
 
-FakeDataset::FakeDataset(long globalBatchSize, std::vector<long> inputShape,
-                         size_t target_classes, size_t images_per_epoch_train,
-                         size_t images_per_eval) {
+FakeDataset::FakeDataset(size_t rank, long globalBatchSize,
+                         std::vector<long> initialBatchSizes,
+                         std::vector<long> sampleIndices,
+                         std::vector<long> inputShape, size_t target_classes,
+                         size_t images_per_epoch)
+    : Dataset(rank, globalBatchSize, initialBatchSizes, sampleIndices) {
   std::vector<long> fullShape;
   fullShape.push_back(globalBatchSize);
   fullShape.insert(fullShape.end(), inputShape.begin(), inputShape.end());
@@ -57,49 +61,35 @@ FakeDataset::FakeDataset(long globalBatchSize, std::vector<long> inputShape,
                                  {globalBatchSize}, targetOpts);
     cached_.emplace_back(data, target);
   }
-  batches_per_training_epoch_ = images_per_epoch_train / globalBatchSize;
-  batches_per_testing_epoch_ = images_per_eval / globalBatchSize;
+  batches_per_epoch_ = images_per_epoch / globalBatchSize;
 }
 
-bool FakeDataset::IsDone() {
-  return ctr_ >= (is_eval_mode_ ? batches_per_testing_epoch_
-                                : batches_per_training_epoch_);
-}
+bool FakeDataset::IsDone() { return ctr_ >= batches_per_epoch_; }
 
 torch::data::Example<> FakeDataset::getNext() {
   assert(!IsDone());
   return cached_[ctr_++ % cached_.size()];
 }
 
-void FakeDataset::Reset(bool eval) {
-  is_eval_mode_ = eval;
-  ctr_ = 0;
-}
+void FakeDataset::Reset() { ctr_ = 0; }
 
-CifarDataset::CifarDataset(long globalBatchSize)
-    : globalBatchSize_(globalBatchSize) {
-  auto c = CIFAR10(absl::GetFlag(FLAGS_cifar_dataset), CIFAR10::Mode::kTrain)
+CifarDataset::CifarDataset(size_t rank, long globalBatchSize,
+                           std::vector<long> initialBatchSizes,
+                           std::vector<long> sampleIndices, bool is_eval)
+    : Dataset(rank, globalBatchSize, initialBatchSizes, sampleIndices) {
+  auto c = CIFAR10(absl::GetFlag(FLAGS_cifar_dataset),
+                   is_eval ? CIFAR10::Mode::kTest : CIFAR10::Mode::kTrain)
                .map(torch::data::transforms::Normalize<>({0.485, 0.456, 0.406},
                                                          {0.229, 0.224, 0.225}))
                .map(torch::data::transforms::Stack<>());
-  train_loader =
+  loader =
       torch::data::make_data_loader<torch::data::samplers::SequentialSampler>(
           std::move(c), globalBatchSize);
-  auto t = CIFAR10(absl::GetFlag(FLAGS_cifar_dataset), CIFAR10::Mode::kTest)
-               .map(torch::data::transforms::Normalize<>({0.485, 0.456, 0.406},
-                                                         {0.229, 0.224, 0.225}))
-               .map(torch::data::transforms::Stack<>());
-  eval_loader =
-      torch::data::make_data_loader<torch::data::samplers::SequentialSampler>(
-          std::move(t), globalBatchSize);
-
-  cur_iter = train_loader->begin();
+  cur_iter = loader->begin();
 }
 
 bool CifarDataset::IsDone() {
-  if (is_eval_mode_ && cur_iter == eval_loader->end())
-    return true;
-  else if (!is_eval_mode_ && cur_iter == train_loader->end())
+  if (cur_iter == loader->end())
     return true;
   else if (cur_iter.value()->data.sizes().vec()[0] < globalBatchSize_)
     return true;
@@ -114,17 +104,17 @@ torch::data::Example<> CifarDataset::getNext() {
   return cur_example;
 }
 
-void CifarDataset::Reset(bool eval) {
-  is_eval_mode_ = eval;
-  if (eval)
-    cur_iter = eval_loader->begin();
-  else
-    cur_iter = train_loader->begin();
-}
+void CifarDataset::Reset() { cur_iter = loader->begin(); }
 
-Dataset *Dataset::fromName(std::string name, long globalBatchSize) {
-	if (name.find("cifar") != std::string::npos)
-		return new CifarDataset(globalBatchSize);
-	long px = name.find("inception") != std::string::npos ? 299 : 224;
-	return new FakeDataset(globalBatchSize, {3, px, px}, 1000, 100000, 1000);
+Dataset *Dataset::fromName(std::string name, size_t rank, long globalBatchSize,
+                           std::vector<long> initialBatchSizes,
+                           std::vector<long> sampleIndices) {
+  if (name.find("cifar") != std::string::npos) {
+    bool eval = name.find("eval") != std::string::npos;
+    return new CifarDataset(rank, globalBatchSize, initialBatchSizes,
+                            sampleIndices, eval);
+  }
+  long px = name.find("inception") != std::string::npos ? 299 : 224;
+  return new FakeDataset(rank, globalBatchSize, initialBatchSizes,
+                         sampleIndices, {3, px, px}, 1000, 100000);
 }

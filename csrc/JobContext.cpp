@@ -14,9 +14,6 @@
 
 #include "JobContext.h"
 
-#include <ATen/autocast_mode.h>
-#include <ATen/cuda/CUDAEvent.h>
-#include <ATen/cuda/CUDAGraph.h>
 #include <cuda_profiler_api.h>
 #include <torch/torch.h>
 
@@ -24,32 +21,21 @@
 #include <string>
 
 #include "BeTask.h"
-#include "Cycles.h"
 #include "communication.h"
 #include "logger.h"
-#include "rpcService.h"
 #include "runnableModule.h"
 #include "runtime.h"
 #include "utils.h"
-
-using Cycles = RAMCloud::Cycles;
-
-#define EXPLICIT_INTERLEAVING 0
 
 /**
  * Contructs context for a training job.
  */
 JobContext::JobContext(std::unique_ptr<RunnableModule> modelIn,
-                       std::string name, std::unique_ptr<DataLoader> dataLoader,
-                       std::shared_ptr<CommunicationHandler> commHandler,
-                       std::unique_ptr<TargetShuffler> targetShuffler,
-                       int epochsToTrain)
+                       std::string name,
+                       std::shared_ptr<CommunicationHandler> commHandler)
     : model(std::move(modelIn)),
       name(name),
-      dataLoader(std::move(dataLoader)),
-      commHandler(std::move(commHandler)),
-      targetShuffler(std::move(targetShuffler)),
-      epochsToTrain(epochsToTrain) {
+      commHandler(std::move(commHandler)) {
   if (!rtctx->use_fg_graph)
     iters_before_graph_capture = itersToTrain * epochsToTrain;
 }
@@ -61,162 +47,7 @@ JobContext::JobContext(std::unique_ptr<RunnableModule> modelIn,
  */
 JobContext::~JobContext() {}
 
-#if 0
-/**
- * Set the BG job after parsing it from the json file.
- */
-int
-TaskManager::addBgJob()
-{
-  if (!rtctx->bg_json_file.empty()) {
-    ScheduleTrainingRequest req;
-    // std::string path = format("%s/DeepPoolRuntime/lastReq%d.txt", ctx->homedir, ctx->device);
-    std::ifstream ifs(rtctx->bg_json_file.c_str());
-    req.ParseFromIstream(&ifs);
-    ifs.close();
-    DP_LOG(NOTICE, "Parsed BG job request from %s.", rtctx->bg_json_file.c_str());
-    
-    bgJob = rtctx->grpcService->parseAndCreateTrainingTask(&req);
-    DP_LOG(NOTICE, "Parsing BG json completed.");
-    bgJob->idleCtx.jobType = IdleTimeCtx::BG;
-    bgJob->itersToTrain = 500000; // Let it to run as long as we have any idle gaps.
-    bgJob->epochsToTrain = 5000; // Let it to run as long as we have any idle gaps.
-    bgJob->iters_before_graph_capture = 500000; // Capture will happen by the main job.
-    return 1;
-  }
-  return 0;
-}
-#endif
-
-#if 0
-bool
-TaskManager::trainAllTheWayWithBg(JobContext* mainJob)
-{
-    if (be_bsize > 0 && mainJob->totiters == 0) {
-    if (!mainJob->run_with_be) {
-      be_controller.Pause();
-    } else {
-      be_controller.Resume();
-    }
-  }
-
-  // const int bgItersPerCapture = 2;
-  // int fgItersPerCapture = 0;
-  const int fgItersPerCapture = rtctx->iters_per_capture; //10;
-  int bgItersPerCapture = 0;
-  int bgCaptureStartIter = 9999999;
-  bool runBgJob = (bool)bgJob && mainJob->model->hasInactiveLayer;
-  DP_LOG(NOTICE, "Run bg job during the gap: %d", runBgJob);
-  bool stopCapture = false;
-  bool jobCompleted = false;
-  bool iterFinished = false;
-  at::cuda::CUDAGraph mixedGraph;
-  while (!jobCompleted) {
-    if (iterFinished) {
-      // DP_LOG(NOTICE, "Finished %" PRId64 "-th iter before capture.", mainJob->totiters);
-      if (mainJob->totiters == mainJob->iters_before_graph_capture) {
-        if (mainJob->run_with_be && be_bsize > 0) {
-          DP_LOG(NOTICE, "Pausing BE.");
-          be_controller.Pause();
-        }
-
-        // Prepare BG job.
-        if (bgJob) {
-          bgJob->model->resetProfileTimers();
-          bgJob->model->resetForNewIter();
-          bgJob->model->iterInit();
-          bgJob->state = JobState::FORWARD;
-          bgCaptureStartIter = bgJob->totiters;
-        }
-
-        // Start capture.
-        c10::cuda::device_synchronize();
-        DP_LOG(NOTICE, "Starting capture.");
-        mixedGraph.capture_begin();
-        mainJob->commHandler->precapture();
-        // captureStarted = true;
-      }
-      // Use different condition... like after 10 BG iterations, finish FG.. 
-      if (stopCapture) {
-        DP_LOG(NOTICE, "Ending capture.");
-        mainJob->commHandler->postcapture();
-        mixedGraph.capture_end();
-        if (mainJob->run_with_be && be_bsize > 0) {
-          DP_LOG(NOTICE, "Resuming BE.");
-          be_controller.Resume();
-        }
-        // fgItersPerCapture = mainJob->totiters - mainJob->iters_before_graph_capture;
-        bgItersPerCapture = bgJob->totiters - bgCaptureStartIter;
-        jobCompleted = true;
-      }
-    }
-
-    // if (!runBgJob && mainJob->totiters == rtctx->iters_per_capture + mainJob->iters_before_graph_capture - 1) { //captureStarted) {
-    if (mainJob->totiters == rtctx->iters_per_capture + mainJob->iters_before_graph_capture - 1) { //captureStarted) {
-      // DP_LOG(NOTICE, "Asking to end capture. (no bg job)");
-      stopCapture = true;
-    }
-
-    // DP_LOG(NOTICE, "FG job run. remainingIdle: %" PRId64 " us, next bgJobStep: %" PRId64 "",
-    //     mainJob->idleCtx.remainingIdleUsec, getNextStepTime(bgJob.get()));
-    iterFinished = mainJob->trainSingleStep(&jobCompleted);
-#if 0
-    while (runBgJob && mainJob->idleCtx.remainingIdleUsec > getNextStepTime(bgJob.get())) {
-      bool bgJobCompleted = false;
-      bgJob->idleCtx.idleUsecOfMainPtr = &mainJob->idleCtx.remainingIdleUsec;
-      DP_LOG(NOTICE, "  BG job run. remainingIdle: %" PRId64 " us, nextStepTime: %" PRId64 " us",
-          mainJob->idleCtx.remainingIdleUsec, getNextStepTime(bgJob.get()));
-      bool bgIterFinished = bgJob->trainSingleStep(&bgJobCompleted);
-      DP_LOG(NOTICE, "    finished a step in %" PRId64 "-th iter (fin:%d). remainingIdle: %" PRId64 " us",
-          bgJob->totiters, bgIterFinished, mainJob->idleCtx.remainingIdleUsec);
-      // if (bgIterFinished && bgJob->totiters == bgCaptureStartIter + bgItersPerCapture) {
-      //   DP_LOG(NOTICE, "Asking to end capture. (with bg job)");
-      //   runBgJob = false;
-      //   stopCapture = true;
-      // }
-    }
-#endif
-  }
-
-  DP_LOG(NOTICE, "mixedGraph => fgItersPerCapture: %d, bgItersPerCapture: %d",
-      fgItersPerCapture, bgItersPerCapture);
-
-  // Replay the mixed graph.
-  bool measurementStarted = false;
-  assert (mainJob->totiters < 200);
-  assert (mainJob->itersToTrain > 600);
-  while (mainJob->totiters < mainJob->itersToTrain) {
-    // DP_LOG(NOTICE, "totiters: %" PRId64 "", mainJob->totiters);
-    if (!measurementStarted && mainJob->totiters >= 200) {
-      DP_LOG(NOTICE, "measurementStarted. totiters: %" PRId64 "", mainJob->totiters);
-      measurementStarted = true;
-      rtctx->torch_stream.synchronize();
-      mainJob->be_img_start = becounter.load();
-      mainJob->start = std::chrono::steady_clock::now();
-    }
-
-    static CUDAPipeline p(8);
-    p.Lap();
-    mixedGraph.replay();
-    mainJob->totiters += fgItersPerCapture;
-    mainJob->iter += fgItersPerCapture;
-    fgcounter += fgItersPerCapture;
-    if (bgJob) {
-      bgJob->totiters += bgItersPerCapture;
-      bgJob->iter += bgItersPerCapture;
-    }
-  }
-  if (bgJob) {
-    rtctx->torch_stream.synchronize();
-    int bgImg = bgJob->model->globalBatchSize * (bgJob->totiters - bgCaptureStartIter);
-    mainJob->be_img_end += bgImg; // Temporarily adding bg tput to be tput.
-  }
-  return jobCompleted;
-}
-#endif
-
 void JobContext::printJobStatistics() {
-  // mainJob->model->printProfileTimers(warmupIters);
   model->printLayerInGraphTimes();
   size_t iters = totiters - warmupIters;
   using msec = std::chrono::duration<double, std::milli>;

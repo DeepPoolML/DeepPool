@@ -26,6 +26,7 @@
 #include "GraphPieces.h"
 #include "communication.h"
 #include "json.hpp"
+#include "logger.h"
 #include "runtime.h"
 #include "tracer.h"
 #include "utils.h"
@@ -35,36 +36,22 @@ using torch::autograd::AutogradContext;
 using torch::autograd::Variable;
 using torch::autograd::variable_list;
 
+class Dataset;
+class DatasetPipelineWrapper;
+
 /**
  * Forward declarations. Do not include headers unless necessary.
  */
 class CommunicationHandler;
-struct IdleTimeCtx;
 
 typedef int Tag;
-typedef int Rank;
 
-struct TsrXfer {
-  TsrXfer(std::shared_ptr<CommunicationHandler> comm) : commHandler(comm) {}
-
-  torch::Tensor DoSend(Variable& x);
-  torch::Tensor DoRecv(Variable& x);
-
-  std::shared_ptr<CommunicationHandler> commHandler;
-  enum Type { None, Send, Recv };
-  Type type{None};
-  // used only for send's forward or recv's backward.
-  std::vector<int64_t> splitSizes;
-  int splitCatDim{0};
-  int nextLayerId;
-  std::vector<std::pair<Tag, Rank>> xferTagAndRank;
-};
-
-class TsrXferFunc : public torch::autograd::Function<TsrXferFunc> {
- public:
-  static Variable forward(AutogradContext* ctx, Variable x, TsrXfer* xfer);
-  static variable_list backward(AutogradContext* ctx,
-                                variable_list grad_output);
+struct Xfer {
+  std::pair<size_t, size_t> src; /* rank and offset */
+  std::pair<size_t, size_t> dst; /* rank and offset */
+  size_t nr_samples;
+  size_t src_lid;
+  Tag tag;
 };
 
 /**
@@ -84,17 +71,20 @@ enum class SpecialModuleTypes { NOTSPECIAL = 0, CONCAT };
  */
 struct Layer {
   Layer(torch::jit::Module module, SpecialModuleTypes specialModule, int id,
-        bool active, bool detachInput, bool doLocalGradSync)
+        bool active, bool doLocalGradSync)
       : module(module),
         specialModule(specialModule),
         id(id),
         active(active),
-        doLocalGradSync(doLocalGradSync),
-        detachInput(detachInput) {}
+        doLocalGradSync(doLocalGradSync) {}
 
-  void DoForward(RunnableModule* model, bool captureLayer);
-  void DoForwardXferIn();
+  void DoForward(bool captureLayer);
   void DoBackward(bool captureLayer);
+
+  std::map<size_t, torch::Tensor> tensors_in;
+  std::vector<Xfer> xfers;
+  std::set<size_t> tx_lids;
+  std::set<size_t> rx_lids;
 
   torch::jit::Module module;
   int64_t fwUsec{0};
@@ -106,83 +96,14 @@ struct Layer {
   const bool doLocalGradSync;  // Perform gradient all-reduce within a host.
                                // (all layers do all-reduce over NIC)
   size_t commGroupKey;
-  const bool detachInput;  // Detach input before running this layer.
   std::vector<std::shared_ptr<Layer>> prevLayers;  // sorted by id
   std::vector<std::shared_ptr<Layer>> nextLayers;
-  torch::Tensor output;              // Used during forward pass.
-  torch::Tensor outputBeforeDetach;  // Used during backward when output is used
-                                     // multple times.
-  std::map<int, torch::Tensor>
-      outputsToLayer;  // Output specific to the nextLayerId (key).
-  std::map<int, torch::Tensor> detachedInputs;  // Used during backward pass.
+  torch::Tensor output;  // Used during forward pass.
   LayerStatus status{LayerStatus::PENDING_FP};
   size_t nr_current_depedencies{0};
-  std::vector<TsrXfer> xferIns;
-  std::vector<TsrXfer> xferOuts;
-  // primarily used for creating empty tensors for recv.
+  long layerLocalBatch;
   std::vector<int64_t> emptyOutSizes;
   std::string moduleName;  // Used to output profiled runtimes.
-};
-
-class TensorGeneratorPipeline {
- public:
-  TensorGeneratorPipeline(){};
-
-  TensorGeneratorPipeline(std::function<torch::Tensor()> gen) {
-    for (size_t i = 0; i < 64; i++) cached_.push_back(gen());
-
-    CUDACHECK(cudaEventCreateWithFlags(&hToD_ev_, cudaEventDisableTiming));
-    CUDACHECK(cudaEventCreateWithFlags(&dToD_ev_, cudaEventDisableTiming));
-
-    next_t_ = cached_[iter_idx_++ % 64];
-    auto origstream = c10::cuda::getCurrentCUDAStream();
-    c10::cuda::setCurrentCUDAStream(rtctx->xfer_stream);
-    next_t_ = next_t_.to(rtctx->c10dev, /*non_blocking*/ false, /*copy*/ false);
-    CUDACHECK(cudaEventRecord(hToD_ev_, rtctx->xfer_stream));
-    c10::cuda::setCurrentCUDAStream(origstream);
-
-    tensorbytes = next_t_.nbytes();
-    tensor_buf = c10::cuda::CUDACachingAllocator::raw_alloc(tensorbytes);
-    assert(!tensorbytes || tensor_buf);
-  }
-
-  torch::Tensor GetNext() {
-    return next_t_;
-
-    if (!tensorbytes)
-      return cached_[iter_idx_++ % 64].to(rtctx->c10dev, true, false);
-
-    /* send last transmitted tensor into final buf */
-    auto origstream = c10::cuda::getCurrentCUDAStream();
-    CUDACHECK(cudaStreamWaitEvent(origstream, hToD_ev_));
-    CUDACHECK(cudaMemcpyAsync(tensor_buf, next_t_.data_ptr(), next_t_.nbytes(),
-                              cudaMemcpyDeviceToDevice, origstream));
-    CUDACHECK(cudaEventRecord(dToD_ev_, origstream));
-
-    auto tensor_out =
-        torch::from_blob(tensor_buf, next_t_.sizes(), next_t_.options());
-
-    /* wait for DtoD to finish before starting next HtoD transfer */
-    CUDACHECK(cudaStreamWaitEvent(rtctx->xfer_stream, dToD_ev_));
-
-    /* run next HtoD transfer */
-    next_t_ = cached_[iter_idx_++ % 64];
-    c10::cuda::setCurrentCUDAStream(rtctx->xfer_stream);
-    next_t_ = next_t_.to(rtctx->c10dev, /*non_blocking*/ true, /*copy*/ false);
-    CUDACHECK(cudaEventRecord(hToD_ev_, rtctx->xfer_stream));
-    c10::cuda::setCurrentCUDAStream(origstream);
-
-    return tensor_out;
-  }
-
- private:
-  size_t tensorbytes;
-  void* tensor_buf;
-  torch::Tensor next_t_;
-  cudaEvent_t hToD_ev_{nullptr};
-  cudaEvent_t dToD_ev_{nullptr};
-  std::vector<torch::Tensor> cached_;
-  uint64_t iter_idx_{0};
 };
 
 class GradientSyncManager {
@@ -194,17 +115,40 @@ class GradientSyncManager {
 
   void Flush() {
     if (cur_pending_bytes_) {
+      DP_LOG(DEBUG, "Flushing gradients");
       size_t curGroup = 0;
+      size_t nbytesCurGroup = 0;
       for (auto& gradp : pending_grads_) {
+        /* start a new all reduce group comm */
         if (gradp.first != curGroup) {
-          if (curGroup) commHandler_->comm_end();
-          commHandler_->comm_start(rtctx->grad_sync_stream, gradp.first);
+          if (curGroup) {
+            commHandler_->comm_end();
+            DP_LOG(DEBUG, "end sync group %lu (%lu bytes)", curGroup,
+                   nbytesCurGroup);
+            has_unjoined_work_ = true;
+          }
+
           curGroup = gradp.first;
+          nbytesCurGroup = 0;
+
+          if (curGroup) {
+            DP_LOG(DEBUG, "starting sync with GPUs on key %lu", gradp.first);
+            commHandler_->comm_start(rtctx->grad_sync_stream, gradp.first);
+          }
         }
-        commHandler_->all_reduce(gradp.second, c10d::ReduceOp::SUM);
+
+        if (curGroup) {
+          DP_LOG(DEBUG, "including grad with %lu nbytes",
+                 gradp.second.nbytes());
+          nbytesCurGroup += gradp.second.nbytes();
+          commHandler_->all_reduce(gradp.second, c10d::ReduceOp::SUM);
+        }
       }
+
       if (curGroup) {
         commHandler_->comm_end();
+        DP_LOG(DEBUG, "end sync group %lu (%lu bytes)", curGroup,
+               nbytesCurGroup);
         has_unjoined_work_ = true;
       }
     }
@@ -213,12 +157,16 @@ class GradientSyncManager {
     pending_grads_.clear();
   }
 
+  void MaybeFlush(size_t commGroupKey) {
+    if (commGroupKey != last_comm_group_key_)
+      pending_grads_.emplace_back(0, torch::Tensor());
+  }
+
   void AddGradient(torch::Tensor grad, size_t comm_group_key) {
     assert(comm_group_key > 0);
-    if (flush_threshold_bytes_ && comm_group_key != last_comm_group_key_) {
+    if (flush_threshold_bytes_ && comm_group_key != last_comm_group_key_)
       Flush();
-      last_comm_group_key_ = comm_group_key;
-    }
+    last_comm_group_key_ = comm_group_key;
     cur_pending_bytes_ += grad.nbytes();
     pending_grads_.emplace_back(comm_group_key, grad);
 
@@ -268,15 +216,25 @@ class RunnableModule {
   CudaTimerChain timers;
   void printLayerInGraphTimes();
 
+  void Evaluate();
+  void ExecuteXfers(Layer* layer, bool reverse = false);
+
  protected:
   friend struct Layer;
+
+  long globalBatchSize;
+  std::vector<long> sampleIndices;
+  std::vector<long> initialBatchSizes;
+
+  std::shared_ptr<Dataset> train_dataset_;
+  std::shared_ptr<Dataset> eval_dataset_;
+  std::shared_ptr<DatasetPipelineWrapper> dataset_pipeline_;
 
   inline void TimerRecord(std::string name) {
     if (rtctx->profile && !has_graph && !graph_recording) timers.Record(name);
   }
 
   void iterInit();
-  // void resetForNewIter();
   JobStatus forwardAStep(bool captureLayer);
   JobStatus backwardAStep(bool captureLayer);
   void loss();
@@ -295,13 +253,10 @@ class RunnableModule {
   // Context for tracking partial progress.
   ////////////////////////////////////////////
   std::deque<Layer*> layerQ;
-  torch::Tensor fpInput;
   torch::Tensor fpTargets;
   torch::Tensor fpOutput;
 
   JobState state{JobState::INIT};
-
-  TensorGeneratorPipeline input_pipeline, target_pipeline;
 
   bool backwards_did_sync{false};
   bool has_graph{false};
@@ -310,12 +265,6 @@ class RunnableModule {
   std::shared_ptr<GraphPieces> fullgraph;
   at::cuda::CUDAGraph maingraph, syncgraph, stepgraph;
   at::cuda::MempoolId_t graph_mempool;
-  // Performance Stat
-  // CpuTimer detachTimer;
-
-  // std::vector<ReduceBucket> reduceBuckets;
-  // IdleTimeCtx* idleCtxPtr;
-  // bool hasInactiveLayer {false};
 };
 
 #endif

@@ -232,14 +232,12 @@ std::unique_ptr<JobContext> RuntimeServiceImpl::parseAndCreateTrainingTask(
   }
 
   DP_LOG(DEBUG, "commHandler constructed.");
-  auto runnableModule = std::make_unique<RunnableModule>(jobSpec, commHandler, name);
+  auto runnableModule = std::make_unique<RunnableModule>(jobSpec, commHandler);
   DP_LOG(DEBUG, "runnableModule constructed.");
 
-  auto job =
-      std::make_unique<JobContext>(std::move(runnableModule), name, nullptr,
-                                   std::move(commHandler), nullptr, 1);
+  auto job = std::make_unique<JobContext>(std::move(runnableModule), name,
+                                          std::move(commHandler));
   job->run_with_be = request->run_be() > 0;
-  // job->model->idleCtxPtr = &job->idleCtx;
 
   DP_LOG(DEBUG, "job constructed.");
   return job;
