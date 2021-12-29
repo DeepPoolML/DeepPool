@@ -1749,17 +1749,24 @@ class CostSim:
         plt.savefig("gpuTimeline.pdf")
 
     """ Generate a simple DP only plan, or use randomMode to randomly distribute layers """
-    def JustDoDP(self, totalGpus: int, globalBatch: int, randomMode: bool = False):
+    def JustDoDP(self, totalGpus: int, globalBatch: int, per_layer_rand_prob: float = 0.0):
+        randomMode = per_layer_rand_prob > 0.0
         if randomMode: random.seed(0)
+        lastCfg = 0
+        lastAssign = []
         for ln, layer in enumerate(self.layers):
             layer.t = {}
             layer.initCfg = self.getInitialConfig(layer, globalBatch)
             doDp = not randomMode
             configCandidates = self.listConfigOptions(layer, globalBatch, totalGpus, spatialSplit=False, dataParallelBaseline=doDp)
-            if randomMode:
-                rn = random.randint(0, len(configCandidates) - 1) if ln > 0 else 0
+            if randomMode and random.random() < per_layer_rand_prob:
+                rn = random.randint(0, len(configCandidates) - 1)
+                while rn == lastCfg and len(configCandidates) > 1:
+                    rn = random.randint(0, len(configCandidates) - 1)
+                lastCfg = rn
             else:
-                rn = 0
+                rn = lastCfg
+
             config = configCandidates[rn]
             gpuTime = 1
             syncTime = 1
@@ -1772,13 +1779,14 @@ class CostSim:
             layer.t[config] = (newTime, layerTime, None, timeComposition, 0)
 
             nrGpus = globalBatch // config[0]
-            if not randomMode:
-                layer.gpuAssignment = list(range(totalGpus))[:nrGpus]
+            if len(lastAssign) == nrGpus:
+                layer.gpuAssignment = lastAssign
             else:
                 activeGPUs = set()
                 while len(activeGPUs) < nrGpus:
                     activeGPUs.add(random.randint(0, totalGpus - 1))
-                layer.gpuAssignment = list(activeGPUs) if ln != 0 else list(range(totalGpus))[:nrGpus]
+                layer.gpuAssignment = list(activeGPUs)
+                lastAssign = layer.gpuAssignment
             layer.bestCfg = config
             layer.gpuTime = (1,1)
         finalTime = 0

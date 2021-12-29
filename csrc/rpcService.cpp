@@ -61,9 +61,9 @@ Status RuntimeServiceImpl::InitCommNCCL(ServerContext* context,
                                         const InitCommNCCLMsg* request,
                                         InitCommNCCLMsg* reply) {
   UNUSED(context);
-  DP_LOG(DEBUG, "Received InitCommNCCL().");
 
   int msg_type = request->msg_type();
+  DP_LOG(DEBUG, "Received InitCommNCCL() (%d).", msg_type);
 
   if (msg_type == 0) {  // Generate comm group ID
     // Coordinator has requested a new unique comm ID
@@ -127,15 +127,12 @@ Status RuntimeServiceImpl::ScheduleTraining(
   if (!rtctx->debug) {
     DP_LOG(DEBUG, "Not in DEBUGGING_MODE, so saving request to lastReq.txt.");
     std::ofstream ofs;
-    // auto path = std::string(rtctx->homedir) + "/DeepPoolRuntime/lastReq.txt";
-    std::string path = format("%s/DeepPoolRuntime/lastReq%d.txt",
-                              rtctx->homedir, rtctx->device);
+    std::string path = format("%s/lastReq%d.txt", rtctx->logdir, rtctx->rank);
     ofs.open(path.c_str());
     request->SerializeToOstream(&ofs);
     ofs.close();
     DP_LOG(DEBUG, "Saved the serialized ScheduleTrainingRequest.");
   }
-
 
   std::unique_ptr<JobContext> job;
   try {
@@ -235,10 +232,14 @@ std::unique_ptr<JobContext> RuntimeServiceImpl::parseAndCreateTrainingTask(
   auto runnableModule = std::make_unique<RunnableModule>(jobSpec, commHandler);
   DP_LOG(DEBUG, "runnableModule constructed.");
 
-  auto job = std::make_unique<JobContext>(std::move(runnableModule), name,
-                                          std::move(commHandler));
-  job->run_with_be = request->run_be() > 0;
+  json jobParams = json::parse(request->job_meta_params_in_json());
+  DP_LOG(DEBUG, "parsed jobParams into json");
 
+  assert(jobParams.contains("run_with_be"));
+  assert(jobParams.contains("nr_gpus"));
+
+  auto job = std::make_unique<JobContext>(std::move(runnableModule), name,
+                                          std::move(commHandler), jobParams);
   DP_LOG(DEBUG, "job constructed.");
   return job;
 }

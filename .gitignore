@@ -135,3 +135,7 @@ results/
 clusterConfig.json
 gpuProfile.json
 *.gv
+
+*.qdrep
+*.sqlite
+*.json

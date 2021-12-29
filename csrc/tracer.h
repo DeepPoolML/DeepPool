@@ -64,7 +64,7 @@ class CudaTimerChain {
     current_index = 0;
   }
 
-  float GetAvg(std::string name, size_t skipIterCount = 0) {
+  float GetAvg(std::string name, size_t skipIterCount = 0) const {
     if (elapsedTimes.count(name) == 0) return 0;
     auto& times = elapsedTimes.at(name);
 
@@ -76,9 +76,9 @@ class CudaTimerChain {
   }
 
   float GetPercentile(std::string name, float percentile,
-                      size_t skipIterCount = 0) {
+                      size_t skipIterCount = 0) const {
     if (elapsedTimes.count(name) == 0) return 0;
-    auto& times = elapsedTimes.at(name);
+    auto times = elapsedTimes.at(name);
 
     if (skipIterCount >= times.size()) return 0;
     std::vector<float> sortedTimes(times.begin() + skipIterCount, times.end());
@@ -87,10 +87,10 @@ class CudaTimerChain {
     return sortedTimes.at(idx);
   }
 
-  float GetP50(std::string name, size_t skipIterCount = 0) {
+  float GetP50(std::string name, size_t skipIterCount = 0) const {
     return GetPercentile(name, 50, skipIterCount);
   }
-  float GetP99(std::string name, size_t skipIterCount = 0) {
+  float GetP99(std::string name, size_t skipIterCount = 0) const {
     return GetPercentile(name, 99, skipIterCount);
   }
 

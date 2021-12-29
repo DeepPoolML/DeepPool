@@ -20,11 +20,16 @@
 #include <memory>
 #include <string>
 
+#include "json.hpp"
+using json = nlohmann::json;
+
 /**
  * Forward declarations. Do not include headers unless necessary.
  */
 class RunnableModule;
 class CommunicationHandler;
+class Dataset;
+class DatasetPipelineWrapper;
 
 /**
  * Context holding data for each training task.
@@ -32,34 +37,58 @@ class CommunicationHandler;
 class JobContext {
  public:
   JobContext(std::unique_ptr<RunnableModule> model, std::string name,
-             std::shared_ptr<CommunicationHandler> commHandler);
+             std::shared_ptr<CommunicationHandler> commHandler,
+             json job_params);
   ~JobContext();
 
-  bool TrainSingleStep();
-  void TrainToCompletion();
-  int trainSingleStep(bool* jobCompleted);
+  bool RunWithBe() const { return run_with_be_; }
+  size_t GetEpochsToTrain() const { return epochsToTrain; }
+  bool ShouldRunTest() const { return runTestRoutine_; }
+
+  /* Run a sample through the NN */
+  torch::Tensor Infer(torch::Tensor input);
+
+  /* Run one training iteration with this input/target */
+  void Train(torch::Tensor input, torch::Tensor target);
+
+  /* Test the model on the test dataset */
+  void Test();
+
+  /* Advance one step through the the model */
+  void StepOne(bool *iter_done, bool *job_done);
+
+  /* Advance to the end of an iteration*/
+  void FinishIteration();
+
+  /* Train one full epoch */
+  void TrainOneEpoch();
+
   void printJobStatistics();
-  size_t GetIter() const { return iter; }
 
   std::unique_ptr<RunnableModule> model;
   std::string name;
   std::shared_ptr<CommunicationHandler> commHandler;
-  bool run_with_be{false};
-
   std::chrono::time_point<std::chrono::steady_clock> start, end;
   uint64_t be_img_start, be_img_end;
 
  private:
-  bool iter_in_progress{false};
-  size_t epochsToTrain{50};
-  size_t epoch{0};
-  size_t iter{0};
-  size_t totiters{0};  // total iters executed
+  // Params
+  bool run_with_be_{false};
+  bool runTestRoutine_{false};
+  size_t nr_gpus_;
+  size_t epochsToTrain{1};
+  size_t itersToTrain{5000};
   size_t warmupIters{200};
-  size_t itersToTrain{1900};
   size_t profile_iter_start{ULLONG_MAX};
   size_t niter_to_profile{5};
-  size_t iters_before_graph_capture{50};  // set high to disable graph capture
+
+  std::shared_ptr<Dataset> train_dataset_;
+  std::shared_ptr<Dataset> eval_dataset_;
+  std::shared_ptr<DatasetPipelineWrapper> dataset_pipeline_;
+
+  bool iter_in_progress{false};
+  size_t totiters{0};                     // total iters executed
+  size_t iters_before_graph_capture{5};  // set high to disable graph capture
 };
 
 #endif  // TASK_MANAGER_H

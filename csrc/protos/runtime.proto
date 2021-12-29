@@ -34,7 +34,7 @@ message ScheduleTrainingRequest {
   string data_dir = 3;
   string tensor_tags_in_json = 4;
   string job_rank_to_global_rank_in_json = 5;
-  int32  run_be = 6;
+  string job_meta_params_in_json = 8;
 }
 
 message StandardReply {

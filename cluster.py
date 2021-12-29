@@ -33,16 +33,32 @@ import runtime_pb2_grpc
 
 extra_args = [] # unparsed arguments stored here are forwarded to runtimes
 
+HAS_EXCEPTION = False
+def excepthook(args):
+    global HAS_EXCEPTION
+    print("In excepthook", args)
+    HAS_EXCEPTION = True
+
+threading.excepthook = excepthook
+
+def waitthreads(threadList):
+    for thread in threadList:
+        while thread.is_alive() and not HAS_EXCEPTION:
+            time.sleep(0.1)
+        if HAS_EXCEPTION:
+            sys.exit(-1)
+        thread.join()
+
 class CppRuntimeProxy:
     def __init__(self, addressWithPort: str):
         self.channel = grpc.insecure_channel(addressWithPort) # ex) 'localhost:50051'
         self.stub = runtime_pb2_grpc.RuntimeStub(self.channel)
 
-    def scheduleTraining(self, name, jobInJson, dataDir, tensorTagsInJson, jobRankToGlobalRankInJson, runbe):
+    def scheduleTraining(self, name, jobInJson, dataDir, tensorTagsInJson, jobRankToGlobalRankInJson, jobParamsInJson):
         response = self.stub.ScheduleTraining(runtime_pb2.ScheduleTrainingRequest(
             name=name, job_in_json=jobInJson, data_dir=dataDir,
             tensor_tags_in_json=tensorTagsInJson,
-            job_rank_to_global_rank_in_json=jobRankToGlobalRankInJson, run_be=1 if runbe else 0))
+            job_rank_to_global_rank_in_json=jobRankToGlobalRankInJson, job_meta_params_in_json=jobParamsInJson))
         print("received: " + response.message)
     
     def poke(self):
@@ -72,7 +88,7 @@ class CppRuntimeProxy:
             rank_to_ip_map_in_json = rankToIpMapInJson
         ))
         print("received: " + response.message)
-    
+
     def initCommGroups(self, jobName, commGroupsInJson):
         print("initCommGroups not implemented")
 
@@ -88,7 +104,7 @@ class Location:
         self.proxy = None
         self.isCpp = isCpp
         self.is_local = address == "127.0.0.1"
-        
+
     def getProxy(self, maxRetry = 32, reuseCached = True):
         if reuseCached and self.proxy != None:
             # print("getProxy() returned from cached proxy value.")
@@ -112,6 +128,7 @@ class Location:
                 time.sleep(retryGap)
                 # retryGap += 2 # exponential back off.
                 retryCount += 1
+        assert False, "couldn't connect"
         return None
 
     def downloadFile(self, remotePath: str, localPath: str):
@@ -217,7 +234,6 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
         moduleDescList = [job.dumpSingleRunnableModule(rank) for rank in range(gpusUsed)]
         tensorTags = self.buildCommTensorTags(moduleDescList)
         tensorTagsInJson = json.dumps(tensorTags)
-
         for rank in range(gpusUsed):
             with open(f"/tmp/rank{rank}.json", "wb") as f:
                 f.write(bytes(moduleDescList[rank].encode("utf-8")))
@@ -234,17 +250,24 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
         if len(self.locations) < gpusUsed:
             return "Not enough servers available. %d gpus available while %d needed" % (len(self.locations), gpusUsed)
 
+        jobParams = {
+            "run_with_be": runbe,
+            "nr_gpus": gpusUsed,
+            "cifar_training": "cifar" in jobName,
+        }
+
+        jobParamsInJson = json.dumps(jobParams)
+
         threadList = []
-        def requestScheduleTraining(proxy, name, jobInJson, dataDir, tensorTagsInJson, jobRankToGlobalRankInJson):
-            proxy.scheduleTraining(name, jobInJson, dataDir, tensorTagsInJson, jobRankToGlobalRankInJson, runbe)
+        def requestScheduleTraining(proxy, jobInJson):
+            proxy.scheduleTraining(jobName, jobInJson, "SYNTHETIC", tensorTagsInJson, jobRankToGlobalRankInJson, jobParamsInJson)
         for rank in range(gpusUsed):
             location = self.locations[rank]
             moduleDesc = moduleDescList[rank]
-            thread = threading.Thread(name='reqScheTrain%d'%rank, target=requestScheduleTraining, args=(location.getProxy(), jobName, moduleDesc, "SYNTHETIC", tensorTagsInJson, jobRankToGlobalRankInJson))
+            thread = threading.Thread(name='reqScheTrain%d'%rank, target=requestScheduleTraining, args=(location.getProxy(), moduleDesc))
             threadList.append(thread)
             thread.start()
-        for thread in threadList:
-            thread.join()
+        waitthreads(threadList)
 
         self.ongoingJobs[jobName] = {"iterTime": 0, "gpuMsec": 0, "gpusUsed": gpusUsed, "gpusFinished": 0, "globalBatchSize": job.globalBatchSize}
         self.ongoingJobs[jobName].update({"beImagesPerIter": 0.0, "idleMsPerIter": 0.0})
@@ -326,8 +349,10 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
         """
         
         # Using the absolute path for compatibility with C++ runtime.
-        homedir = expanduser("~")
-        logdir = homedir + "/DeepPoolRuntime/logs/"
+        logdir = args.logdir
+        if not logdir:
+            homedir = expanduser("~")
+            logdir = homedir + "/DeepPool/logs/"
         upSyncedAddrs = set()
         for i, location in enumerate(self.locations):
             if (location.address not in upSyncedAddrs):
@@ -336,17 +361,16 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
                 upSyncedAddrs.add(location.address)
 
             # pass master ip and port.
-            stdoutFp = open("logs/runtime%d.out"%i, "w", buffering=1)
-            stderrFp = open("logs/runtime%d.err"%i, "w", buffering=1)
+            stdoutFp = open(f"{logdir}/runtime%d.out"%i, "a", buffering=1)
+            stderrFp = open(f"{logdir}/runtime%d.err"%i, "a", buffering=1)
+            nsysPrefix = ""
             if profile:# and location.device == 0: # Only run 1 nsys per host.
-                nsysPrefix = "/home/friedj/cuda/bin/nsys profile -f true -o net%d -c cudaProfilerApi --capture-range-end=stop-shutdown -t cuda,nvtx --export sqlite " % i # -s none
-            else:
-                nsysPrefix = ""
+                nsysPrefix = "nsys profile -f true -o net%d -c cudaProfilerApi --capture-range-end=stop-shutdown -t cuda,nvtx --export sqlite " % i # -s none
             if manualLaunch:
                 print("Skipping ssh launching runtime. Must have launched them manually.")
             elif cppRuntime:
                 self.processes.append(location.rshAsync(
-                    f"source ~/.bashrc; LD_LIBRARY_PATH=/home/friedj/cudnnold:/home/friedj/cuda/lib64:/home/friedj/local/pt3/build/nccl/lib CUDA_DEVICE_MAX_CONNECTIONS=32 CUDA_VISIBLE_DEVICES={location.device} {nsysPrefix} {self.workDir}/csrc/build/runtime" + \
+                    f"CUDA_VISIBLE_DEVICES={location.device} {nsysPrefix} {self.workDir}/csrc/build/runtime" + \
                     " --myAddr %s:%d --device 0 --c10dBackend %s --rank %d --worldSize %d --logdir %s --be_batch_size %d %s %s" % \
                         (location.address, location.port, c10dBackend, i, len(self.locations), logdir, self.be_batch_size, "" if profile else "", " ".join(extra_args)) #+ \
                     , stdout=stdoutFp, stderr=stderrFp))
@@ -421,8 +445,7 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
             thread = threading.Thread(name='init_comm%d'%i, target=requestInitCommBackend, args=(location.getProxy(),))
             thread.start()
             threadList.append(thread)
-        for thread in threadList:
-            thread.join()
+        waitthreads(threadList)
 
     def initCommGroupsAll(self, jobName: str, commGrpDict: dict, jobRankToGlobalRank: list):
         """ A helper function that will ask all runtimes to create new c10d comm groups.
@@ -446,11 +469,7 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
                                       args=(location.getProxy(), jobName, commGrpDictWithGlobalRanksInJson,))
             thread.start()
             threadList.append(thread)
-        # for thread in threadList:
-            # thread.start()
-            # time.sleep(1)
-        for thread in threadList:
-            thread.join()
+        waitthreads(threadList)
             
 
     def waitForRuntimeAll(self):
@@ -493,6 +512,7 @@ def parse_args():
                         help="To launch CPP version runtimes.")
     parser.add_argument('--manualLaunch', default=False, action='store_true',
                         help="Do not runtimes automatically. Primarily for using gdb on runtime processes.")
+    parser.add_argument("--logdir", type=str, default="", help="Full path of log directory")
     # For installing nsys.. (with other cuda toolkit..)
     # wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu1804/x86_64/cuda-ubuntu1804.pin
     # sudo mv cuda-ubuntu1804.pin /etc/apt/preferences.d/cuda-repository-pin-600
@@ -504,7 +524,7 @@ def parse_args():
     return parser.parse_known_args()
 
 def main():
-    global extra_args
+    global args, extra_args
     args, extra_args = parse_args()
     clusterConfig = json.load(open(args.pathToConfig))
     global rankToIpMap

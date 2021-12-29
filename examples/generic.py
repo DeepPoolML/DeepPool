@@ -157,7 +157,7 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     
     if not spatialSplit and not simOnly:
         cc = ClusterClient()
-        jobName = f"Generic_%s_%d_%d_%2.1f%s" % (MODELLOC.split(".")[0], gpuCount, globalBatch, amplificationLimit, "_DP" if dataParallelBaseline else "")
+        jobName = f"Generic_%s_%d_%d_%2.1f%s" % (MODELLOC.split("/")[-1].split(".")[0], gpuCount, globalBatch, amplificationLimit, "_DP" if dataParallelBaseline else "")
         jobName += "_BE" if use_be else ""
         cc.submitTrainingJob(jobName, jobInJson, use_be)
 

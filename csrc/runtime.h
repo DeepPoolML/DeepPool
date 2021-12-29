@@ -77,7 +77,7 @@ struct RuntimeContext {
   int worldSize;
   bool profile;
   bool debug;
-  char* homedir;
+  std::string logdir;
   c10::Device c10dev;
   bool use_fg_graph;
   size_t iters_per_capture;

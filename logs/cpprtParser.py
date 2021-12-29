@@ -10,26 +10,29 @@ def scan(f):
     lineCount = 0
     for line in f:
         lineCount += 1
-        match = re.match('cpprt([0-9]+)\.out.* job (\S+) is completed \([0-9.]+ iters, ([0-9.]+) ms/iter, ([0-9.]+) iter/s,\s+([0-9.]+) be.*', line)
-        match2 = re.match('.* job (\S+) is completed \([0-9.]+ iters, ([0-9.]+) ms/iter, ([0-9.]+) iter/s,\s+([0-9.]+) be.*', line)
-        if match:
-            rank = int(match.group(1))
-            job = match.group(2)
-            iterMs = float(match.group(3))
-            tput = float(match.group(4))
-            beTput = float(match.group(5))
-        elif match2:
+        # match = re.match('cpprt([0-9]+)\.out.* job (\S+) is completed \([0-9.]+ iters, ([0-9.]+) ms/iter, ([0-9.]+) iter/s,\s+([0-9.]+) be img/s,\s+([0-9.]+) globalBatchSize', line)
+        match2 = re.match('.* job (\S+) is completed \([0-9.]+ iters, ([0-9.]+) ms/iter, ([0-9.]+) iter/s,\s+([0-9.]+) be img/s,\s+([0-9.]+) globalBatchSize', line)
+        # if match:
+        #     rank = int(match.group(1))
+        #     job = match.group(2)
+        #     iterMs = float(match.group(3))
+        #     tput = float(match.group(4))
+        #     beTput = float(match.group(5))
+        #     globalBatchSize = int(match.group(6))
+        if match2:
             job = match2.group(1)
             iterMs = float(match2.group(2))
             tput = float(match2.group(3))
             beTput = float(match2.group(4))
+            globalBatchSize = int(match2.group(5))
         else:
             continue
             # print("no match! : ", line)
-            
+
         if job not in data:
             data[job] = {"count": 0, "iterMs": 0.0, "iterMsMax": 0.0, "tput": 0, "beTput": 0}
-            
+
+        data[job]["globalBatchSize"] = globalBatchSize
         data[job]["count"] += 1
         data[job]["iterMs"] += iterMs
         data[job]["iterMsMax"] = max(data[job]["iterMsMax"], iterMs)
@@ -42,8 +45,7 @@ def printOut():
     global data
     print("#                     Job #GPUs batch maxIterMs avgIterMs   iter/s     fpTput     bgTput  totalTput")
     for job in data:
-        tokens = job.split('_')
-        minibatch = int(tokens[2])
+        minibatch = data[job]["globalBatchSize"]
         c = data[job]["count"]
         iterPerSec = 1000 / data[job]["iterMsMax"]
         fpTput = iterPerSec * minibatch

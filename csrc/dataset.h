@@ -9,11 +9,13 @@
 class Dataset {
  public:
   virtual torch::data::Example<> getNext() = 0;
+  virtual size_t GetItersPerEpoch() = 0;
   virtual bool IsDone() = 0;
   virtual void Reset() = 0;
   static Dataset *fromName(std::string name, size_t rank, long globalBatchSize,
                            std::vector<long> initialBatchSizes,
-                           std::vector<long> sampleIndices);
+                           std::vector<long> sampleIndices,
+                           size_t fake_train_iters_per_epoch);
 
   torch::data::Example<> getNextThisRank() {
     auto ex = getNext();
@@ -53,9 +55,6 @@ class TensorPipeline {
  public:
   TensorPipeline(torch::Tensor next) {
     tensorbytes = next.defined() ? next.nbytes() : 0;
-    tensor_buf = c10::cuda::CUDACachingAllocator::raw_alloc(tensorbytes);
-    assert(!tensorbytes || tensor_buf);
-
     SupplyNext(next);
   }
 
@@ -65,12 +64,11 @@ class TensorPipeline {
       return;
     }
 
-    auto origstream = c10::cuda::getCurrentCUDAStream();
-    dToD_ev_.block(rtctx->xfer_stream);
     /* run next HtoD transfer */
+    auto origstream = c10::cuda::getCurrentCUDAStream();
     c10::cuda::setCurrentCUDAStream(rtctx->xfer_stream);
     next_up_ = next.to(rtctx->c10dev, /*non_blocking*/ true, /*copy*/ false);
-    hToD_ev_.record(rtctx->xfer_stream);
+    xfer_ev_.record();
     c10::cuda::setCurrentCUDAStream(origstream);
   }
 
@@ -78,30 +76,20 @@ class TensorPipeline {
     assert(next_up_);
     auto &tsr = next_up_.value();
 
-    if (!tensorbytes)
-      return torch::Tensor();  //.has_device() ? tsr.to(rtctx->c10dev, true,
-                               //false) : tsr; // fixme
+    if (!tensorbytes) return torch::Tensor();
 
-    /* send last transmitted tensor into final buf */
-    auto origstream = c10::cuda::getCurrentCUDAStream();
-    hToD_ev_.block(origstream);
-    CUDACHECK(cudaMemcpyAsync(tensor_buf, tsr.data_ptr(), tsr.nbytes(),
-                              cudaMemcpyDeviceToDevice, origstream));
-    dToD_ev_.record(origstream);
-
-    auto tensor_out = torch::from_blob(tensor_buf, tsr.sizes(), tsr.options());
+    /* current stream must wait for xfer before using returned tsr */
+    xfer_ev_.block(c10::cuda::getCurrentCUDAStream());
 
     next_up_ = {};
     if (next) SupplyNext(next.value());
-    return tensor_out;
+    return tsr;
   }
 
  private:
   size_t tensorbytes;
-  void *tensor_buf;
   c10::optional<torch::Tensor> next_up_;
-  at::cuda::CUDAEvent hToD_ev_;
-  at::cuda::CUDAEvent dToD_ev_;
+  at::cuda::CUDAEvent xfer_ev_;
 };
 
 class DatasetPipelineWrapper {
@@ -113,6 +101,8 @@ class DatasetPipelineWrapper {
   }
 
   bool IsDone() { return is_done_; }
+
+  size_t GetItersPerEpoch() { return dataset_->GetItersPerEpoch(); }
 
   void Reset() {
     dataset_->Reset();

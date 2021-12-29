@@ -19,10 +19,7 @@
 #include <grpcpp/ext/proto_server_reflection_plugin.h>
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/health_check_service_interface.h>
-#include <pwd.h>        // For homedir
-#include <sys/types.h>  // For homedir
 #include <torch/torch.h>
-#include <unistd.h>  // For homedir
 
 #include <iostream>
 #include <memory>
@@ -91,10 +88,8 @@ void debugging(RuntimeContext* ctx) {
   ServerContext serverCtx;
   ScheduleTrainingRequest req;
   StandardReply reply;
-  std::string path =
-      format("%s/DeepPoolRuntime/lastReq%d.txt", ctx->homedir, ctx->device);
-  // std::string path = std::string(ctx->homedir) +
-  // "/DeepPoolRuntime/lastReq.txt";
+  std::string path = format("%s/lastReq%d.txt",
+                            absl::GetFlag(FLAGS_logdir).c_str(), ctx->rank);
   std::ifstream ifs(path.c_str());
   req.ParseFromIstream(&ifs);
   ifs.close();
@@ -161,7 +156,7 @@ int RuntimeContext::poll() {
   JobContext* mainJob = jobList[0].get();
 
   if (IsBeEnabled()) {
-    if (mainJob->run_with_be)
+    if (mainJob->RunWithBe())
       BeResume();
     else
       BePause();
@@ -174,7 +169,12 @@ int RuntimeContext::poll() {
     c10::cuda::device_synchronize();
   }
 
-  mainJob->TrainToCompletion();
+  if (mainJob->ShouldRunTest()) mainJob->Test();
+  for (size_t i = 0; i < mainJob->GetEpochsToTrain(); i++) {
+    mainJob->TrainOneEpoch();
+    if (mainJob->ShouldRunTest()) mainJob->Test();
+  }
+
   torch_stream.synchronize();
   mainJob->printJobStatistics();
   jobList.erase(jobList.begin());
@@ -199,6 +199,7 @@ void parse_args(RuntimeContext& ctx, int argc, char** argv) {
   PARSEFLAG(worldSize);
   PARSEFLAG(profile);
   PARSEFLAG(debug);
+  PARSEFLAG(logdir);
 #undef PARSEFLAG
 
 #define PARSEFLAG(x) becfg.x = absl::GetFlag(FLAGS_##x);
@@ -221,16 +222,11 @@ int main(int argc, char** argv) {
   parse_args(ctx, argc, argv);
 
   std::string logFilePath =
-      format("%scpprt%d.out", absl::GetFlag(FLAGS_logdir).c_str(), ctx.rank);
-  Logger::get().setLogFile(logFilePath.c_str(), true);
+      format("%scpprt%d.out", rtctx->logdir.c_str(), ctx.rank);
+  Logger::get().setLogFile(logFilePath.c_str(), false);
   Logger::get().setLogLevel(DEBUG);
   // Logger::get().setLogLevel(NOTICE);
 
-  // Retrieve homedir path.
-  if ((ctx.homedir = getenv("HOME")) == NULL) {
-    ctx.homedir = getpwuid(getuid())->pw_dir;
-  }
-  DP_LOG(NOTICE, "The home dir path: %s", ctx.homedir);
   DP_LOG(NOTICE, "Current file path: %s", argv[0]);
 
   InitBeTask(becfg);
@@ -260,6 +256,20 @@ int main(int argc, char** argv) {
     }
     DP_LOG(DEBUG, "InitCommNCCL done. Running test now.");
     ncclCommTest();
+  }
+
+  int version;
+  CUDACHECK(cudaDriverGetVersion(&version));
+  if (version < 11040) {
+    std::cout
+        << "WARNING: old cuda version detected, may have bugs with CUDA graphs"
+        << std::endl;
+    std::cerr
+        << "WARNING: old cuda version detected, may have bugs with CUDA graphs"
+        << std::endl;
+    DP_LOG(
+        ERROR,
+        "WARNING: old cuda version detected, may have bugs with CUDA graphs");
   }
 
   std::thread([&] {

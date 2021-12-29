@@ -23,6 +23,7 @@
 #include <deque>
 #include <vector>
 
+#include "GradSync.h"
 #include "GraphPieces.h"
 #include "communication.h"
 #include "json.hpp"
@@ -35,9 +36,6 @@ using json = nlohmann::json;
 using torch::autograd::AutogradContext;
 using torch::autograd::Variable;
 using torch::autograd::variable_list;
-
-class Dataset;
-class DatasetPipelineWrapper;
 
 /**
  * Forward declarations. Do not include headers unless necessary.
@@ -78,11 +76,18 @@ struct Layer {
         active(active),
         doLocalGradSync(doLocalGradSync) {}
 
-  void DoForward(bool captureLayer);
+  torch::Tensor DoForward(bool captureLayer);
   void DoBackward(bool captureLayer);
 
+  /* stores inputs on forward pass, gradients on backward pass */
   std::map<size_t, torch::Tensor> tensors_in;
+
+  /* stores result of forward pass for backward */
+  torch::Tensor output;
+
   std::vector<Xfer> xfers;
+  std::vector<Xfer> xfers_local;
+
   std::set<size_t> tx_lids;
   std::set<size_t> rx_lids;
 
@@ -98,7 +103,6 @@ struct Layer {
   size_t commGroupKey;
   std::vector<std::shared_ptr<Layer>> prevLayers;  // sorted by id
   std::vector<std::shared_ptr<Layer>> nextLayers;
-  torch::Tensor output;  // Used during forward pass.
   LayerStatus status{LayerStatus::PENDING_FP};
   size_t nr_current_depedencies{0};
   long layerLocalBatch;
@@ -106,95 +110,12 @@ struct Layer {
   std::string moduleName;  // Used to output profiled runtimes.
 };
 
-class GradientSyncManager {
- public:
-  GradientSyncManager(std::shared_ptr<CommunicationHandler> commHandler,
-                      size_t flush_threshold_bytes)
-      : commHandler_(commHandler),
-        flush_threshold_bytes_(flush_threshold_bytes) {}
-
-  void Flush() {
-    if (cur_pending_bytes_) {
-      DP_LOG(DEBUG, "Flushing gradients");
-      size_t curGroup = 0;
-      size_t nbytesCurGroup = 0;
-      for (auto& gradp : pending_grads_) {
-        /* start a new all reduce group comm */
-        if (gradp.first != curGroup) {
-          if (curGroup) {
-            commHandler_->comm_end();
-            DP_LOG(DEBUG, "end sync group %lu (%lu bytes)", curGroup,
-                   nbytesCurGroup);
-            has_unjoined_work_ = true;
-          }
-
-          curGroup = gradp.first;
-          nbytesCurGroup = 0;
-
-          if (curGroup) {
-            DP_LOG(DEBUG, "starting sync with GPUs on key %lu", gradp.first);
-            commHandler_->comm_start(rtctx->grad_sync_stream, gradp.first);
-          }
-        }
-
-        if (curGroup) {
-          DP_LOG(DEBUG, "including grad with %lu nbytes",
-                 gradp.second.nbytes());
-          nbytesCurGroup += gradp.second.nbytes();
-          commHandler_->all_reduce(gradp.second, c10d::ReduceOp::SUM);
-        }
-      }
-
-      if (curGroup) {
-        commHandler_->comm_end();
-        DP_LOG(DEBUG, "end sync group %lu (%lu bytes)", curGroup,
-               nbytesCurGroup);
-        has_unjoined_work_ = true;
-      }
-    }
-    cur_pending_bytes_ = 0;
-    last_comm_group_key_ = 0;
-    pending_grads_.clear();
-  }
-
-  void MaybeFlush(size_t commGroupKey) {
-    if (commGroupKey != last_comm_group_key_)
-      pending_grads_.emplace_back(0, torch::Tensor());
-  }
-
-  void AddGradient(torch::Tensor grad, size_t comm_group_key) {
-    assert(comm_group_key > 0);
-    if (flush_threshold_bytes_ && comm_group_key != last_comm_group_key_)
-      Flush();
-    last_comm_group_key_ = comm_group_key;
-    cur_pending_bytes_ += grad.nbytes();
-    pending_grads_.emplace_back(comm_group_key, grad);
-
-    if (flush_threshold_bytes_ && cur_pending_bytes_ >= flush_threshold_bytes_)
-      Flush();
-  }
-
-  void Join() {
-    if (has_unjoined_work_) {
-      commHandler_->sync(rtctx->grad_sync_stream);
-      has_unjoined_work_ = false;
-    }
-  }
-
- private:
-  const std::shared_ptr<CommunicationHandler> commHandler_;
-  const size_t flush_threshold_bytes_;
-  size_t last_comm_group_key_{0};
-  size_t cur_pending_bytes_;
-  bool has_unjoined_work_{false};
-  std::vector<std::pair<size_t, torch::Tensor>> pending_grads_;
-};
-
 enum JobStatus { IN_PROGRESS = 0, COMPLETED, YIELD };
 
 enum class JobState {
   INIT = 0,
   FORWARD,
+  LOSS,
   BACKWARD,
   SYNC,
   STEP,
@@ -213,28 +134,46 @@ class RunnableModule {
 
   int AdvanceTraining(bool doGraphCapture, bool layerProfile);
 
-  CudaTimerChain timers;
   void printLayerInGraphTimes();
 
-  void Evaluate();
-  void ExecuteXfers(Layer* layer, bool reverse = false);
+  void ExecuteXfers(Layer* layer, bool backward = false);
 
- protected:
+  void SetTrain() {
+    assert(state == JobState::INIT);
+    SetMode(true);
+  }
+
+  void SetEval() {
+    assert(state == JobState::INIT);
+    SetMode(false);
+  }
+
+  torch::Tensor getOutput() { return fpOutput; }
+
+  void SetInputsTargets(torch::Tensor input, torch::Tensor target = {});
+
+  const auto& GetTimers() { return timers; }
+
+  long GetGlobalBatchSize() const { return globalBatchSize; }
+
+ private:
   friend struct Layer;
+  friend class JobContext;
+
+  CudaTimerChain timers;
+
+  bool isTrain_{true};
+
+  void SetMode(bool train);
 
   long globalBatchSize;
   std::vector<long> sampleIndices;
   std::vector<long> initialBatchSizes;
 
-  std::shared_ptr<Dataset> train_dataset_;
-  std::shared_ptr<Dataset> eval_dataset_;
-  std::shared_ptr<DatasetPipelineWrapper> dataset_pipeline_;
-
   inline void TimerRecord(std::string name) {
     if (rtctx->profile && !has_graph && !graph_recording) timers.Record(name);
   }
 
-  void iterInit();
   JobStatus forwardAStep(bool captureLayer);
   JobStatus backwardAStep(bool captureLayer);
   void loss();
@@ -261,10 +200,21 @@ class RunnableModule {
   bool backwards_did_sync{false};
   bool has_graph{false};
   bool graph_recording{false};
+  torch::Tensor input_buf, target_buf;
 
   std::shared_ptr<GraphPieces> fullgraph;
   at::cuda::CUDAGraph maingraph, syncgraph, stepgraph;
   at::cuda::MempoolId_t graph_mempool;
+
+  void ResetGraphs() {
+    fullgraph.reset();
+    has_graph = false;
+    maingraph = at::cuda::CUDAGraph();
+    syncgraph = at::cuda::CUDAGraph();
+    stepgraph = at::cuda::CUDAGraph();
+    rtctx->torch_stream
+        .synchronize();  // sync before possible future calls into NCCL
+  }
 };
 
 #endif

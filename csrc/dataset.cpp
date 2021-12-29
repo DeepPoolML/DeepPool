@@ -17,10 +17,11 @@ class FakeDataset : public Dataset {
   torch::data::Example<> getNext() override;
   bool IsDone() override;
   void Reset() override;
+  size_t GetItersPerEpoch() override;
 
  private:
   size_t batches_per_epoch_;
-  size_t ctr_;
+  size_t ctr_{0};
   std::vector<torch::data::Example<>> cached_;
 };
 
@@ -32,9 +33,11 @@ class CifarDataset : public Dataset {
   torch::data::Example<> getNext() override;
   bool IsDone() override;
   void Reset() override;
+  size_t GetItersPerEpoch() override;
 
  private:
   c10::optional<torch::data::Iterator<torch::data::Example<>>> cur_iter;
+  size_t batches_per_epoch_;
 
   std::unique_ptr<torch::data::StatelessDataLoader<
       torch::data::datasets::MapDataset<
@@ -56,13 +59,15 @@ FakeDataset::FakeDataset(size_t rank, long globalBatchSize,
   fullShape.insert(fullShape.end(), inputShape.begin(), inputShape.end());
   auto targetOpts = torch::TensorOptions().dtype(torch::kInt64);
   for (size_t i = 0; i < 64; i++) {
-    auto data = torch::randn(inputShape);
+    auto data = torch::randn(fullShape);
     auto target = torch::randint(/*low=*/0, /*high=*/target_classes,
                                  {globalBatchSize}, targetOpts);
     cached_.emplace_back(data, target);
   }
   batches_per_epoch_ = images_per_epoch / globalBatchSize;
 }
+
+size_t FakeDataset::GetItersPerEpoch() { return batches_per_epoch_; };
 
 bool FakeDataset::IsDone() { return ctr_ >= batches_per_epoch_; }
 
@@ -82,6 +87,7 @@ CifarDataset::CifarDataset(size_t rank, long globalBatchSize,
                .map(torch::data::transforms::Normalize<>({0.485, 0.456, 0.406},
                                                          {0.229, 0.224, 0.225}))
                .map(torch::data::transforms::Stack<>());
+  batches_per_epoch_ = c.size().value() / globalBatchSize;
   loader =
       torch::data::make_data_loader<torch::data::samplers::SequentialSampler>(
           std::move(c), globalBatchSize);
@@ -104,17 +110,23 @@ torch::data::Example<> CifarDataset::getNext() {
   return cur_example;
 }
 
+size_t CifarDataset::GetItersPerEpoch() { return batches_per_epoch_; };
+
 void CifarDataset::Reset() { cur_iter = loader->begin(); }
 
 Dataset *Dataset::fromName(std::string name, size_t rank, long globalBatchSize,
                            std::vector<long> initialBatchSizes,
-                           std::vector<long> sampleIndices) {
-  if (name.find("cifar") != std::string::npos) {
-    bool eval = name.find("eval") != std::string::npos;
+                           std::vector<long> sampleIndices,
+                           size_t fake_train_iters_per_epoch) {
+  bool eval = name.find("eval") != std::string::npos;
+  if (name.find("cifar") != std::string::npos)
     return new CifarDataset(rank, globalBatchSize, initialBatchSizes,
                             sampleIndices, eval);
-  }
   long px = name.find("inception") != std::string::npos ? 299 : 224;
+
+  long fake_images = globalBatchSize * fake_train_iters_per_epoch;
+
   return new FakeDataset(rank, globalBatchSize, initialBatchSizes,
-                         sampleIndices, {3, px, px}, 1000, 100000);
+                         sampleIndices, {3, px, px}, 1000,
+                         eval ? 1000 : fake_images);
 }

@@ -227,6 +227,7 @@ void CommunicationHandlerNCCL::all_reduce(torch::Tensor& tensor,
   };
 
   assert(in_group_call);
+  tensor.record_stream(group_call_stream.value());
   NCCL_API_CALL(
       ncclAllReduce(tensor.data_ptr(), tensor.data_ptr(), tensor.numel(),
                     to_nccl_data_type(tensor.scalar_type()), ncclOp.at(op),

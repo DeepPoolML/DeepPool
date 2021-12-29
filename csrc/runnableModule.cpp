@@ -19,7 +19,6 @@
 
 #include "JobContext.h"
 #include "communication.h"
-#include "dataset.h"
 #include "json.hpp"
 #include "logger.h"
 #include "runtime.h"
@@ -66,8 +65,9 @@ RunnableModule::RunnableModule(
   long initialBatchSize = layersInJson[0]["config"][0];
 
   globalBatchSize = spec["globalBatchSize"].get<long>();
-  sampleIndices = spec["sampleIndices"].get<std::vector<long>>();
-  initialBatchSizes = spec["initialBatchSizes"].get<std::vector<long>>();
+  for (long sample : spec["sampleIndices"]) sampleIndices.push_back(sample);
+  for (long batch : spec["initialBatchSizes"])
+    initialBatchSizes.push_back(batch);
 
   assert(spec["rank"].get<int>() == rtctx->rank);
   DP_LOG(DEBUG, "Constructing runnable module.. rank:%d", rtctx->rank);
@@ -120,7 +120,6 @@ RunnableModule::RunnableModule(
         DP_LOG(ERROR,
                "Runtime does not have a nccl communicator group for %lu\n",
                layer->commGroupKey);
-        assert(false);
       }
     }
 
@@ -153,7 +152,11 @@ RunnableModule::RunnableModule(
         n.nr_samples = item["prop"]["xferSamples"];
         n.src_lid = src_lid;
         n.tag = commHandler->getTag(item["name"].get<std::string>());
-        layer->xfers.push_back(n);
+
+        if (n.src.first == n.dst.first)
+          layer->xfers_local.push_back(n);
+        else
+          layer->xfers.push_back(n);
 
         if (n.dst.first == static_cast<size_t>(rtctx->rank))
           layer->rx_lids.insert(src_lid);
@@ -187,13 +190,6 @@ RunnableModule::RunnableModule(
 
   SetupOptimizer();
 
-  train_dataset_.reset(Dataset::fromName("cifar", rtctx->rank, globalBatchSize,
-                                         initialBatchSizes, sampleIndices));
-  eval_dataset_.reset(Dataset::fromName("cifar_eval", rtctx->rank,
-                                        globalBatchSize, initialBatchSizes,
-                                        sampleIndices));
-  dataset_pipeline_.reset(new DatasetPipelineWrapper(train_dataset_));
-
   /* Debug check */
   for (auto& l : layers) {
     for (auto& p : l->prevLayers)
@@ -202,6 +198,19 @@ RunnableModule::RunnableModule(
     for (auto& p : l->nextLayers)
       assert(std::find(p->prevLayers.begin(), p->prevLayers.end(), l) !=
              p->prevLayers.end());
+  }
+}
+
+void RunnableModule::SetMode(bool train) {
+  if (train == isTrain_) return;
+  isTrain_ = train;
+  ResetGraphs();
+  for (auto& l : layers) {
+    if (!l->active) continue;
+    if (train)
+      l->module.train();
+    else
+      l->module.eval();
   }
 }
 
@@ -219,73 +228,53 @@ void RunnableModule::SetupOptimizer() {
   optimizer = std::make_unique<torch::optim::SGD>(parameters, /*lr=*/0.01);
 }
 
-void RunnableModule::Evaluate() {
-  torch::NoGradGuard guard;
+void RunnableModule::SetInputsTargets(torch::Tensor input,
+                                      torch::Tensor target) {
+  assert(state == JobState::INIT);
 
-  double total = 0.0;
-  torch::Tensor evals = torch::zeros({1}).to(at::kLong).to(rtctx->c10dev);
+  size_t input_nb = input.defined() ? input.nbytes() : 0;
 
-  eval_dataset_->Reset();
+  if (input_nb) {
+    /* should already be on device */
+    assert(input.is_cuda());
 
-  while (!eval_dataset_->IsDone()) {
-    auto batch = eval_dataset_->getNextThisRank();
-    layers[0]->tensors_in[0] = batch.data.to(rtctx->c10dev);
-    for (auto& layer : layers) {
-      layer->status = LayerStatus::PENDING_FP;
-      layer->nr_current_depedencies = layer->prevLayers.size();
+    if (!input_buf.defined() || input_nb != input_buf.nbytes()) {
+      /* reallocate input buffer */
+      assert(!has_graph);
+      input_buf = torch::empty(input.sizes(), input.options());
+      assert(input_buf.is_cuda());
     }
-    layerQ.clear();
-    layerQ.push_back(layers[0].get());
-    while (forwardAStep(false) != COMPLETED)
-      ;
-    assert(layerQ.empty());
-    for (auto& layer : layers) {
-      layer->status = LayerStatus::PENDING_FP;
-      layer->nr_current_depedencies = layer->prevLayers.size();
-    }
-    total += globalBatchSize;
-    if (sampleIndices.size()) {
-      auto pred = fpOutput.argmax(1);
-      evals += pred.eq(batch.target.to(rtctx->c10dev)).sum();
-    }
+
+    input_buf.copy_(input, /*non_blocking=*/true);
+    input.record_stream(rtctx->torch_stream);
   }
 
-  if (initialBatchSizes.size() > 1) {
-    commHandler->comm_start({});
-    commHandler->all_reduce(evals, c10d::ReduceOp::SUM);
-    commHandler->comm_end();
-    commHandler->sync();
+  size_t target_nb = target.defined() ? target.nbytes() : 0;
+
+  if (target_nb) {
+    /* should already be on device */
+    assert(target.is_cuda());
+
+    if (!target_buf.defined() || target_nb != target_buf.nbytes()) {
+      /* reallocate target buffer */
+      assert(!has_graph);
+      target_buf = torch::empty(target.sizes(), target.options());
+      assert(target_buf.is_cuda());
+    }
+
+    target_buf.copy_(target, /*non_blocking=*/true);
+    target.record_stream(rtctx->torch_stream);
   }
-
-  size_t correct = evals.item().toLong();
-
-  DP_LOG(NOTICE, "Evaluate: Total: %.1f Correct: %lu | Accuracy: %.3f", total,
-         correct, static_cast<double>(correct) / total);
-}
-
-/**
- * Initiate an iteration.
- */
-void RunnableModule::iterInit() {
-  if (dataset_pipeline_->IsDone()) {
-    Evaluate();
-    dataset_pipeline_->Reset();
-  }
-
-  auto batch = dataset_pipeline_->getNextThisRank();
-  fpTargets = batch.target;
-  fpOutput.reset();
-  layerQ.clear();
-  layerQ.push_back(layers[0].get());
 
   /* enqueue input to first layer */
-  layers[0]->tensors_in[0] = batch.data;
+  layers[0]->tensors_in[0] = input_buf;
+  fpTargets = target_buf;
 }
 
-void Layer::DoForward(bool captureLayer) {
+torch::Tensor Layer::DoForward(bool captureLayer) {
   if (!active) {
     DP_LOG(DEBUG, "Layer %d is not active.", id);
-    return;
+    return {};
   }
 
   DP_LOG(DEBUG, "Layer %d is active.", id);
@@ -311,9 +300,10 @@ void Layer::DoForward(bool captureLayer) {
 
   if (captureLayer) fwUsec = fwdtimer.EndCaptureAndTime();
 
-  for (auto& nl : nextLayers) {
-    nl->tensors_in[id] = output.detach().requires_grad_(true);
-  }
+  for (auto& nl : nextLayers)
+    nl->tensors_in[id] = output.detach().requires_grad_();
+
+  return output;
 }
 
 void Layer::DoBackward(bool captureLayer) {
@@ -333,6 +323,7 @@ void Layer::DoBackward(bool captureLayer) {
     DP_LOG(DEBUG, "Backward on output:%s grad(%d):%s",
            tsrSizeToStr(output).c_str(), nl->id, tsrSizeToStr(grad).c_str());
     output.backward(nl->tensors_in[id], nli < nextLayers.size() - 1);
+    nl->tensors_in[id].reset();
   }
 
   if (captureLayer) bwUsec += bwdtimer.EndCaptureAndTime();
@@ -342,65 +333,57 @@ void Layer::DoBackward(bool captureLayer) {
     DP_LOG(DEBUG, "Sending backward grad from %d to %d (size %s)", id, pLid->id,
            tsrSizeToStr(tensors_in[pLid->id]).c_str());
   }
+
+  output.reset();
+}
+
+// TODO maybe some cleaner way to do in code, but this shouldn't impact
+// performance
+static torch::Tensor getSampleSlice(torch::Tensor& in, ssize_t offset,
+                                    ssize_t nr_samples) {
+  ssize_t cur_batch = in.sizes()[0];
+  assert(offset + nr_samples <= cur_batch);
+  std::vector<long> splits = {offset, nr_samples,
+                              cur_batch - offset - nr_samples};
+  std::vector<torch::Tensor> subs = in.split_with_sizes(splits);
+  return subs[1];
 }
 
 /* Prepapre samples needed to process this layer */
+void RunnableModule::ExecuteXfers(Layer* layer, bool backward) {
+  if (!layer->xfers.size() && !layer->xfers_local.size()) return;
 
-void RunnableModule::ExecuteXfers(Layer* layer, bool reverse) {
-  std::map<size_t, std::vector<torch::Tensor>> tensors_in_chunks;
-  std::map<size_t, std::vector<torch::Tensor>> tensors_out_chunks;
+  std::map<size_t, torch::Tensor> inbound_tensors;
+  std::map<size_t, torch::Tensor> outbound_tensors;
 
-  if (!reverse) { /* forward pass */
-    torch::TensorOptions topts(rtctx->c10dev);
-    topts = topts.requires_grad(true);
+  torch::TensorOptions topts(rtctx->c10dev);
+  topts = topts.requires_grad(!backward);
 
-    for (size_t lid : layer->tx_lids) {
-      assert(layer->tensors_in.count(lid));
-      auto& tsr = layer->tensors_in[lid];
-      std::vector<long> splitShape(tsr.sizes().vec()[0], 1);
-      tensors_out_chunks[lid] = tsr.split_with_sizes(splitShape, 0);
-    }
+  auto& outbound_lids = backward ? layer->rx_lids : layer->tx_lids;
+  auto& inbound_lids = backward ? layer->tx_lids : layer->rx_lids;
 
-    /* receive data from these lids */
-    for (size_t rx_lid : layer->rx_lids) {
-      std::vector<long> inDim = layers.at(rx_lid)->emptyOutSizes;
-      inDim[0] = layer->layerLocalBatch;
+  /* prepare pointers to outbound samples */
+  for (size_t lid : outbound_lids)
+    outbound_tensors[lid] = layer->tensors_in[lid];
 
-      torch::Tensor in = torch::empty(inDim, topts);
-      std::vector<long> perSampleSplit(inDim[0], 1);
-      layer->tensors_in[rx_lid] = in;
-      tensors_in_chunks[rx_lid] = in.split_with_sizes(perSampleSplit, 0);
-    }
+  /* prepare pointers for inbound samples */
+  for (size_t lid : inbound_lids) {
+    std::vector<long> inDim = layers.at(lid)->emptyOutSizes;
+    inDim[0] =
+        backward ? layers.at(lid)->layerLocalBatch : layer->layerLocalBatch;
 
-  } else {
-    torch::TensorOptions topts(rtctx->c10dev);
-
-    for (size_t lid : layer->rx_lids) {
-      auto& tsr = layer->tensors_in[lid];
-      std::vector<long> splitShape(tsr.sizes().vec()[0], 1);
-      tensors_out_chunks[lid] = tsr.split_with_sizes(splitShape, 0);
-    }
-
-    for (size_t lid : layer->tx_lids) {
-      std::vector<long> inDim = layers.at(lid)->emptyOutSizes;
-      inDim[0] = layers.at(lid)->layerLocalBatch;
-
-      torch::Tensor in = torch::empty(inDim, topts);
-      std::vector<long> perSampleSplit(inDim[0], 1);
-      layer->tensors_in[lid] = in;
-      tensors_in_chunks[lid] = in.split_with_sizes(perSampleSplit, 0);
-    }
+    torch::Tensor in = torch::empty(inDim, topts);
+    layer->tensors_in[lid] = in;
+    inbound_tensors[lid] = in;
   }
 
-  if (!tensors_in_chunks.size() && !tensors_out_chunks.size()) return;
+  if (layer->xfers.size()) commHandler->comm_start();
 
-  commHandler->comm_start();
-
+  bool did_recv = false;
   for (const auto& ixfer : layer->xfers) {
-    size_t lid = ixfer.src_lid;
-
-    const std::pair<size_t, size_t>& src = reverse ? ixfer.dst : ixfer.src;
-    const std::pair<size_t, size_t>& dst = reverse ? ixfer.src : ixfer.dst;
+    const size_t lid = ixfer.src_lid;
+    const std::pair<size_t, size_t>& src = backward ? ixfer.dst : ixfer.src;
+    const std::pair<size_t, size_t>& dst = backward ? ixfer.src : ixfer.dst;
 
     DP_LOG(DEBUG,
            "Transferring samples from rank %lu layer %lu pos %lu to rank %lu "
@@ -408,33 +391,41 @@ void RunnableModule::ExecuteXfers(Layer* layer, bool reverse) {
            src.first, lid, src.second, dst.first, layer->id, dst.second);
 
     if (src.first == static_cast<size_t>(rtctx->rank)) {
-      /* Is this a local copy? */
-      if (dst.first == static_cast<size_t>(rtctx->rank)) {
-        auto& srcTsr = tensors_out_chunks.at(lid).at(src.second);
-        auto& dstTsr = tensors_in_chunks.at(lid).at(dst.second);
-
-        CUDACHECK(cudaMemcpyAsync(dstTsr.data_ptr(), srcTsr.data_ptr(),
-                                  srcTsr.nbytes() * ixfer.nr_samples,
-                                  cudaMemcpyDeviceToDevice,
-                                  rtctx->torch_stream));
-      } else {
-        for (size_t i = 0; i < ixfer.nr_samples; i++) {
-          auto& srcTsr = tensors_out_chunks.at(lid).at(src.second + i);
-          commHandler->send(srcTsr, ixfer.tag + i, dst.first);
-        }
-      }
+      auto tsr = getSampleSlice(outbound_tensors.at(lid), src.second,
+                                ixfer.nr_samples);
+      commHandler->send(tsr, ixfer.tag, dst.first);
     } else {
       assert(dst.first == static_cast<size_t>(rtctx->rank));
-      for (size_t i = 0; i < ixfer.nr_samples; i++) {
-        auto& dstTsr = tensors_in_chunks.at(lid).at(dst.second + i);
-        commHandler->recv(dstTsr, ixfer.tag + i, src.first);
-      }
+      auto tsr =
+          getSampleSlice(inbound_tensors.at(lid), dst.second, ixfer.nr_samples);
+      commHandler->recv(tsr, ixfer.tag, src.first);
+      did_recv = true;
     }
   }
 
-  commHandler->comm_end();
+  if (layer->xfers.size()) commHandler->comm_end();
 
-  if (tensors_in_chunks.size()) commHandler->sync();
+  for (const auto& ixfer : layer->xfers_local) {
+    const size_t lid = ixfer.src_lid;
+    const std::pair<size_t, size_t>& src = backward ? ixfer.dst : ixfer.src;
+    const std::pair<size_t, size_t>& dst = backward ? ixfer.src : ixfer.dst;
+
+    DP_LOG(DEBUG,
+           "Copying samples from layer %lu pos %lu to "
+           "layer %d pos %lu",
+           lid, src.second, layer->id, dst.second);
+
+    auto srcTsr =
+        getSampleSlice(outbound_tensors.at(lid), src.second, ixfer.nr_samples);
+    auto dstTsr =
+        getSampleSlice(inbound_tensors.at(lid), dst.second, ixfer.nr_samples);
+
+    CUDACHECK(cudaMemcpyAsync(dstTsr.data_ptr(), srcTsr.data_ptr(),
+                              srcTsr.nbytes(), cudaMemcpyDeviceToDevice,
+                              rtctx->torch_stream));
+  }
+
+  if (did_recv) commHandler->sync();
 }
 
 /**
@@ -454,7 +445,7 @@ JobStatus RunnableModule::forwardAStep(bool captureLayer) {
   // or probably finished.
 
   ExecuteXfers(layer);
-  layer->DoForward(captureLayer);
+  torch::Tensor output = layer->DoForward(captureLayer);
   layer->status = LayerStatus::PENDING_BP;
   layer->nr_current_depedencies = layer->nextLayers.size();
 
@@ -465,16 +456,18 @@ JobStatus RunnableModule::forwardAStep(bool captureLayer) {
     if (--nl->nr_current_depedencies == 0) layerQ.push_back(nl.get());
   }
 
+  if (!isTrain_) {
+    layer->tensors_in.clear();
+    layer->output.reset();
+  }
+
   // Forward pass is completed.
   if (layerQ.empty()) {
     DP_LOG(DEBUG, "no more layers to process.");
-    if (layer->output.defined()) {
-      fpOutput = layer->output;
-    } else {
-      fpOutput.reset();
-    }
+    fpOutput = output;
     return COMPLETED;
   }
+
   return IN_PROGRESS;
 }
 
@@ -486,6 +479,7 @@ void RunnableModule::loss() {
 
   auto fpLoss = torch::nll_loss(fpOutput.log_softmax(1), fpTargets);
   fpLoss.backward();
+  fpOutput.reset();
 }
 
 /**
@@ -508,7 +502,6 @@ JobStatus RunnableModule::backwardAStep(bool captureLayer) {
   layer->status = LayerStatus::PENDING_FP;
   layer->nr_current_depedencies = layer->prevLayers.size();
 
-  sync_manager_.MaybeFlush(layer->commGroupKey);
   if (layer->doLocalGradSync) {
     for (const auto& param : layer->module.parameters())
       sync_manager_.AddGradient(param.mutable_grad(), layer->commGroupKey);
@@ -519,7 +512,7 @@ JobStatus RunnableModule::backwardAStep(bool captureLayer) {
     if (--pl->nr_current_depedencies == 0) layerQ.push_back(pl.get());
   }
 
-  // Forward pass is completed.
+  // Backward pass is completed.
   if (layerQ.empty()) {
     DP_LOG(DEBUG, "no more layers to process.");
     return COMPLETED;
@@ -539,19 +532,25 @@ JobStatus RunnableModule::backwardAStep(bool captureLayer) {
 int RunnableModule::AdvanceTraining(bool doGraphCapture, bool layerProfile) {
   static CUDAPipeline p(2);  // Todo fix....
 
+  doGraphCapture &= !has_graph;
+
   if (state == JobState::INIT) {
     DP_LOG(DEBUG, "JobState::INIT.");
 
     p.Lap();
     TimerRecord("start");
 
-    iterInit();
+    layerQ.clear();
+    layerQ.push_back(layers[0].get());
+
+    if (layers[0]->active && !layers[0]->tensors_in[0].defined())
+      assert("MISSING INPUT TO FIRST LAYER!" && false);
+
     TimerRecord("load");
 
     /* start graph capture */
     if (doGraphCapture) {
       DP_LOG(NOTICE, "Starting capture.");
-      assert(!has_graph);
       graph_recording = true;
       c10::cuda::device_synchronize();
       graph_mempool = at::cuda::graph_pool_handle();
@@ -563,6 +562,7 @@ int RunnableModule::AdvanceTraining(bool doGraphCapture, bool layerProfile) {
       return 0;
     }
 
+    fpOutput.reset();
     optimizer->zero_grad();
     TimerRecord("zero");
     state = JobState::FORWARD;
@@ -581,21 +581,30 @@ int RunnableModule::AdvanceTraining(bool doGraphCapture, bool layerProfile) {
 
     if (status == COMPLETED) {
       TimerRecord("forward");
-      // TODO: add a loss calculation here? or as another state?
-      DP_LOG(DEBUG, "Foward pass is completed. Calculating loss.");
-
-      loss();
-      TimerRecord("loss");
-      assert(layerQ.empty());
-      layerQ.push_back(layers.back().get());
-      DP_LOG(DEBUG, "Moving to backward pass.");
-      state = JobState::BACKWARD;
+      if (!isTrain_) {
+        for (auto& layer : layers) {
+          layer->status = LayerStatus::PENDING_FP;
+          layer->nr_current_depedencies = layer->prevLayers.size();
+        }
+        DP_LOG(DEBUG, "Foward pass is completed.");
+        state = JobState::FINISH;
+      } else {
+        DP_LOG(DEBUG, "Foward pass is completed. Calculating loss soon.");
+        state = JobState::LOSS;
+      }
     }
+  } else if (state == JobState::LOSS) {
+    DP_LOG(DEBUG, "JobState::LOSS.");
+    loss();
+    TimerRecord("loss");
+    assert(layerQ.empty());
+    layerQ.push_back(layers.back().get());
+    DP_LOG(DEBUG, "Moving to backward pass.");
+    state = JobState::BACKWARD;
   } else if (state == JobState::BACKWARD) {
     DP_LOG(DEBUG, "JobState::BACKWARD.");
 
     JobStatus status = backwardAStep(layerProfile);
-    // TODO: get idle time for backward separately.
     if (status == COMPLETED) {
       TimerRecord("backward");
       state = JobState::SYNC;
@@ -631,18 +640,27 @@ int RunnableModule::AdvanceTraining(bool doGraphCapture, bool layerProfile) {
     DP_LOG(DEBUG, "JobState::FINISH");
 
     if (doGraphCapture) {
-      stepgraph.capture_end();
-
       float maingraphsplit = -1.0;  // 10.0;
       float stepgraphsplit = -1.0;  // 2.0;
 
-      auto maingraph_e =
-          GraphPieces::GraphToExecs(maingraph.getGRAPH(), maingraphsplit);
-      auto syncgraph_e = GraphPieces::GraphToExecs(syncgraph.getGRAPH(), -1.0);
-      auto stepgraph_e =
-          GraphPieces::GraphToExecs(stepgraph.getGRAPH(), stepgraphsplit);
-      fullgraph =
-          GraphPieces::MergePieces({maingraph_e, syncgraph_e, stepgraph_e});
+      if (!isTrain_) {
+        commHandler->postcapture();
+        maingraph.capture_end();
+        auto maingraph_e =
+            GraphPieces::GraphToExecs(maingraph.getGRAPH(), maingraphsplit);
+        fullgraph = GraphPieces::MergePieces({maingraph_e});
+      } else {
+        stepgraph.capture_end();
+
+        auto maingraph_e =
+            GraphPieces::GraphToExecs(maingraph.getGRAPH(), maingraphsplit);
+        auto syncgraph_e =
+            GraphPieces::GraphToExecs(syncgraph.getGRAPH(), -1.0);
+        auto stepgraph_e =
+            GraphPieces::GraphToExecs(stepgraph.getGRAPH(), stepgraphsplit);
+        fullgraph =
+            GraphPieces::MergePieces({maingraph_e, syncgraph_e, stepgraph_e});
+      }
       has_graph = true;
       graph_recording = false;
       DP_LOG(NOTICE, "Ending capture.");
@@ -678,31 +696,3 @@ void RunnableModule::printLayerInGraphTimes() {
   }
   printf("%100s  %.3f\n", "SUM(avg)", sum);
 }
-
-// int64_t
-// JobContext::getNextStepTime() {
-//   if (state == JobState::INIT) {
-//     return 1;
-//   } else if (state == JobState::FORWARD) {
-//     Layer* layer = model->layerQ.front();
-//     return layer->fwUsec;
-//   } else if (state == JobState::BACKWARD) {
-//     Layer* layer = model->layerQ.front();
-//     return layer->bwUsec;
-//   } else if (state == JobState::SYNC) {
-//     return 1;
-//   } else if (state == JobState::STEP) {
-//     return 1000;
-//   } else if (state == JobState::FINISH) {
-//     return 1;
-//   }
-//   return 0;
-// }
-
-// void
-// RunnableModule::resetForNewIter()
-// {
-//   for (auto& layer : layers) {
-//     layer->status = LayerStatus::PENDING_FP;
-//   }
-// }
