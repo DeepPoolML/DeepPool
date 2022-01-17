@@ -1,3 +1,4 @@
 [submodule "csrc/grpc"]
 	path = csrc/grpc
 	url = https://github.com/grpc/grpc.git
+        ignore = dirty

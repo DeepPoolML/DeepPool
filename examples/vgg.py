@@ -46,10 +46,10 @@ class VGG(nn.Module):
         cs.Flatten()
         self.classifier = nn.Sequential(
             cs.Linear(int(inChannels * 7 * 7), int(4096/split1side)),
-            cs.ReLU(True),
+            cs.ReLU(False),
             nn.Dropout(),
             cs.Linear(int(4096 / split1side), int(4096/split1side)),
-            cs.ReLU(True),
+            cs.ReLU(False),
             nn.Dropout(),
             cs.Linear(int(4096 / split1side), int(num_classes)),
         )
@@ -91,7 +91,7 @@ def make_layers(cfg, split_count=1, batch_norm=False):
             # if batch_norm:
             #     layers += [conv2d, nn.BatchNorm2d(v), nn.ReLU(inplace=True)]
             # else:
-            layers += [conv2d, cs.ReLU(inplace=True)] #self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
+            layers += [conv2d, cs.ReLU(inplace=False)] #self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
             in_channels = v
         i += 1
     return nn.Sequential(*layers)
@@ -132,10 +132,10 @@ class VGG16(nn.Module):
         # print("linear intake features: %d"%int(512 * 7 * 7 / split1side))
         self.classifier = nn.Sequential(
             nn.Linear(int(512 * 7 * 7 / split_count), int(4096)),
-            nn.ReLU(True),
+            nn.ReLU(False),
             nn.Dropout(),
             nn.Linear(int(4096), int(4096 / split_count)),
-            nn.ReLU(True),
+            nn.ReLU(False),
             nn.Dropout(),
             nn.Linear(int(4096 / split_count), int(num_classes)),
         )
@@ -146,7 +146,7 @@ class VGG16(nn.Module):
         for i in range(len(self.features)):
             x = self.features[i](x)
             if cfg['D'][i] != 'M':
-                x = torch.nn.functional.relu(x, inplace=True)
+                x = torch.nn.functional.relu(x, inplace=False)
                 if layersToSplit[i] and i < len(cfg['D']) - 2 and self.split_count > 1:
                     # x = torch.repeat_interleave(x, self.split_count, dim=1)
                     x = x.repeat(1, self.split_count, 1, 1)
