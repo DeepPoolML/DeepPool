@@ -4,6 +4,7 @@
 #include <torch/torch.h>
 
 #include "cifar10.h"
+#include "logger.h"
 
 ABSL_FLAG(std::string, cifar_dataset,
           "/home/friedj/mlsf/multimodel/data/cifar-10-batches-bin/", "");
@@ -12,8 +13,9 @@ class FakeDataset : public Dataset {
  public:
   FakeDataset(size_t rank, long globalBatchSize,
               std::vector<long> initialBatchSizes,
-              std::vector<long> sampleIndices, std::vector<long> inputShape,
-              size_t target_classes, size_t images_per_epoch);
+              std::vector<long> sampleIndices,
+              std::function<torch::data::Example<>()> gen,
+              size_t images_per_epoch);
   torch::data::Example<> getNext() override;
   bool IsDone() override;
   void Reset() override;
@@ -51,19 +53,10 @@ class CifarDataset : public Dataset {
 FakeDataset::FakeDataset(size_t rank, long globalBatchSize,
                          std::vector<long> initialBatchSizes,
                          std::vector<long> sampleIndices,
-                         std::vector<long> inputShape, size_t target_classes,
+                         std::function<torch::data::Example<>()> gen,
                          size_t images_per_epoch)
     : Dataset(rank, globalBatchSize, initialBatchSizes, sampleIndices) {
-  std::vector<long> fullShape;
-  fullShape.push_back(globalBatchSize);
-  fullShape.insert(fullShape.end(), inputShape.begin(), inputShape.end());
-  auto targetOpts = torch::TensorOptions().dtype(torch::kInt64);
-  for (size_t i = 0; i < 64; i++) {
-    auto data = torch::randn(fullShape);
-    auto target = torch::randint(/*low=*/0, /*high=*/target_classes,
-                                 {globalBatchSize}, targetOpts);
-    cached_.emplace_back(data, target);
-  }
+  for (size_t i = 0; i < 64; i++) cached_.emplace_back(gen());
   batches_per_epoch_ = images_per_epoch / globalBatchSize;
 }
 
@@ -82,6 +75,7 @@ CifarDataset::CifarDataset(size_t rank, long globalBatchSize,
                            std::vector<long> initialBatchSizes,
                            std::vector<long> sampleIndices, bool is_eval)
     : Dataset(rank, globalBatchSize, initialBatchSizes, sampleIndices) {
+  DP_LOG(DEBUG, "Using CIFAR dataset");
   auto c = CIFAR10(absl::GetFlag(FLAGS_cifar_dataset),
                    is_eval ? CIFAR10::Mode::kTest : CIFAR10::Mode::kTrain)
                .map(torch::data::transforms::Normalize<>({0.485, 0.456, 0.406},
@@ -122,11 +116,32 @@ Dataset *Dataset::fromName(std::string name, size_t rank, long globalBatchSize,
   if (name.find("cifar") != std::string::npos)
     return new CifarDataset(rank, globalBatchSize, initialBatchSizes,
                             sampleIndices, eval);
-  long px = name.find("inception") != std::string::npos ? 299 : 224;
 
   long fake_images = globalBatchSize * fake_train_iters_per_epoch;
 
+  if (name.find("gpt2") != std::string::npos) {
+    DP_LOG(DEBUG, "Using GPT2 fake dataset");
+    auto opts = torch::TensorOptions().dtype(torch::kInt32);
+    auto gen = [=] {
+      auto data = torch::randint(/*low=*/0, /*high=*/1024,
+                                 {globalBatchSize, 1024}, opts);
+      auto target = torch::randint(/*low=*/0, /*high=*/1024,
+                                   {globalBatchSize, 1024}, opts);
+      return torch::data::Example<>(data, target);
+    };
+    return new FakeDataset(rank, globalBatchSize, initialBatchSizes,
+                           sampleIndices, gen, eval ? 1000 : fake_images);
+  }
+
+  DP_LOG(DEBUG, "Using fake dataset");
+  long px = name.find("inception") != std::string::npos ? 299 : 224;
+  auto targetOpts = torch::TensorOptions().dtype(torch::kInt64);
+  auto gen = [=] {
+    auto data = torch::randn({globalBatchSize, 3, px, px});
+    auto target =
+        torch::randint(/*low=*/0, /*high=*/1000, {globalBatchSize}, targetOpts);
+    return torch::data::Example<>(data, target);
+  };
   return new FakeDataset(rank, globalBatchSize, initialBatchSizes,
-                         sampleIndices, {3, px, px}, 1000,
-                         eval ? 1000 : fake_images);
+                         sampleIndices, gen, eval ? 1000 : fake_images);
 }

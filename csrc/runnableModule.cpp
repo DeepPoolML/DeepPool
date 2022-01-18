@@ -42,7 +42,7 @@ class GraphTimer {
   int64_t EndCaptureAndTime() {
     graph.capture_end();
     c10::cuda::device_synchronize();
-    CpuTimer timer("fwTimer");
+    CpuTimer timer("timer");
     timer.start();
     for (int i = 0; i < kTrials; ++i) graph.replay();
     c10::cuda::device_synchronize();
@@ -58,9 +58,11 @@ class GraphTimer {
  * Constructs RunnableModule
  */
 RunnableModule::RunnableModule(
-    json spec, std::shared_ptr<CommunicationHandler> commHandler)
+    json spec, std::shared_ptr<CommunicationHandler> commHandler,
+    LossFunctions lf)
     : commHandler(commHandler),
-      sync_manager_(commHandler, rtctx->sync_bucket_size) {
+      sync_manager_(commHandler, rtctx->sync_bucket_size),
+      lossfn_(lf) {
   auto& layersInJson = spec["layers"];
   long initialBatchSize = layersInJson[0]["config"][0];
 
@@ -301,7 +303,8 @@ torch::Tensor Layer::DoForward(bool captureLayer) {
   if (captureLayer) fwUsec = fwdtimer.EndCaptureAndTime();
 
   for (auto& nl : nextLayers)
-    nl->tensors_in[id] = output.detach().requires_grad_();
+    nl->tensors_in[id] =
+        output.detach().requires_grad_(output.is_floating_point());
 
   return output;
 }
@@ -309,6 +312,11 @@ torch::Tensor Layer::DoForward(bool captureLayer) {
 void Layer::DoBackward(bool captureLayer) {
   if (!active) {
     DP_LOG(DEBUG, "Layer %d is not active.", id);
+    return;
+  }
+
+  if (!output.requires_grad()) {
+    DP_LOG(DEBUG, "Layer %d does not require grad", id);
     return;
   }
 
@@ -326,7 +334,7 @@ void Layer::DoBackward(bool captureLayer) {
     nl->tensors_in[id].reset();
   }
 
-  if (captureLayer) bwUsec += bwdtimer.EndCaptureAndTime();
+  if (captureLayer) bwUsec = bwdtimer.EndCaptureAndTime();
 
   for (auto& pLid : prevLayers) {
     tensors_in[pLid->id] = tensors_in[pLid->id].grad();
@@ -441,9 +449,6 @@ JobStatus RunnableModule::forwardAStep(bool captureLayer) {
   assert(layer->nr_current_depedencies == 0);
   assert(layer->status == LayerStatus::PENDING_FP);
 
-  // TODO: potentially we can make track if the cuda kernel is finished
-  // or probably finished.
-
   ExecuteXfers(layer);
   torch::Tensor output = layer->DoForward(captureLayer);
   layer->status = LayerStatus::PENDING_BP;
@@ -477,7 +482,28 @@ JobStatus RunnableModule::forwardAStep(bool captureLayer) {
 void RunnableModule::loss() {
   if (!fpOutput.defined()) return;
 
-  auto fpLoss = torch::nll_loss(fpOutput.log_softmax(1), fpTargets);
+  torch::Tensor fpLoss;
+
+  if (lossfn_ == LossFunctions::CrossEntropyLoss) {
+    auto shift_logits =
+        fpOutput
+            .index({torch::indexing::Ellipsis,
+                    torch::indexing::Slice(torch::indexing::None, -1),
+                    torch::indexing::Slice()})
+            .contiguous();
+    auto shift_labels =
+        fpTargets
+            .index({torch::indexing::Ellipsis,
+                    torch::indexing::Slice(1, torch::indexing::None)})
+            .contiguous();
+    auto loss_fct = torch::nn::CrossEntropyLoss();
+    fpLoss = loss_fct(shift_logits.view({-1, shift_logits.size(-1)}),
+                      shift_labels.view({-1}).to(torch::kLong));
+  } else {
+    assert(lossfn_ == LossFunctions::NLLLoss);
+    fpLoss = torch::nll_loss(fpOutput.log_softmax(1), fpTargets);
+  }
+
   fpLoss.backward();
   fpOutput.reset();
 }
@@ -503,8 +529,10 @@ JobStatus RunnableModule::backwardAStep(bool captureLayer) {
   layer->nr_current_depedencies = layer->prevLayers.size();
 
   if (layer->doLocalGradSync) {
-    for (const auto& param : layer->module.parameters())
-      sync_manager_.AddGradient(param.mutable_grad(), layer->commGroupKey);
+    for (const auto& param : layer->module.parameters()) {
+      if (param.mutable_grad().defined())
+        sync_manager_.AddGradient(param.mutable_grad(), layer->commGroupKey);
+    }
   }
 
   for (auto& pl : layer->prevLayers) {

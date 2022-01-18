@@ -112,6 +112,11 @@ struct Layer {
 
 enum JobStatus { IN_PROGRESS = 0, COMPLETED, YIELD };
 
+enum class LossFunctions {
+  NLLLoss = 0,
+  CrossEntropyLoss,
+};
+
 enum class JobState {
   INIT = 0,
   FORWARD,
@@ -130,7 +135,8 @@ enum class JobState {
 class RunnableModule {
  public:
   RunnableModule(json specInJson,
-                 std::shared_ptr<CommunicationHandler> commHandler);
+                 std::shared_ptr<CommunicationHandler> commHandler,
+                 LossFunctions lf);
 
   int AdvanceTraining(bool doGraphCapture, bool layerProfile);
 
@@ -194,6 +200,7 @@ class RunnableModule {
   std::deque<Layer*> layerQ;
   torch::Tensor fpTargets;
   torch::Tensor fpOutput;
+  LossFunctions lossfn_;
 
   JobState state{JobState::INIT};
 

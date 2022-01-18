@@ -42,13 +42,15 @@ JobContext::JobContext(std::unique_ptr<RunnableModule> modelIn,
   nr_gpus_ = job_params["nr_gpus"].get<size_t>();
 
   std::string dset = "random";
-  if (job_params.contains("cifar_training")) {
-    if (job_params["cifar_training"].get<bool>()) {
-      dset = "cifar";
-      /* cifar default includes 10 epochs with test routine */
-      runTestRoutine_ = true;
-      epochsToTrain = 10;
-    }
+  if (job_params.contains("cifar_training") &&
+      job_params["cifar_training"].get<bool>()) {
+    dset = "cifar";
+    /* cifar default includes 10 epochs with test routine */
+    runTestRoutine_ = true;
+    epochsToTrain = 10;
+  } else if (name.find("gpt2") != std::string::npos) {
+    dset = "gpt2";
+    runTestRoutine_ = false;
   }
 
   if (job_params.contains("run_test_routine"))

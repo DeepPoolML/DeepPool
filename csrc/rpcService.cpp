@@ -127,7 +127,8 @@ Status RuntimeServiceImpl::ScheduleTraining(
   if (!rtctx->debug) {
     DP_LOG(DEBUG, "Not in DEBUGGING_MODE, so saving request to lastReq.txt.");
     std::ofstream ofs;
-    std::string path = format("%s/lastReq%d.txt", rtctx->logdir, rtctx->rank);
+    std::string path =
+        format("%s/lastReq%d.txt", rtctx->logdir.c_str(), rtctx->rank);
     ofs.open(path.c_str());
     request->SerializeToOstream(&ofs);
     ofs.close();
@@ -228,12 +229,20 @@ std::unique_ptr<JobContext> RuntimeServiceImpl::parseAndCreateTrainingTask(
         name, worldSize, tensorTags, rank, jobRankToGlobalRank);
   }
 
-  DP_LOG(DEBUG, "commHandler constructed.");
-  auto runnableModule = std::make_unique<RunnableModule>(jobSpec, commHandler);
-  DP_LOG(DEBUG, "runnableModule constructed.");
-
   json jobParams = json::parse(request->job_meta_params_in_json());
   DP_LOG(DEBUG, "parsed jobParams into json");
+
+  LossFunctions lf = LossFunctions::NLLLoss;
+  if (jobParams.contains("lossfn") &&
+      jobParams["lossfn"].get<std::string>() == "CrossEntropyLoss") {
+    lf = LossFunctions::CrossEntropyLoss;
+    DP_LOG(DEBUG, "Using CrossEntropyLoss");
+  }
+
+  DP_LOG(DEBUG, "commHandler constructed.");
+  auto runnableModule =
+      std::make_unique<RunnableModule>(jobSpec, commHandler, lf);
+  DP_LOG(DEBUG, "runnableModule constructed.");
 
   assert(jobParams.contains("run_with_be"));
   assert(jobParams.contains("nr_gpus"));
