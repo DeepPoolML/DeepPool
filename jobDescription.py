@@ -77,7 +77,7 @@ class Layer:
             if exists(saveLocation): # Skip if module file is already there.
                 prop["moduleSavedLocation"] = saveLocation
             else:
-                if self.name == "concat":
+                if self.name == "concat" or self.name == "add":
                     fakeInputs = []
                     for prevLayer in self.prevLayers:
                         inputSize = [1] + list(prevLayer.outputDim)
@@ -87,7 +87,10 @@ class Layer:
                 else:
                     inputSize = [1] + (list(self.inputDim) if type(self.inputDim) == tuple else [self.inputDim])
                     # print("id: ", self.id, " non-concat inputSize: ", inputSize)
-                    fakeInput = torch.zeros(tuple(inputSize))
+                    if 'embedding' in self.name or 'wte' in self.name or 'wpe' in self.name:
+                        fakeInput = torch.zeros(tuple(inputSize), dtype=torch.int32)
+                    else:
+                        fakeInput = torch.zeros(tuple(inputSize), dtype=torch.float32)
                     if self.must_trace:
                         print("jit tracing...", self.name)
                         traced = torch.jit.trace(self.module, fakeInput)

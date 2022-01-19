@@ -74,14 +74,14 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     #     dpIterUsec, dpFpUsec, dpBpUsec = profiler.benchModel(model, (3, 299, 299), int(globalBatch / gpuCount))
     #     print("(DP baseline) whole model bench: %.1f ms (fp: %.1f, bp: %.1f)" % (dpIterUsec / 1000, dpFpUsec / 1000, dpBpUsec / 1000))
 
-    job, iterMs, gpuMs, maxGpusUsed = cs.searchBestSplitsV3(gpuCount, globalBatch, lossfn=1, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
+    job, iterMs, gpuMs, maxGpusUsed = cs.searchBestSplitsV3(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
     print("  %2d    %2d   %4.1f  %4.1f\n" % (globalBatch, maxGpusUsed, iterMs, gpuMs))
     profiler.saveProfile()
     cs.to_dot(simResultFilename, globalBatch)
     # cs.to_gpuTimeline("Inception v3, Burst Parallel", maxGpusUsed, dataParallelBaseline)
     jobInJson = job.dumpInJSON()
 
-    # for rank in range(gpuCount):
+    # for rank in range(maxGpusUsed):
     #     print("GPU rank: %d"%rank)
     #     print(job.dumpSingleRunnableModule(rank))
 
@@ -91,7 +91,7 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     # print("Load/Dump returned the same output? %s" % ("true" if jobInJson == job2.dumpInJSON() else "false"))
     # print(jobInJson)
     
-    job2 = TrainingJob("test", None, None, 0, 0, 0, "")
+    job2 = TrainingJob("test", None, None, 0, 0, "")
     job2.loadJSON(jobInJson)
     assert(jobInJson == job2.dumpInJSON())
     print("Load/Dump returned the same output? %s" % ("true" if jobInJson == job2.dumpInJSON() else "false"))
@@ -146,18 +146,16 @@ def runStrongScalingBench():
 
 
 if __name__ == "__main__":
-    print(len(sys.argv))
-    if len(sys.argv) == 3:
+    if len(sys.argv) >= 3:
         gpuCount = int(sys.argv[1])
         globalBatchSize = int(sys.argv[2])
-        simResultFilename = "%s_%s_b%d_sim.data" % ("gpt2", "DP", globalBatchSize)
-        main(gpuCount, globalBatchSize, dataParallelBaseline=True, simResultFilename = simResultFilename)
-    elif True:#len(sys.argv) == 4:
-        gpuCount = 4 #int(sys.argv[1])
-        globalBatchSize = 4 #int(sys.argv[2])
-        amplificationLimit = 1.3 #float(sys.argv[3])
-        simResultFilename = "%s_%s_b%d_lim%2.1f_sim.data" % ("gpt2", "MP", globalBatchSize, amplificationLimit)
-        main(gpuCount, globalBatchSize, amplificationLimit, simResultFilename = simResultFilename)#, netBw = 1.25E4)
+        if len(sys.argv) < 4 or sys.argv[3] == "DP":
+            simResultFilename = "%s_%s_b%d_sim.data" % ("gpt2", "DP", globalBatchSize)
+            main(int(sys.argv[1]), int(sys.argv[2]), dataParallelBaseline=True, simResultFilename=simResultFilename)
+        else:
+            ampLimit = float(sys.argv[3])
+            simResultFilename = "%s_%s_b%d_lim%2.1f_sim.data" % ("gpt2", "MP", globalBatchSize, ampLimit)
+            main(int(sys.argv[1]), int(sys.argv[2]), amplificationLimit=ampLimit, simResultFilename=simResultFilename)
     elif len(sys.argv) == 2:
         print("Run all configs")
         # runAllConfigs("gpt2", sys.argv[1])

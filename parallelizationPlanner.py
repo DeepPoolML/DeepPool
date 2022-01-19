@@ -166,17 +166,21 @@ class CostSim:
                                 if prevLayer.outputDim[1] != pl.outputDim[1] or prevLayer.outputDim[2] != pl.outputDim[2]: # width and height must match.
                                     print("prevLayer.outputDim: %15s, non-matching other input: %15s" % (prevLayer.outputDim, pl.outputDim))
                             layer.inputDim = (totalChannels, prevLayer.outputDim[1], prevLayer.outputDim[2])
-                        if layer.name == "ReLU2d":
+                        elif layer.name == "ReLU2d":
                             for pl in layer.prevLayers:
                                 if prevLayer.outputDim != pl.outputDim: # this is only correct for additions in Resnet.
                                     print("prevLayer.outputDim: %15s, non-matching other input: %15s" % (prevLayer.outputDim, pl.outputDim))
                             layer.inputDim = prevLayer.outputDim
+                        else:
+                            oDims = set(pl.outputDim for pl in layer.prevLayers)
+                            assert(len(oDims) == 1)
+                            layer.inputDim = oDims.pop()
 
                 if layer.name == "linear":
                     layer.outputDim = layer.params["out_features"]
                     layer.inputDim = layer.params["in_features"]
 
-            if layer.module:
+            if False and layer.module:
                 if layer.prevLayers:
                     args = [torch.empty(sz.outputDim if type(sz.outputDim) == tuple else [sz.outputDim]).unsqueeze(0) for sz in layer.prevLayers]
                 else:
@@ -213,12 +217,25 @@ class CostSim:
                 layer.outputDim = layer.inputDim
             elif layer.name == "flatten":
                 layer.outputDim = int(numpy.prod(layer.inputDim))
-            elif layer.name == "concat":
+            elif layer.name == "concat" or layer.name == "add":
                 layer.outputDim = layer.inputDim
             else:
-                inputSize = [1] + (list(layer.inputDim) if type(layer.inputDim) == tuple else [layer.inputDim])
-                fakeIn = torch.empty(inputSize)
-                outSize = list(layer.module(fakeIn).size())[1:]
+                if isinstance(layer.inputDim, list):
+                    fakeIns = []
+                    for in_p in layer.inputDim:
+                        inputSize = [1] + (list(in_p) if type(in_p) == tuple else [in_p])
+                        if 'Embedding' in str(layer.module):
+                            fakeIns.append(torch.zeros(inputSize,dtype=torch.int32))
+                        else:
+                            fakeIns.append(torch.empty(inputSize,dtype=torch.float32))
+                    outSize = list(layer.module(*fakeIns).size())[1:]
+                else:
+                    inputSize = [1] + (list(layer.inputDim) if type(layer.inputDim) == tuple else [layer.inputDim])
+                    if 'Embedding' in str(layer.module):
+                        fakeIn = torch.zeros(inputSize,dtype=torch.int32)
+                    else:
+                        fakeIn = torch.empty(inputSize,dtype=torch.float32)
+                    outSize = list(layer.module(fakeIn).size())[1:]
                 layer.outputDim = outSize[0] if len(outSize) == 1 else tuple(outSize)
                 # print("Computed outputDim: ", layer.outputDim)
 
@@ -553,6 +570,8 @@ class CostSim:
                 initCfg = (globalBatch, layer.inputDim, layer.outputDim)
         elif layer.name in ["flatten", "maxPool2d", "avgPool2d", "adAvgPool2d", "ReLU2d", "concat"]:
             initCfg = (globalBatch, layer.inputDim[1], layer.inputDim[2], layer.inputDim[0]) # (batch, width, height, channel, filter)
+        elif layer.name in ["add"]:
+            initCfg = (globalBatch, *layer.inputDim)
         else:
             initCfg = (globalBatch, *layer.inputDim) if type(layer.inputDim) == tuple else (globalBatch, layer.inputDim) # (batch, width, height, channel)
         return initCfg

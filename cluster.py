@@ -254,6 +254,7 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
             "run_with_be": runbe,
             "nr_gpus": gpusUsed,
             "cifar_training": "cifar" in jobName,
+            "lossfn": "CrossEntropyLoss" if "gpt2" in jobName else "NLL",
         }
 
         jobParamsInJson = json.dumps(jobParams)
@@ -422,9 +423,7 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
                 print("GRPC error while shuting down %s" % location.address)
 
     def initCommBackendAll(self, c10dBackend, commGroupSet):
-
         assert(sorted(commGroupSet) == list(commGroupSet))
-        assert(len(commGroupSet) > 1)
         if tuple(commGroupSet) in self.commGroups:
             return
 
