@@ -14,6 +14,7 @@
 
 #include "JobContext.h"
 
+#include <ATen/autocast_mode.h>
 #include <cuda_profiler_api.h>
 #include <torch/torch.h>
 
@@ -51,6 +52,11 @@ JobContext::JobContext(std::unique_ptr<RunnableModule> modelIn,
   } else if (name.find("gpt2") != std::string::npos) {
     dset = "gpt2";
     runTestRoutine_ = false;
+  }
+
+  if (job_params.contains("autocast") && job_params["autocast"].get<bool>()) {
+    DP_LOG(DEBUG, "Using autocast");
+    autocast_ = true;
   }
 
   if (job_params.contains("run_test_routine"))
@@ -129,11 +135,14 @@ void JobContext::StepOne(bool *iter_done, bool *job_done) {
     }
   }
 
+  at::autocast::set_enabled(autocast_);
   iter_in_progress = !model->AdvanceTraining(graphCapture, profile);
+  at::autocast::set_enabled(false);
 
   if (iter_done) *iter_done = !iter_in_progress;
 
   if (!iter_in_progress) {
+    if (autocast_) at::autocast::clear_cache();
     if ((graphCapture || profile) && IsBeEnabled() && run_with_be_) BeResume();
     if (totiters == profile_iter_start + niter_to_profile - 1)
       CUDA_API_CALL(cudaProfilerStop());

@@ -14,6 +14,7 @@
 
 #include "runnableModule.h"
 
+#include <ATen/autocast_mode.h>
 #include <torch/script.h>
 #include <torch/torch.h>
 
@@ -366,6 +367,8 @@ void RunnableModule::ExecuteXfers(Layer* layer, bool backward) {
 
   torch::TensorOptions topts(rtctx->c10dev);
   topts = topts.requires_grad(!backward);
+  if (at::autocast::is_enabled())
+    topts = topts.dtype(at::autocast::get_autocast_gpu_dtype());
 
   auto& outbound_lids = backward ? layer->rx_lids : layer->tx_lids;
   auto& inbound_lids = backward ? layer->tx_lids : layer->rx_lids;
