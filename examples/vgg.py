@@ -13,9 +13,6 @@ from parallelizationPlanner import CostSim
 from parallelizationPlanner import GpuProfiler
 from clusterClient import ClusterClient
 from jobDescription import TrainingJob
-from runnableModule import RunnableModule
-from runnableModule import MockCommHandler
-from runnableModule import VisionDataLoaderGenerator
 
 __all__ = [
     'VGG', 'vgg11', 'vgg11_bn', 'vgg13', 'vgg13_bn', 'vgg16', 'vgg16_bn',
@@ -301,6 +298,7 @@ def genTestJob(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseli
     job = cs.searchBestSplits(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline)
     return job
 
+"""
 def testRunOnCPU():
     # optimizer is not yet implemented.
     def train(loader, model, optimizer = None, criterion = nn.CrossEntropyLoss(), device="cpu"):
@@ -349,7 +347,7 @@ def testRunOnCPU():
         thread.start()
     for thread in threadList:
         thread.join()
-
+"""
 
 def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=False, netBw=2.66E5, spatialSplit=False, simResultFilename=None, use_be=False):
     profiler = GpuProfiler("cuda")
