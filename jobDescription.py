@@ -23,28 +23,131 @@ from collections import defaultdict
 import copy
 import sys
 
+class TensorProperties:
+    def __init__(self, tensor: torch.Tensor = None):
+        self.props = {}
+        if tensor is not None:
+            self.props["tensor_shape"] = tuple(tensor.shape)
+            self.props["dtype"] = str(tensor.dtype)
+
+    def __repr__(self):
+        return json.dumps(self.props, sort_keys=True)
+
+    def __str__(self):
+        return self.__repr__()
+
+    def fromStr(self, jstr):
+        self.props = json.loads(jstr)
+
+    def tensor_shape(self):
+        return tuple(self.props["tensor_shape"])
+
+    def dtype(self):
+        return eval(self.props["dtype"])
+
+    def genRand(self, batchsize, device):
+        iSize = (batchsize,) + self.tensor_shape()
+        return torch.randn(iSize, dtype=self.dtype()).to(device)
+
 class Layer:
     def __init__(self, module, name: str, params: tuple, prevLayers: list):
         self.id = None      # Assigned later by calling printAllLayers.
         self.name = name
         self.params = params
         self.prevLayers = prevLayers
-        if prevLayers is not None:
-            for prevLayer in prevLayers:
-                prevLayer.nextLayers.append(self)
+        for prevLayer in prevLayers or []:
+            prevLayer.nextLayers.append(self)
         self.nextLayers = []
         self.module = module
-        self.moduleScript = None
-        self.inputDim = (0, 0, 0)   # (Channel, Width, Height) for 2d convolution
-        self.outputDim = (0, 0, 0)  # (Channel, Width, Height)
-        self.must_trace = False
+        self.jit_module = None
         self.moduleSavedLocation = None
 
+        # self.inputDim = (0, 0, 0)   # (Channel, Width, Height) for 2d convolution
+        # self.outputDim = (0, 0, 0)  # (Channel, Width, Height)
+        self.must_trace = False
+
+    def setInputShapes(self, list_of_tensors: List[torch.Tensor]):
+        self.initial_inputs = []
+        assert not self.prevLayers
+        for t in list_of_tensors:
+            self.initial_inputs.append(TensorProperties(t))
+
+    def getInputShapes(self) -> List[TensorProperties]:
+        if not self.prevLayers:
+            return self.initial_inputs
+
+        shapes = []
+        for layer in self.prevLayers:
+            shapes.append(layer.getOutputShape())
+        return shapes
+
+    def getOutputShape(self) -> TensorProperties:
+        if hasattr(self, "outputShape"):
+            return self.outputShape
+
+        output = self.scriptModule()(*self.getRandomInputs(1))
+        self.outputShape = TensorProperties(output[0])
+
+        # set inputDim and outputDim for backwards compatibility
+        self.inputDim = self.getInputShapes()[0].tensor_shape()
+        if len(self.inputDim) == 1:
+            self.inputDim = self.inputDim[0]
+        self.outputDim = self.outputShape.tensor_shape()
+        if len(self.outputDim) == 1:
+            self.outputDim = self.outputDim[0]
+        return self.outputShape
+
+    def getParameters(self):
+        pass
+
+    def getRandomInputs(self, batchsize, device="cuda"):
+        fakeInputs = []
+        for shape in self.getInputShapes():
+            fakeInputs.append(shape.genRand(batchsize, device))
+        return fakeInputs
+
     def getModuleId(self):
+        import hashlib
+        m = hashlib.sha256()
+        m.update(json.dumps([str(a) for a in self.getInputShapes()], separators=('_', '-')).encode("utf-8"))
         return self.name +\
             json.dumps(self.params, sort_keys=True, separators=('_', '-')) +\
-            json.dumps(self.inputDim, sort_keys=False, separators=('_', '-'))
-    
+            m.hexdigest()
+
+    def scriptModule(self):
+        moduleId = self.getModuleId()
+        saveLocation = os.getcwd() + f"/modules/scriptmodule_{moduleId}.pt"
+        self.moduleSavedLocation = saveLocation
+        if exists(saveLocation): # Skip if module file is already there.
+            if not self.jit_module:
+                self.jit_module = torch.jit.load(saveLocation).to("cuda")
+            return self.jit_module
+
+        fakeInput = self.getRandomInputs(1, "cuda")
+        if self.must_trace:
+            print("jit tracing...", self.name)
+            traced = torch.jit.trace(self.module, fakeInput)
+        else:
+            print("jit scripting...", self.name)
+            traced = torch.jit.script(self.module, fakeInput)
+        # saveLocation = "modules/scriptmodule_%d.pt"%self.id
+        self.jit_module = traced.to("cuda")
+        torch.jit.save(traced, saveLocation)
+        return self.jit_module
+
+    def getInitialConfig(self, globalBatch: int):
+        inputDim = self.getInputShapes()[0].tensor_shape()
+        outputDim = self.getOutputShape().tensor_shape()
+        if self.name in ["conv2d"]:
+            initCfg = (globalBatch, inputDim[1], inputDim[2], inputDim[0], outputDim[2]) # (batch, width, height, channel, filter)
+        elif self.name in ["linear", "ReLU1d"]:
+            initCfg = (globalBatch, *inputDim, *outputDim)
+        elif self.name in ["flatten", "maxPool2d", "avgPool2d", "adAvgPool2d", "ReLU2d", "concat"]:
+            initCfg = (globalBatch, inputDim[1], inputDim[2], inputDim[0]) # (batch, width, height, channel, filter)
+        else:
+            initCfg = (globalBatch, *inputDim) # (batch, width, height, channel)
+        return initCfg
+
     def dumpForJSON(self):
         prop = {}
         if self.id == None:
@@ -72,40 +175,11 @@ class Layer:
         if self.moduleSavedLocation:
             prop["moduleSavedLocation"] = self.moduleSavedLocation
         elif self.module != None:
-            moduleId = self.getModuleId()
-            saveLocation = os.getcwd() + "/modules/scriptmodule_%s.pt"%moduleId
-            if exists(saveLocation): # Skip if module file is already there.
-                prop["moduleSavedLocation"] = saveLocation
-            else:
-                if self.name == "concat" or self.name == "add":
-                    fakeInputs = []
-                    for prevLayer in self.prevLayers:
-                        inputSize = [1] + list(prevLayer.outputDim)
-                        # print("id: ", self.id, " Concat's inputSize: ", inputSize)
-                        fakeInputs.append(torch.zeros(inputSize))
-                    traced = torch.jit.script(self.module, fakeInputs)
-                else:
-                    inputSize = [1] + (list(self.inputDim) if type(self.inputDim) == tuple else [self.inputDim])
-                    # print("id: ", self.id, " non-concat inputSize: ", inputSize)
-                    if 'embedding' in self.name or 'wte' in self.name or 'wpe' in self.name:
-                        fakeInput = torch.zeros(tuple(inputSize), dtype=torch.int32)
-                    else:
-                        fakeInput = torch.zeros(tuple(inputSize), dtype=torch.float32)
-                    if self.must_trace:
-                        print("jit tracing...", self.name)
-                        traced = torch.jit.trace(self.module, fakeInput)
-                    else:
-                        print("jit scripting...", self.name)
-                        traced = torch.jit.script(self.module, fakeInput)
-                # saveLocation = "modules/scriptmodule_%d.pt"%self.id
-                torch.jit.save(traced, saveLocation)
-                prop["moduleSavedLocation"] = saveLocation
+            self.scriptModule()
+            prop["moduleSavedLocation"] = saveLocation
 
-                buffer = io.BytesIO()
-                torch.jit.save(traced, buffer)
-                self.moduleScript = buffer.getvalue()
-                # print("Layer%2d written %5d bytes." % (self.id, len(self.moduleScript)))
-                # print(" *** Code ***\n%s" % (traced.code))
+        if not self.prevLayers:
+            prop["initial_inputs"] = [str(a) for a in self.initial_inputs]
 
         return prop
 
@@ -144,6 +218,12 @@ class TrainingJob:
             l.bestCfg = ldsc["config"]
             if 'moduleSavedLocation' in ldsc:
                 l.moduleSavedLocation = ldsc["moduleSavedLocation"]
+            for inputdesc in ldsc.get('initial_inputs', []):
+                if not hasattr(l, "initial_inputs"): l.initial_inputs = []
+                prop = TensorProperties()
+                prop.fromStr(inputdesc)
+                l.initial_inputs.append(prop)
+
             config = ldsc["config"]
             self.layers.append(l)
             self.layerConfigs.append(config)
@@ -333,25 +413,8 @@ class TrainingJob:
                     "layers": allProps}
         return fullDesc
 
-    
-    # Functions to move:
-    # - config to gpu count.
-    def getInitialConfig(self, layer: Layer, globalBatch: int):
-        if layer.name in ["conv2d"]:
-            initCfg = (globalBatch, layer.inputDim[1], layer.inputDim[2], layer.inputDim[0], layer.outputDim[2]) # (batch, width, height, channel, filter)
-        elif layer.name in ["linear", "ReLU1d"]:
-            initCfg = (globalBatch, layer.inputDim, layer.outputDim)
-        elif layer.name in ["flatten", "maxPool2d", "avgPool2d", "adAvgPool2d", "ReLU2d", "concat"]:
-            initCfg = (globalBatch, layer.inputDim[1], layer.inputDim[2], layer.inputDim[0]) # (batch, width, height, channel, filter)
-        else:
-            if type(layer.inputDim) == int:
-                initCfg = (globalBatch, layer.inputDim)
-            else:
-                initCfg = (globalBatch, *layer.inputDim) # (batch, width, height, channel)
-        return initCfg
-
     def calcGpusNeeded(self, layer: Layer, config: tuple, globalBatch: int):
-        initCfg = self.getInitialConfig(layer, globalBatch)
+        initCfg = layer.getInitialConfig(globalBatch)
         gpuCount = 1
         # if len(config) != len(initCfg):
         #     print("[calcGpusNeeded] dimension of configs doesn't match!! %20s layer len(config):%d != len(initCfg):%d" % (layer.name, len(config), len(initCfg)))
@@ -360,7 +423,7 @@ class TrainingJob:
         return gpuCount
 
     def isConfigDataParallelOnly(self, layer: Layer, config: tuple, globalBatch: int):
-        initCfg = self.getInitialConfig(layer, globalBatch)
+        initCfg = layer.getInitialConfig(globalBatch)
         dpOnly = True
         for i in range(1, len(config)):
             if config[i] != initCfg[i]:

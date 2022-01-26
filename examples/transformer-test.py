@@ -27,7 +27,6 @@ sys.path.append(parentdir)
 sys.path.append(os.path.abspath('../../transformers'))
 
 from parallelizationPlanner import CostSim
-from gpuProfiler import GpuProfiler
 from clusterClient import ClusterClient
 from jobDescription import TrainingJob
 # from transformers import GPT2Model
@@ -43,11 +42,9 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     encoded_input = tokenizer(text, return_tensors='pt')
     config = GPT2Config()
 
-    profiler = GpuProfiler("cuda")
-    profiler.loadProfile()
     global cs
     # cs = CostSim(profiler, netBw=netBw, verbose=True)
-    cs = CostSim(profiler, netBw=netBw, verbose=True, gpuProfileLoc="gpt2LayerGpuProfileA100V2.txt")
+    cs = CostSim(None, netBw=netBw, verbose=True, gpuProfileLoc="gpt2LayerGpuProfileA100V2.txt")
     # model = ViT(img_dim=256, in_channels=3, patch_dim=16, num_classes=1000, dim=512, blocks=12, dim_linear_block=3072)
     # model = ViT(img_dim=256, in_channels=3, patch_dim=32, num_classes=1000, dim=1024, blocks=24, heads=16, dim_linear_block=4092)
     # model = GPT2Model.from_pretrained('gpt2')
@@ -76,7 +73,6 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
 
     job, iterMs, gpuMs, maxGpusUsed = cs.searchBestSplitsV3(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
     print("  %2d    %2d   %4.1f  %4.1f\n" % (globalBatch, maxGpusUsed, iterMs, gpuMs))
-    profiler.saveProfile()
     cs.to_dot(simResultFilename, globalBatch)
     # cs.to_gpuTimeline("Inception v3, Burst Parallel", maxGpusUsed, dataParallelBaseline)
     jobInJson = job.dumpInJSON()
@@ -107,10 +103,9 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
         cc.submitTrainingJob(jobName, jobInJson)
 
 def runStrongScalingBench():
-    profiler = GpuProfiler("cuda")
     global cs
     netBw = 2.66E5
-    cs = CostSim(profiler, netBw=netBw, verbose=False)
+    cs = CostSim(None, netBw=netBw, verbose=False)
     inputSize = (1024)
     # model = ViT(img_dim=256, in_channels=3, patch_dim=16, num_classes=1000, dim=512)
     config = GPT2Config()
@@ -140,9 +135,10 @@ def runStrongScalingBench():
     print("Model: ", "GPT2(256, 3, 16, 1000, 512")
     print("BatchSize  iterMs    fpMs    bpMs")
     for batchSize in [2 ** exp for exp in range(1, 5)]:
-        iterTime, fpTime, bpTime = profiler.benchModelNLP(model, inputSize, batchSize, profile=True)
-        print(" %8d  %6.1f  %6.1f  %6.1f" %
-            (batchSize, iterTime / 1000, fpTime / 10000, bpTime / 1000))
+        assert False
+        # iterTime, fpTime, bpTime = profiler.benchModelNLP(model, inputSize, batchSize, profile=True)
+        # print(" %8d  %6.1f  %6.1f  %6.1f" %
+            # (batchSize, iterTime / 1000, fpTime / 10000, bpTime / 1000))
 
 
 if __name__ == "__main__":

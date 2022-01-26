@@ -11,7 +11,6 @@ currentdir = os.path.dirname(os.path.realpath(__file__))
 parentdir = os.path.dirname(currentdir)
 sys.path.append(parentdir)
 from parallelizationPlanner import CostSim
-from parallelizationPlanner import GpuProfiler
 from clusterClient import ClusterClient
 from jobDescription import TrainingJob
 
@@ -67,7 +66,7 @@ class BasicBlock(nn.Module):
         # Both self.conv1 and self.downsample layers downsample the input when stride != 1
         self.conv1 = conv3x3(inplanes, planes, stride)
         self.bn1 = norm_layer(planes)
-        self.relu = nn.ReLU(inplace=True)
+        self.relu = cs.ReLU(inplace=False)
         self.conv2 = conv3x3(planes, planes)
         self.bn2 = norm_layer(planes)
         self.downsample = downsample
@@ -133,7 +132,7 @@ class Bottleneck(nn.Module):
         else:
             self.downsample = None
         # self.relu = cs.ReLU(inplace=True, custom_previous_layers=[layerMainBranch, layerSideBranch])
-        self.relu = cs.ReLU(inplace=True)
+        self.relu = cs.ReLU(inplace=False)
         self.stride = stride
 
     def forward(self, x: Tensor) -> Tensor:
@@ -191,7 +190,7 @@ class ResNet(nn.Module):
         self.conv1 = cs.Conv2d(3, self.inplanes, kernel_size=7, stride=2, padding=3,
                                bias=False)
         self.bn1 = norm_layer(self.inplanes)
-        self.relu = cs.ReLU(inplace=True)
+        self.relu = cs.ReLU(inplace=False)
         self.maxpool = cs.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.layer1 = self._make_layer(block, 64, layers[0])
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2,
@@ -427,10 +426,8 @@ def wide_resnet101_2(pretrained: bool = False, progress: bool = True, **kwargs: 
 
 
 def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=False, netBw=2.66E5, spatialSplit=False, simResultFilename=None, simOnly=False, use_be=False):
-    profiler = GpuProfiler("cuda")
-    profiler.loadProfile()
     global cs
-    cs = CostSim(profiler, netBw=netBw, verbose=True, gpuProfileLoc="resnetLayerGpuProfileA100V2.txt", gpuProfileLocSub="resnetLayerGpuProfileA100.txt")
+    cs = CostSim(None, netBw=netBw, verbose=True, gpuProfileLoc="resnetLayerGpuProfileA100V2.txt", gpuProfileLocSub="resnetLayerGpuProfileA100.txt")
     model = resnet34()
     # model = resnet152()
     # model = wide_resnet101_2()
@@ -441,7 +438,6 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     print("  %2d    %2d   %4.1f  %4.1f\n" % (globalBatch, maxGpusUsed, iterMs, gpuMs))
 
     jobInJson = job.dumpInJSON()
-    profiler.saveProfile()
     # for rank in range(4):
     #     print("GPU rank: %d"%rank)
     #     print(job.dumpSingleRunnableModule(rank))
@@ -548,10 +544,9 @@ def runAllConfigs(modelName: str, clusterType: str, simOnly=True):
     # fr.close()
 
 def runStrongScalingBench(modelName='resnet50'):
-    profiler = GpuProfiler("cuda")
     global cs
     netBw = 2.66E5
-    cs = CostSim(profiler, netBw=netBw, verbose=False)
+    cs = CostSim(None, netBw=netBw, verbose=False)
     inputSize = (3,224,224)
     if modelName == 'resnet50':
         model = resnet50(pretrained=False)
@@ -561,14 +556,15 @@ def runStrongScalingBench(modelName='resnet50'):
     print("Model: ", modelName)
     print("BatchSize  iterMs    fpMs    bpMs")
     for batchSize in [2 ** exp for exp in range(1, 9)]:
-        iterTime, fpTime, bpTime = profiler.benchModel(model, inputSize, batchSize)
-        print(" %8d  %6.1f  %6.1f  %6.1f" %
-            (batchSize, iterTime / 1000, fpTime / 10000, bpTime / 1000))
+        assert False
+        # iterTime, fpTime, bpTime = profiler.benchModel(model, inputSize, batchSize)
+        # print(" %8d  %6.1f  %6.1f  %6.1f" %
+        #     (batchSize, iterTime / 1000, fpTime / 10000, bpTime / 1000))
 
 def generateJit():
     global cs
     netBw = 2.66E5
-    cs = CostSim(GpuProfiler("cuda"), netBw=netBw, verbose=False)
+    cs = CostSim(None, netBw=netBw, verbose=False)
 
     fakeInputSize = (16,3,224,224)
     fakeInput = torch.zeros(fakeInputSize)

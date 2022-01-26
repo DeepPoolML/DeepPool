@@ -11,7 +11,6 @@ currentdir = os.path.dirname(os.path.realpath(__file__))
 parentdir = os.path.dirname(currentdir)
 sys.path.append(parentdir)
 from parallelizationPlanner import CostSim
-from parallelizationPlanner import GpuProfiler
 from clusterClient import ClusterClient
 from jobDescription import TrainingJob
 
@@ -429,17 +428,14 @@ def wide_resnet101_2(pretrained: bool = False, progress: bool = True, **kwargs: 
 
 
 def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=False, netBw=2.66E5, spatialSplit=False, simResultFilename=None, simOnly=False, use_be=False):
-    profiler = GpuProfiler("cuda")
-    profiler.loadProfile()
     global cs
-    cs = CostSim(profiler, netBw=netBw, verbose=True, gpuProfileLoc="profile/A100_wrn.prof")
+    cs = CostSim(None, netBw=netBw, verbose=True, gpuProfileLoc="profile/A100_wrn.prof")
     model = wide_resnet101_2()
     cs.printAllLayers(slient=True)
     cs.computeInputDimensions((3,224,224))
     # job, iterMs, gpuMs = cs.searchBestSplits(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
     job, iterMs, gpuMs, maxGpusUsed = cs.searchBestSplitsV3(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
     jobInJson = job.dumpInJSON()
-    profiler.saveProfile()
     # for rank in range(4):
     #     print("GPU rank: %d"%rank)
     #     print(job.dumpSingleRunnableModule(rank))
@@ -516,7 +512,7 @@ def runAllConfigs(modelName: str, clusterType: str, simOnly=True):
 def generateJit():
     global cs
     netBw = 2.66E5
-    cs = CostSim(GpuProfiler("cuda"), netBw=netBw, verbose=False)
+    cs = CostSim(None, netBw=netBw, verbose=False)
 
     fakeInputSize = (16,3,224,224)
     fakeInput = torch.zeros(fakeInputSize)

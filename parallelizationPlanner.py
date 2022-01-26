@@ -96,18 +96,11 @@ class CostSim:
         
 
     def queryLayerProfileCache(self, layer, config: tuple):
-        layerInfo = self.getLayerIdentifier(layer, config)
-        if layerInfo in self.layerProfileCache:
-            return self.layerProfileCache[layerInfo]["avg"]
-        else:
-            return 0
+        return sum(self.queryFwBwTime(layer, config))
 
     def queryFwBwTime(self, layer, config: tuple):
-        layerInfo = self.getLayerIdentifier(layer, config)
-        if layerInfo in self.layerProfileCache:
-            return (self.layerProfileCache[layerInfo]["fwTime"], self.layerProfileCache[layerInfo]["bwTime"])
-        else:
-            return (0, 0)
+        p = GpuProfiler("cuda")
+        return p.queryFwBwTime(layer.scriptModule(), layer.getRandomInputs(config[0]))
 
     def generateModuleDescription(self, layerConfigs: list, globalBatch: int):
         # gpuTimeSum = 0
@@ -145,6 +138,9 @@ class CostSim:
                 print("%3d %12s %20s %20s  %s" % (i, layer.name, str(prevLayerIds), str(nextLayerIds), str(layer.params)) )
     
     def computeInputDimensions(self, inputDim):
+        self.layers[0].setInputShapes([torch.zeros(inputDim)])
+        self.layers[-1].getOutputShape()
+        return
         for i in range(len(self.layers)):
             layer = self.layers[i]
 
@@ -520,8 +516,8 @@ class CostSim:
         def __init__(self, dim: int = 1):
             super(CostSim.ConcatInputs, self).__init__()
             self.dim = dim
-            
-        def forward(self, inputList: List[torch.Tensor]):
+
+        def forward(self, *inputList: List[torch.Tensor]):
             out = torch.cat(inputList, dim=self.dim)
             return out
 
@@ -531,6 +527,7 @@ class CostSim:
         if custom_previous_layers == None and len(self.layers) > 0:
             custom_previous_layers = [self.layers[-1]]
         layer = Layer(module, "concat", {"kernel_size": 1}, prevLayers = custom_previous_layers)
+        layer.must_trace = True
         self.layers.append(layer)
         return
 
@@ -560,24 +557,10 @@ class CostSim:
         self.layers.append(layer)
         return layer
 
-    def getInitialConfig(self, layer, globalBatch: int):
-        if layer.name in ["conv2d"]:
-            initCfg = (globalBatch, layer.inputDim[1], layer.inputDim[2], layer.inputDim[0], layer.outputDim[2]) # (batch, width, height, channel, filter)
-        elif layer.name in ["linear", "ReLU1d"]:
-            if type(layer.inputDim) == tuple:
-                initCfg = (globalBatch, *layer.inputDim, layer.outputDim)
-            else:
-                initCfg = (globalBatch, layer.inputDim, layer.outputDim)
-        elif layer.name in ["flatten", "maxPool2d", "avgPool2d", "adAvgPool2d", "ReLU2d", "concat"]:
-            initCfg = (globalBatch, layer.inputDim[1], layer.inputDim[2], layer.inputDim[0]) # (batch, width, height, channel, filter)
-        elif layer.name in ["add"]:
-            initCfg = (globalBatch, *layer.inputDim)
-        else:
-            initCfg = (globalBatch, *layer.inputDim) if type(layer.inputDim) == tuple else (globalBatch, layer.inputDim) # (batch, width, height, channel)
-        return initCfg
+
 
     def listConfigOptions(self, layer, globalBatch: int, totalGpus: int, samplePo2=True, sampleSplit=True, spatialSplit=True, filterSplit=False, pruneHeuristics=False, dataParallelBaseline=False):
-        initCfg = self.getInitialConfig(layer, globalBatch)
+        initCfg = layer.getInitialConfig(globalBatch)
         totalSplits = int(math.log(totalGpus, 2))
 
         # generate config candidates.
@@ -662,7 +645,7 @@ class CostSim:
                 print( "%3d    %5s   %5s   %5s :   %11d  %11d" % (totalGpus, str(sampleSplit), str(spatialSplit), str(filterSplit), len(configs), len(prunedConfigs) ))
 
     def calcGpusNeeded(self, layer, config: tuple, globalBatch: int):
-        initCfg = self.getInitialConfig(layer, globalBatch)
+        initCfg = layer.getInitialConfig(globalBatch)
         gpuCount = 1
         # if len(config) != len(initCfg):
         #     print("[calcGpusNeeded] dimension of configs doesn't match!! %20s layer len(config):%d != len(initCfg):%d" % (layer.name, len(config), len(initCfg)))
@@ -671,7 +654,7 @@ class CostSim:
         return gpuCount
     
     def isConfigDataParallelOnly(self, layer, config: tuple, globalBatch: int):
-        initCfg = self.getInitialConfig(layer, globalBatch)
+        initCfg = layer.getInitialConfig(globalBatch)
         dpOnly = True
         for i in range(1, len(config)):
             if config[i] != initCfg[i]:
@@ -690,6 +673,7 @@ class CostSim:
             assert ctx.totalGpus == 1
             return 1
 
+        assert False, "need new profiler"
         if layer.name in ["conv2d"]:
             gpuTime = self.profiler.runConv2dBench(config, layer.params, profile)
             print(" Something bad happened!! Missed queryLayerProfileCache")
@@ -727,7 +711,7 @@ class CostSim:
             bestDataParallelTimeList = []
             for idx in range(length):
                 layer = llist[branchIdx][idx]
-                initCfg = self.getInitialConfig(layer, globalBatch)
+                initCfg = layer.getInitialConfig(globalBatch)
 
                 bestTime = self.benchGpuTime(layer, initCfg)
                 bestDataParallelTime = bestTime
@@ -1121,7 +1105,7 @@ class CostSim:
         for i in range(len(self.layers)):
             layer = self.layers[i]
 
-            initCfg = self.getInitialConfig(layer, globalBatch)
+            initCfg = layer.getInitialConfig(globalBatch)
             initialConfigs.append(initCfg)
 
             noParallelTime = self.benchGpuTime(layer, initCfg)
@@ -1349,7 +1333,7 @@ class CostSim:
         while True:
             i = layer.id
             
-            initCfg = self.getInitialConfig(layer, globalBatch)
+            initCfg = layer.getInitialConfig(globalBatch)
             initialConfigs.append(initCfg)
 
             bestTime = self.benchGpuTime(layer, initCfg)
@@ -1503,7 +1487,7 @@ class CostSim:
         while True:
             layer.t = {}
 
-            initCfg = self.getInitialConfig(layer, ctx.globalBatch)
+            initCfg = layer.getInitialConfig(ctx.globalBatch)
             layer.initCfg = initCfg
             layer.noParallelTime = self.benchGpuTime(layer, initCfg, ctx=ctx) + self.calcSyncTime(layer, initCfg, ctx)
             
@@ -1609,7 +1593,7 @@ class CostSim:
         else:
             startCfgOptions = startLayer.t.keys()
 
-        initCfg = self.getInitialConfig(startLayer, ctx.globalBatch)
+        initCfg = startLayer.getInitialConfig(ctx.globalBatch)
         startLayer.initCfg = initCfg
         startLayer.noParallelTime = self.benchGpuTime(startLayer, initCfg, ctx=ctx) + self.calcSyncTime(startLayer, initCfg, ctx)
 
@@ -1669,7 +1653,7 @@ class CostSim:
                     bestPrevCfgListByEndCfg[joinConfig] = bestPrevCfgList
                     mpIdleTimeByEndCfg[joinConfig] = mpIdleTime
 
-        joiningLayerInitCfg = self.getInitialConfig(joiningLayer, ctx.globalBatch)
+        joiningLayerInitCfg = joiningLayer.getInitialConfig(ctx.globalBatch)
         joiningLayer.initCfg = joiningLayerInitCfg
         joiningLayer.noParallelTime = self.benchGpuTime(joiningLayer, joiningLayerInitCfg, ctx=ctx) + self.calcSyncTime(joiningLayer, joiningLayerInitCfg, ctx)
         joiningLayer.t = {}
@@ -1775,7 +1759,7 @@ class CostSim:
         lastAssign = []
         for ln, layer in enumerate(self.layers):
             layer.t = {}
-            layer.initCfg = self.getInitialConfig(layer, globalBatch)
+            layer.initCfg = layer.getInitialConfig(globalBatch)
             doDp = not randomMode
             configCandidates = self.listConfigOptions(layer, globalBatch, totalGpus, spatialSplit=False, dataParallelBaseline=doDp)
             if randomMode and random.random() < per_layer_rand_prob:
@@ -1823,7 +1807,7 @@ class CostSim:
                 continue
             if not hasattr(layer, "initCfg"):
                 # print("no initCfg", end="")
-                layer.initCfg = self.getInitialConfig(layer, ctx.globalBatch)
+                layer.initCfg = layer.getInitialConfig(ctx.globalBatch)
                 # continue
             gpusUsed = totalGpus
             gpuTime = 1
@@ -1840,7 +1824,7 @@ class CostSim:
         bestTime = 99999999999
         bestLastCfg = None
         bestLastLayerTime = None
-        finalLayer.initCfg = self.getInitialConfig(finalLayer, ctx.globalBatch)
+        finalLayer.initCfg = finalLayer.getInitialConfig(ctx.globalBatch)
         for lastCfg in finalLayer.t:
             cumulativeTime, layerTime, prevCfg, timeComposition, prevMpIdleTime = finalLayer.t[lastCfg]
             if cumulativeTime < bestTime:
@@ -2026,7 +2010,7 @@ class CostSim:
                 continue
             if not hasattr(layer, "initCfg"):
                 print("no initCfg", end="")
-                layer.initCfg = self.getInitialConfig(layer, ctx.globalBatch)
+                layer.initCfg = layer.getInitialConfig(ctx.globalBatch)
                 # continue
             
             if layer.name in ["conv2d"]:

@@ -13,6 +13,10 @@ export Torch_DIR=$CONDA_PREFIX/lib/python3.9/site-packages/torch/share/cmake/Tor
 export CUDAToolkit_ROOT=$CUDA_HOME
 export CUDACXX=$CUDA_HOME/bin/nvcc
 
+pushd bench
+python setup.py install &
+setuppid=$!
+popd
 
 # CPP runtime build.
 mkdir -p csrc/build
@@ -20,3 +24,5 @@ pushd csrc/build/
 cmake ..
 make -j
 popd
+
+wait $setuppid

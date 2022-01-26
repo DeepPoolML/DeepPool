@@ -10,7 +10,6 @@ currentdir = os.path.dirname(os.path.realpath(__file__))
 parentdir = os.path.dirname(currentdir)
 sys.path.append(parentdir)
 from parallelizationPlanner import CostSim
-from parallelizationPlanner import GpuProfiler
 from clusterClient import ClusterClient
 from jobDescription import TrainingJob
 
@@ -288,10 +287,8 @@ def vgg19_bn(pretrained=False, **kwargs):
     return model
 
 def genTestJob(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=False):
-    profiler = GpuProfiler("cuda")
-    profiler.loadProfile()
     global cs
-    cs = CostSim(profiler, netBw=1.25E5, verbose=True)
+    cs = CostSim(None, netBw=1.25E5, verbose=True)
     model = vgg16(pretrained=False)
     cs.printAllLayers()
     cs.computeInputDimensions((3,224,224))
@@ -350,13 +347,11 @@ def testRunOnCPU():
 """
 
 def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=False, netBw=2.66E5, spatialSplit=False, simResultFilename=None, use_be=False):
-    profiler = GpuProfiler("cuda")
-    profiler.loadProfile()
     global cs
-    cs = CostSim(profiler, netBw=netBw, verbose=False, gpuProfileLoc="profile/A100_vgg.prof")
+    cs = CostSim(None, netBw=netBw, verbose=False, gpuProfileLoc="profile/A100_vgg.prof")
     model = vgg16(pretrained=False)
     
-    saveWholeModel = True
+    saveWholeModel = False
     if saveWholeModel:
         fakeInput = torch.zeros(cs.layers[0].inputDim)
         traced = torch.jit.script(model, fakeInput)
@@ -371,9 +366,10 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     # job = cs.searchBestSplits(4, 16, dataParallelBaseline=True)
     # job = cs.searchBestSplits(4, 16)
     # job = cs.searchBestSplits(gpuCount, globalBatch, dataParallelBaseline=True)
-    job, iterMs, gpuMs = cs.searchBestSplits(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
+    # job, iterMs, gpuMs = cs.searchBestSplits(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
     job, iterMs, gpuMs, maxGpusUsed = cs.searchBestSplitsV3(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
     print("Searching for parallelization strategy is completed.\n")
+    cs.to_dot("Digraph", globalBatch)
 
     jobInJson = job.dumpInJSON()
     # print("\n*** General description ***\n")
@@ -395,8 +391,6 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     # print(jobInJson)
 
     # testRunOnCPU()
-
-    profiler.saveProfile()
 
     if not spatialSplit:
         cc = ClusterClient()
@@ -530,10 +524,9 @@ def runAllConfigs(modelName: str, clusterType: str):
     # fr.close()
 
 def runStrongScalingBench(modelName='vgg16'):
-    profiler = GpuProfiler("cuda")
     global cs
     netBw = 2.66E5
-    cs = CostSim(profiler, netBw=netBw, verbose=False)
+    cs = CostSim(None, netBw=netBw, verbose=False)
     inputSize = (3,224,224)
     if modelName == 'vgg11':
         model = vgg11(pretrained=False)
@@ -546,9 +539,10 @@ def runStrongScalingBench(modelName='vgg16'):
     print("Model: ", modelName)
     print("BatchSize  iterMs    fpMs    bpMs")
     for batchSize in [2 ** exp for exp in range(1, 9)]:
-        iterTime, fpTime, bpTime = profiler.benchModel(model, inputSize, batchSize)
-        print(" %8d  %6.1f  %6.1f  %6.1f" %
-            (batchSize, iterTime / 1000, fpTime / 10000, bpTime / 1000))
+        assert False
+        # iterTime, fpTime, bpTime = profiler.benchModel(model, inputSize, batchSize)
+        # print(" %8d  %6.1f  %6.1f  %6.1f" %
+            # (batchSize, iterTime / 1000, fpTime / 10000, bpTime / 1000))
 
 
 if __name__ == "__main__":
