@@ -121,9 +121,10 @@ void JobContext::printJobStatistics() {
  *
  * \return    returns non-zero if iteration is finished.
  */
-void JobContext::StepOne(bool *iter_done, bool *job_done) {
+void JobContext::StepOne(bool *iter_done) {
+  if (job_done_) return;
   bool graphCapture = totiters == iters_before_graph_capture;
-  bool profile = rtctx->profile && totiters == iters_before_graph_capture - 5;
+  bool profile = rtctx->profile && totiters == iters_before_graph_capture - 3;
 
   if (!iter_in_progress) {
     if (totiters == profile_iter_start) CUDA_API_CALL(cudaProfilerStart());
@@ -148,7 +149,7 @@ void JobContext::StepOne(bool *iter_done, bool *job_done) {
       CUDA_API_CALL(cudaProfilerStop());
     rtctx->fgcounter++;
     if (profile) {
-      if (job_done) *job_done = true;
+      job_done_ = true;
       return;
     }
     ++totiters;
@@ -215,7 +216,7 @@ void JobContext::TrainOneEpoch() {
   size_t i = 0;
   if (iters_before_graph_capture < totiters && rtctx->use_fg_graph)
     iters_before_graph_capture = totiters + 5;
-  while (!dataset_pipeline_->IsDone()) {
+  while (!dataset_pipeline_->IsDone() && !job_done_) {
     auto batch = dataset_pipeline_->getNextThisRank();
     Train(batch.data, batch.target);
     DP_LOG(DEBUG, "Training iteration %lu/%lu\n", ++i,
@@ -237,8 +238,8 @@ void JobContext::TrainOneEpoch() {
  * \return    returns non-zero if iteration is finished.
  */
 void JobContext::FinishIteration() {
-  bool iter_done = false, job_done = false;
+  bool iter_done = false;
   do {
-    StepOne(&iter_done, &job_done);
-  } while (!iter_done && !job_done);
+    StepOne(&iter_done);
+  } while (!iter_done && !job_done_);
 }

@@ -55,7 +55,7 @@ class JobContext {
   void Test();
 
   /* Advance one step through the the model */
-  void StepOne(bool *iter_done, bool *job_done);
+  void StepOne(bool *iter_done);
 
   /* Advance to the end of an iteration*/
   void FinishIteration();
@@ -82,6 +82,8 @@ class JobContext {
   size_t profile_iter_start{ULLONG_MAX};
   size_t niter_to_profile{5};
   bool autocast_{false};
+
+  bool job_done_{false};
 
   std::shared_ptr<Dataset> train_dataset_;
   std::shared_ptr<Dataset> eval_dataset_;

@@ -179,6 +179,7 @@ int RuntimeContext::poll() {
   mainJob->printJobStatistics();
   jobList.erase(jobList.begin());
   DP_LOG(NOTICE, "Removed the completed job. Remaining: %lu", jobList.size());
+  c10::cuda::CUDACachingAllocator::emptyCache();
   return 1;
 }
 

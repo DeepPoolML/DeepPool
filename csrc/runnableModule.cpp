@@ -286,8 +286,6 @@ torch::Tensor Layer::DoForward(bool captureLayer) {
   std::vector<torch::Tensor> vec;
   for (auto& p : tensors_in) vec.push_back(p.second);
 
-  GraphTimer fwdtimer;
-  if (captureLayer) fwdtimer.StartCapture();
 
   std::vector<c10::IValue> iVec;
   if (specialModule == SpecialModuleTypes::CONCAT &&
@@ -298,6 +296,9 @@ torch::Tensor Layer::DoForward(bool captureLayer) {
   } else {
     for (auto& v : vec) iVec.emplace_back(v);
   }
+
+  GraphTimer fwdtimer;
+  if (captureLayer) fwdtimer.StartCapture();
 
   output = module.forward(iVec).toTensor();
 
@@ -331,7 +332,7 @@ void Layer::DoBackward(bool captureLayer) {
     auto& grad = nl->tensors_in[id];
     DP_LOG(DEBUG, "Backward on output:%s grad(%d):%s",
            tsrSizeToStr(output).c_str(), nl->id, tsrSizeToStr(grad).c_str());
-    output.backward(nl->tensors_in[id], nli < nextLayers.size() - 1);
+    output.backward(grad, nli < nextLayers.size() - 1);
     nl->tensors_in[id].reset();
   }
 
