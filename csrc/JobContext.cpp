@@ -52,6 +52,8 @@ JobContext::JobContext(std::unique_ptr<RunnableModule> modelIn,
   } else if (name.find("gpt2") != std::string::npos) {
     dset = "gpt2";
     runTestRoutine_ = false;
+  } else if (name.find("Inception") != std::string::npos) {
+    dset = "inception";
   }
 
   if (job_params.contains("autocast") && job_params["autocast"].get<bool>()) {

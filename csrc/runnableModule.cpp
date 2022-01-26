@@ -286,7 +286,6 @@ torch::Tensor Layer::DoForward(bool captureLayer) {
   std::vector<torch::Tensor> vec;
   for (auto& p : tensors_in) vec.push_back(p.second);
 
-
   std::vector<c10::IValue> iVec;
   if (specialModule == SpecialModuleTypes::CONCAT &&
       module.get_method("forward").function().getSchema().arguments().size() <=
@@ -301,6 +300,10 @@ torch::Tensor Layer::DoForward(bool captureLayer) {
   if (captureLayer) fwdtimer.StartCapture();
 
   output = module.forward(iVec).toTensor();
+  /* verify output shape is as expected per job description */
+  for (size_t i = 1; i < emptyOutSizes.size(); i++)
+    assert(emptyOutSizes[i] == output.sizes().vec()[i]);
+  assert(emptyOutSizes.size() == output.sizes().vec().size());
 
   if (captureLayer) fwUsec = fwdtimer.EndCaptureAndTime();
 
@@ -363,6 +366,8 @@ static torch::Tensor getSampleSlice(torch::Tensor& in, ssize_t offset,
 void RunnableModule::ExecuteXfers(Layer* layer, bool backward) {
   if (!layer->xfers.size() && !layer->xfers_local.size()) return;
 
+  DP_LOG(DEBUG, "Executing xfers for layer %d", layer->id);
+
   std::map<size_t, torch::Tensor> inbound_tensors;
   std::map<size_t, torch::Tensor> outbound_tensors;
 
@@ -397,10 +402,12 @@ void RunnableModule::ExecuteXfers(Layer* layer, bool backward) {
     const std::pair<size_t, size_t>& src = backward ? ixfer.dst : ixfer.src;
     const std::pair<size_t, size_t>& dst = backward ? ixfer.src : ixfer.dst;
 
-    DP_LOG(DEBUG,
-           "Transferring samples from rank %lu layer %lu pos %lu to rank %lu "
-           "layer %d pos %lu",
-           src.first, lid, src.second, dst.first, layer->id, dst.second);
+    DP_LOG(
+        DEBUG,
+        "Transferring %lu samples from rank %lu layer %lu pos %lu to rank %lu "
+        "layer %d pos %lu",
+        ixfer.nr_samples, src.first, lid, src.second, dst.first, layer->id,
+        dst.second);
 
     if (src.first == static_cast<size_t>(rtctx->rank)) {
       auto tsr = getSampleSlice(outbound_tensors.at(lid), src.second,
@@ -423,9 +430,9 @@ void RunnableModule::ExecuteXfers(Layer* layer, bool backward) {
     const std::pair<size_t, size_t>& dst = backward ? ixfer.src : ixfer.dst;
 
     DP_LOG(DEBUG,
-           "Copying samples from layer %lu pos %lu to "
+           "Copying %lu samples from layer %lu pos %lu to "
            "layer %d pos %lu",
-           lid, src.second, layer->id, dst.second);
+           ixfer.nr_samples, lid, src.second, layer->id, dst.second);
 
     auto srcTsr =
         getSampleSlice(outbound_tensors.at(lid), src.second, ixfer.nr_samples);
@@ -595,7 +602,8 @@ int RunnableModule::AdvanceTraining(bool doGraphCapture, bool layerProfile) {
     }
 
     fpOutput.reset();
-    optimizer->zero_grad();
+    for (auto& group : optimizer->param_groups())
+      for (auto& param : group.params()) param.mutable_grad() = torch::Tensor();
     TimerRecord("zero");
     state = JobState::FORWARD;
     DP_LOG(DEBUG, "Foward pass is starting soon.");
