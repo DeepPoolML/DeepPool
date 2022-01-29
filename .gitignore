@@ -139,3 +139,13 @@ gpuProfile.json
 *.qdrep
 *.sqlite
 *.json
+
+data/*
+data_collection/*
+misc/*
+runs/*
+runtime/*
+*timings.txt
+*.out
+csrc/_deps/*
+csrc/CMakeFiles/*
