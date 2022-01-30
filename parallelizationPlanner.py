@@ -75,6 +75,9 @@ class CostSim:
         else:
             print("!!! gpuProfileLoc is not supplied for CostSim")
 
+    def setLossFunction(self, lossfn):
+        self.layers[-1].losslayer = lossfn
+
     def loadGpuProfile(self, gpuProfileLoc):
         with open(gpuProfileLoc, "r") as f:
             for line in f:
@@ -100,7 +103,7 @@ class CostSim:
 
     def queryFwBwTime(self, layer, config: tuple):
         p = GpuProfiler("cuda")
-        return p.queryFwBwTime(layer.scriptModule(), layer.getRandomInputs(config[0]))
+        return p.queryFwBwTime(layer, config)
 
     def generateModuleDescription(self, layerConfigs: list, globalBatch: int):
         # gpuTimeSum = 0
@@ -137,9 +140,10 @@ class CostSim:
             if slient == False:
                 print("%3d %12s %20s %20s  %s" % (i, layer.name, str(prevLayerIds), str(nextLayerIds), str(layer.params)) )
     
-    def computeInputDimensions(self, inputDim):
-        self.layers[0].setInputShapes([torch.zeros(inputDim)])
-        self.layers[-1].getOutputShape()
+    def computeInputDimensions(self, inputDim, dtype=torch.float32):
+        self.layers[0].setInputShapes([torch.zeros(inputDim, dtype=dtype)])
+        for l in self.layers:
+            l.getOutputShape()
         return
         for i in range(len(self.layers)):
             layer = self.layers[i]

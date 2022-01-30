@@ -63,16 +63,19 @@ std::string tsrSizeToStr(torch::Tensor tensor)
 
 class CUDAPipeline {
  public:
+  CUDAPipeline(size_t depth, size_t sleep_tm)
+      : depth_(depth), sleep_tm_(sleep_tm) {}
   CUDAPipeline(size_t depth) : depth_(depth) {}
   void Lap() {
     if (cur_idx_++ % depth_ != 0) return;
-    while (!ev_.query()) usleep(100);
+    while (!ev_.query()) usleep(sleep_tm_);
     ev_ = at::cuda::CUDAEvent();
     ev_.record();
   }
 
  private:
   size_t depth_;
+  size_t sleep_tm_{100};
   size_t cur_idx_{0};
   at::cuda::CUDAEvent ev_;
 };

@@ -79,7 +79,7 @@ class JobContext {
   size_t epochsToTrain{1};
   size_t itersToTrain{5000};
   size_t warmupIters{200};
-  size_t profile_iter_start{ULLONG_MAX};
+  size_t profile_iter_start{3};
   size_t niter_to_profile{5};
   bool autocast_{false};
 
@@ -90,8 +90,8 @@ class JobContext {
   std::shared_ptr<DatasetPipelineWrapper> dataset_pipeline_;
 
   bool iter_in_progress{false};
-  size_t totiters{0};                    // total iters executed
-  size_t iters_before_graph_capture{5};  // set high to disable graph capture
+  size_t totiters{0};                     // total iters executed
+  size_t iters_before_graph_capture{10};  // set high to disable graph capture
 };
 
 #endif  // TASK_MANAGER_H

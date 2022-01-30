@@ -47,7 +47,7 @@ class TensorProperties:
 
     def genRand(self, batchsize, device):
         iSize = (batchsize,) + self.tensor_shape()
-        return torch.randn(iSize, dtype=self.dtype()).to(device)
+        return torch.zeros(iSize, dtype=self.dtype()).to(device)
 
 class Layer:
     def __init__(self, module, name: str, params: tuple, prevLayers: list):
@@ -61,6 +61,7 @@ class Layer:
         self.module = module
         self.jit_module = None
         self.moduleSavedLocation = None
+        self.losslayer = ""
 
         # self.inputDim = (0, 0, 0)   # (Channel, Width, Height) for 2d convolution
         # self.outputDim = (0, 0, 0)  # (Channel, Width, Height)
@@ -115,15 +116,16 @@ class Layer:
             m.hexdigest()
 
     def scriptModule(self):
-        moduleId = self.getModuleId()
-        saveLocation = os.getcwd() + f"/modules/scriptmodule_{moduleId}.pt"
-        self.moduleSavedLocation = saveLocation
-        if exists(saveLocation): # Skip if module file is already there.
+        if not self.moduleSavedLocation:
+            moduleId = self.getModuleId()
+            saveLocation = os.getcwd() + f"/modules/scriptmodule_{moduleId}.pt"
+            self.moduleSavedLocation = saveLocation
+        if exists(self.moduleSavedLocation): # Skip if module file is already there.
             if not self.jit_module:
-                self.jit_module = torch.jit.load(saveLocation).to("cuda")
+                self.jit_module = torch.jit.load(self.moduleSavedLocation).to("cuda")
             return self.jit_module
 
-        fakeInput = self.getRandomInputs(1, "cuda")
+        fakeInput = self.getRandomInputs(1, "cpu")
         if self.must_trace:
             print("jit tracing...", self.name)
             traced = torch.jit.trace(self.module, fakeInput)
@@ -131,8 +133,8 @@ class Layer:
             print("jit scripting...", self.name)
             traced = torch.jit.script(self.module, fakeInput)
         # saveLocation = "modules/scriptmodule_%d.pt"%self.id
-        self.jit_module = traced.to("cuda")
-        torch.jit.save(traced, saveLocation)
+        torch.jit.save(traced, self.moduleSavedLocation)
+        self.jit_module = torch.jit.load(self.moduleSavedLocation).to("cuda")
         return self.jit_module
 
     def getInitialConfig(self, globalBatch: int):

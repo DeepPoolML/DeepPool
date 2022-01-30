@@ -121,12 +121,14 @@ Dataset *Dataset::fromName(std::string name, size_t rank, long globalBatchSize,
 
   if (name.find("gpt2") != std::string::npos) {
     DP_LOG(DEBUG, "Using GPT2 fake dataset");
-    auto opts = torch::TensorOptions().dtype(torch::kInt32);
+    auto dopts = torch::TensorOptions().dtype(torch::kInt32);
+    auto topts =
+        torch::TensorOptions().dtype(torch::kInt64).requires_grad(false);
     auto gen = [=] {
       auto data = torch::randint(/*low=*/0, /*high=*/1024,
-                                 {globalBatchSize, 1024}, opts);
+                                 {globalBatchSize, 1024}, dopts);
       auto target = torch::randint(/*low=*/0, /*high=*/1024,
-                                   {globalBatchSize, 1024}, opts);
+                                   {globalBatchSize, 1024}, topts);
       return torch::data::Example<>(data, target);
     };
     return new FakeDataset(rank, globalBatchSize, initialBatchSizes,
@@ -135,7 +137,8 @@ Dataset *Dataset::fromName(std::string name, size_t rank, long globalBatchSize,
 
   DP_LOG(DEBUG, "Using fake dataset");
   long px = name.find("inception") != std::string::npos ? 299 : 224;
-  auto targetOpts = torch::TensorOptions().dtype(torch::kInt64);
+  auto targetOpts =
+      torch::TensorOptions().dtype(torch::kInt64).requires_grad(false);
   auto gen = [=] {
     auto data = torch::randn({globalBatchSize, 3, px, px});
     auto target =

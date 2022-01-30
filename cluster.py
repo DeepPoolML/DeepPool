@@ -104,9 +104,10 @@ class Location:
         self.proxy = None
         self.isCpp = isCpp
         self.is_local = address == "127.0.0.1"
+        self.process = None
 
-    def getProxy(self, maxRetry = 32, reuseCached = True):
-        if reuseCached and self.proxy != None:
+    def getProxy(self, maxRetry = 180):
+        if self.proxy != None:
             # print("getProxy() returned from cached proxy value.")
             return self.proxy
 
@@ -167,6 +168,10 @@ class Location:
             exit(1)
         return
     
+    def __monitor(self):
+        self.process.wait()
+        sys.exit(0)
+
     def rshAsync(self, command, **kwargs):
         print("Sending cmd: %s" % command)
         if self.is_local:
@@ -175,8 +180,10 @@ class Location:
         else:
             sh_command = ['ssh', '-i', self.sshKeyPath, '-o StrictHostKeyChecking=no', '%s@%s' % (self.userId, self.address),
                     '%s' % command]
-        p = subprocess.Popen(sh_command, **kwargs)
-        return p
+        self.process = subprocess.Popen(sh_command, **kwargs)
+        t = threading.Thread(target=Location.__monitor, args=(self,), daemon=True)
+        t.start()
+        return self.process
 
     def upSync(self, localPath, remotePath):
         if self.is_local:
@@ -365,15 +372,15 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
             stdoutFp = open(f"{logdir}/runtime%d.out"%i, "a", buffering=1)
             stderrFp = open(f"{logdir}/runtime%d.err"%i, "a", buffering=1)
             nsysPrefix = ""
-            if profile:# and location.device == 0: # Only run 1 nsys per host.
-                nsysPrefix = "nsys profile -f true -o net%d -c cudaProfilerApi --capture-range-end=stop-shutdown -t cuda,nvtx --export sqlite " % i # -s none
+            if "--cuda_profile" in extra_args:# and location.device == 0: # Only run 1 nsys per host.
+                nsysPrefix = "nsys profile -f true -o net%d -c cudaProfilerApi -t cuda,nvtx --export sqlite " % i # -s none
             if manualLaunch:
                 print("Skipping ssh launching runtime. Must have launched them manually.")
             elif cppRuntime:
                 self.processes.append(location.rshAsync(
                     f"CUDA_VISIBLE_DEVICES={location.device} {nsysPrefix} {self.workDir}/csrc/build/runtime" + \
-                    " --myAddr %s:%d --device 0 --c10dBackend %s --rank %d --worldSize %d --logdir %s --be_batch_size %d %s %s" % \
-                        (location.address, location.port, c10dBackend, i, len(self.locations), logdir, self.be_batch_size, "" if profile else "", " ".join(extra_args)) #+ \
+                    " --myAddr %s:%d --device 0 --c10dBackend %s --rank %d --worldSize %d --logdir %s --be_batch_size %d %s" % \
+                        (location.address, location.port, c10dBackend, i, len(self.locations), logdir, self.be_batch_size, " ".join(extra_args)) #+ \
                     , stdout=stdoutFp, stderr=stderrFp))
             else:
                 self.processes.append(location.rshAsync(
@@ -406,7 +413,7 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
         
         time.sleep(2) ## + (15 if profile else 0))
         for location in self.locations:
-            proxy = location.getProxy(reuseCached=False)
+            proxy = location.getProxy()
             proxy.poke()
 
     def shutdownRuntimeAll(self):
@@ -556,16 +563,11 @@ def main():
     coordinator.initCommBackendAll(args.c10dBackend, commGrpRanksWorld)
     print("Communication backends are ready at all locations.")
     print("Now, cluster is ready to accept training jobs.")
+    sys.stdout.flush()
 
-    # def submitVGG():
-    #     job = vgg.genTestJob(1, 16)
-    #     coordinator.export_scheduleTraining("vggLocal", job.dumpInJSON())
-    # thread = threading.Thread(name='vgg.main', target=submitVGG)
-    # thread.start()
-
-    coordinator.serve_forever()
-
-    # thread.join()
+    coordinator.timeout = 1
+    while not HAS_EXCEPTION:
+        coordinator.handle_request()
 
 if __name__ == "__main__":
     main()

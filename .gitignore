@@ -139,6 +139,7 @@ gpuProfile.json
 *.qdrep
 *.sqlite
 *.json
+*.nsys-rep
 
 data/*
 data_collection/*

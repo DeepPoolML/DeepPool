@@ -75,7 +75,10 @@ struct RuntimeContext {
   std::string c10dBackend;
   int rank;
   int worldSize;
-  bool profile;
+  bool profile_stage_time;
+  bool profile_layer_times_graph;
+  bool profile_layer_times_timers;
+  bool cuda_profile;
   bool debug;
   std::string logdir;
   c10::Device c10dev;

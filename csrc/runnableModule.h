@@ -74,10 +74,14 @@ struct Layer {
         specialModule(specialModule),
         id(id),
         active(active),
-        doLocalGradSync(doLocalGradSync) {}
+        doLocalGradSync(doLocalGradSync) {
+    std::stringstream ss;
+    ss << "LAYER_" << id;
+    timerkey = ss.str();
+  }
 
   torch::Tensor DoForward(bool captureLayer);
-  void DoBackward(bool captureLayer);
+  void DoBackward(bool captureLayer, torch::Tensor& fpOutput);
 
   /* stores inputs on forward pass, gradients on backward pass */
   std::map<size_t, torch::Tensor> tensors_in;
@@ -90,6 +94,8 @@ struct Layer {
 
   std::set<size_t> tx_lids;
   std::set<size_t> rx_lids;
+
+  std::string timerkey;
 
   torch::jit::Module module;
   int64_t fwUsec{0};
@@ -167,6 +173,7 @@ class RunnableModule {
   friend class JobContext;
 
   CudaTimerChain timers;
+  CudaTimerChain layerts_fwd, layerts_bwd;
 
   bool isTrain_{true};
 
@@ -176,8 +183,19 @@ class RunnableModule {
   std::vector<long> sampleIndices;
   std::vector<long> initialBatchSizes;
 
-  inline void TimerRecord(std::string name) {
-    if (rtctx->profile && !has_graph && !graph_recording) timers.Record(name);
+  inline void TimerRecordLayer(std::string name, bool backwards) {
+    if (!rtctx->profile_layer_times_timers || has_graph || graph_recording)
+      return;
+
+    if (backwards)
+      layerts_bwd.Record(name);
+    else
+      layerts_fwd.Record(name);
+  }
+
+  inline void TimerRecordStage(std::string name) {
+    if (rtctx->profile_stage_time && !has_graph && !graph_recording)
+      timers.Record(name);
   }
 
   JobStatus forwardAStep(bool captureLayer);

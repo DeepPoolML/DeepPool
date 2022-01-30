@@ -126,10 +126,11 @@ void JobContext::printJobStatistics() {
 void JobContext::StepOne(bool *iter_done) {
   if (job_done_) return;
   bool graphCapture = totiters == iters_before_graph_capture;
-  bool profile = rtctx->profile && totiters == iters_before_graph_capture - 3;
+  bool profile = rtctx->profile_layer_times_graph && totiters == 3;
 
   if (!iter_in_progress) {
-    if (totiters == profile_iter_start) CUDA_API_CALL(cudaProfilerStart());
+    if (rtctx->cuda_profile && totiters == profile_iter_start)
+      CUDA_API_CALL(cudaProfilerStart());
     if ((graphCapture || profile) && IsBeEnabled()) BePause();
     if (totiters == warmupIters) {
       rtctx->torch_stream.synchronize();
@@ -147,8 +148,11 @@ void JobContext::StepOne(bool *iter_done) {
   if (!iter_in_progress) {
     if (autocast_) at::autocast::clear_cache();
     if ((graphCapture || profile) && IsBeEnabled() && run_with_be_) BeResume();
-    if (totiters == profile_iter_start + niter_to_profile - 1)
+    if (rtctx->cuda_profile &&
+        totiters == profile_iter_start + niter_to_profile - 1) {
       CUDA_API_CALL(cudaProfilerStop());
+      exit(0);
+    }
     rtctx->fgcounter++;
     if (profile) {
       job_done_ = true;

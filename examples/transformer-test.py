@@ -10,7 +10,7 @@ from torch import nn
 from torch.nn import CrossEntropyLoss, MSELoss
 
 
-from torchsummary import summary
+#from torchsummary import summary
 import torch
 from torch import nn, Tensor
 import numpy as np
@@ -34,7 +34,7 @@ from jobDescription import TrainingJob
 # from Project1.file1 import something
 
 from transformers.models.gpt2 import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config, GPT2Model
-from datasets import load_dataset
+#from datasets import load_dataset
 
 def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=False, netBw=2.66E5, spatialSplit=False, simResultFilename=None, simOnly=False):
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
@@ -64,7 +64,8 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     # model(**batch)
 
     cs.printAllLayers(slient=False)
-    cs.computeInputDimensions((1024))
+    cs.computeInputDimensions((1024,), dtype=torch.int32)
+    cs.setLossFunction("CrossEntropyLoss")
     # job, iterMs, gpuMs = cs.searchBestSplits(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
 
     # if dataParallelBaseline:
@@ -123,7 +124,7 @@ def runStrongScalingBench():
     batch = next(iter(dataloader))
     model = model.to('cuda')
     # model()
-    summary(model, [tuple(batch['input_ids'].size()), tuple(batch['attention_mask'].size())])
+    #summary(model, [tuple(batch['input_ids'].size()), tuple(batch['attention_mask'].size())])
 
     traced = torch.jit.trace(model, (batch['input_ids'].to('cuda'), batch['attention_mask'].to('cuda')))
 

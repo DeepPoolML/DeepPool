@@ -700,6 +700,14 @@ class InputLayer(nn.Module):
     def forward(self, x):
         return x
 
+class ShiftLogitsView(nn.Module):
+    def __init__(self):
+        super(ShiftLogitsView, self).__init__()
+
+    def forward(self, x):
+        shift_logits = x[..., :-1, :].contiguous()
+        return x.view(-1, shift_logits.size(-1))
+
 class AddLayer(nn.Module):
     def __init__(self, t1, t2):
         super(AddLayer, self).__init__()
@@ -1031,6 +1039,10 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         # global cs
         cs.GeneralLayer(self.lm_head, "lm_head", {"kernel_size": 1}, mustTrace=True)
+
+        self.logitlayer = ShiftLogitsView()
+        cs.GeneralLayer(self.logitlayer, "shift_logits", {"kernel_size": 1})
+
 
         self.init_weights()
 

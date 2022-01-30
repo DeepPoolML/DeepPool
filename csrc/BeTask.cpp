@@ -123,7 +123,7 @@ static void BeRunner(BeTaskConfig cfg) {
   graph.capture_end();
   c10::cuda::device_synchronize();
 
-  CUDAPipeline p(1);
+  CUDAPipeline p(1, 1000);
 
   if (use_graph_partitioner) {
     auto gr =
