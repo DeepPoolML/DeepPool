@@ -31,6 +31,18 @@ struct CUDAGraph {
   cudaGraphExec_t getGEXEC() { return graph_exec_; }
   cudaGraph_t getGRAPH() { return graph_; }
 
+  CUDAGraph(const CUDAGraph&) = delete;
+  CUDAGraph& operator=(const CUDAGraph&) = delete;
+
+  CUDAGraph(CUDAGraph&& other)
+      : capture_stream_(c10::cuda::getCurrentCUDAStream()) {
+    moveHelper(std::move(other));
+  }
+  CUDAGraph& operator=(CUDAGraph&& other) {
+    moveHelper(std::move(other));
+    return *this;
+  }
+
   protected:
 #if defined(CUDA_VERSION) && CUDA_VERSION >= 11000
   cudaGraph_t graph_ = NULL;
@@ -77,6 +89,20 @@ struct CUDAGraph {
   // RNG state trackers
   at::Tensor offset_extragraph_;
   uint64_t wholegraph_increment_;
+
+  void moveHelper(CUDAGraph&& other) {
+    std::swap(graph_, other.graph_);
+    std::swap(graph_exec_, other.graph_exec_);
+    std::swap(has_graph_, other.has_graph_);
+    std::swap(has_graph_exec_, other.has_graph_exec_);
+    std::swap(id_, other.id_);
+    std::swap(mempool_id_, other.mempool_id_);
+    std::swap(capture_stream_, other.capture_stream_);
+    std::swap(capture_gen_, other.capture_gen_);
+    std::swap(capture_dev_, other.capture_dev_);
+    std::swap(offset_extragraph_, other.offset_extragraph_);
+    std::swap(wholegraph_increment_, other.wholegraph_increment_);
+  }
 };
 
 } // namespace DeepPool
