@@ -15,7 +15,6 @@
 #ifndef RUNNABLE_MODULE_H
 #define RUNNABLE_MODULE_H
 
-#include <ATen/cuda/CUDAGraph.h>
 #include <c10/cuda/CUDAStream.h>
 #include <torch/script.h>
 #include <torch/torch.h>
@@ -23,6 +22,7 @@
 #include <deque>
 #include <vector>
 
+#include "CUDAGraph.h"
 #include "GradSync.h"
 #include "GraphPieces.h"
 #include "communication.h"
@@ -228,15 +228,15 @@ class RunnableModule {
   torch::Tensor input_buf, target_buf;
 
   std::shared_ptr<GraphPieces> fullgraph;
-  at::cuda::CUDAGraph maingraph, syncgraph, stepgraph;
+  DeepPool::CUDAGraph maingraph, syncgraph, stepgraph;
   at::cuda::MempoolId_t graph_mempool;
 
   void ResetGraphs() {
     fullgraph.reset();
     has_graph = false;
-    maingraph = at::cuda::CUDAGraph();
-    syncgraph = at::cuda::CUDAGraph();
-    stepgraph = at::cuda::CUDAGraph();
+    maingraph = DeepPool::CUDAGraph();
+    syncgraph = DeepPool::CUDAGraph();
+    stepgraph = DeepPool::CUDAGraph();
     rtctx->torch_stream
         .synchronize();  // sync before possible future calls into NCCL
   }

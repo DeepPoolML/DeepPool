@@ -1,18 +1,18 @@
 
 #include "BeTask.h"
 
-#include <torch/script.h>
+// clang-format off
 #include <torch/torch.h>
-
 #include <ATen/autocast_mode.h>
+// clang-format on
 #include <ATen/cuda/CUDAEvent.h>
-#include <ATen/cuda/CUDAGraph.h>
-
+#include <torch/script.h>
 
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
 
+#include "CUDAGraph.h"
 #include "GraphPieces.h"
 #include "runtime.h"
 
@@ -88,7 +88,7 @@ static void BeRunner(BeTaskConfig cfg) {
   auto fn = [&] {
     auto orig_stream = c10::cuda::getCurrentCUDAStream();
     optim.zero_grad();
-    at::cuda::CUDAEvent ev;
+    DeepPool::CUDAEvent ev;
     ev.record(orig_stream);
     for (size_t i = 0; i < tenss.size(); i++) {
       auto &st = streams.at(i);
@@ -116,7 +116,7 @@ static void BeRunner(BeTaskConfig cfg) {
   c10::cuda::setCurrentCUDAStream(cstream);
 
   for (size_t i = 0; i < 50; i++) fn();
-  at::cuda::CUDAGraph graph;
+  DeepPool::CUDAGraph graph;
   c10::cuda::device_synchronize();
   graph.capture_begin();
   fn();

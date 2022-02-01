@@ -52,7 +52,7 @@ class GraphTimer {
   }
 
  private:
-  at::cuda::CUDAGraph graph;
+  DeepPool::CUDAGraph graph;
 };
 
 /**
@@ -587,7 +587,7 @@ int RunnableModule::AdvanceTraining(bool doGraphCapture, bool layerProfile) {
       DP_LOG(NOTICE, "Starting capture.");
       graph_recording = true;
       c10::cuda::device_synchronize();
-      graph_mempool = at::cuda::graph_pool_handle();
+      graph_mempool = DeepPool::graph_pool_handle();
       maingraph.capture_begin(graph_mempool);
       commHandler->precapture();
     } else if (has_graph) {

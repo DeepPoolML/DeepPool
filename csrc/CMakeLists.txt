@@ -93,7 +93,7 @@ target_link_libraries(dp_grpc_proto
 add_executable(runtime
   "runtime.cpp" "runnableModule.cpp" "JobContext.cpp" "logger.cpp"
   "communication.cpp" "rpcService.cpp" "GraphPieces.cpp" "BeTask.cpp"
-  "CodeLocation.cpp" "Cycles.cpp" "SpinLock.cpp" "ThreadId.cpp" "cifar10.cpp" "dataset.cpp" "GradSync.cpp")
+  "CodeLocation.cpp" "Cycles.cpp" "SpinLock.cpp" "ThreadId.cpp" "cifar10.cpp" "dataset.cpp" "GradSync.cpp" "CUDAGraph.cpp")
 target_link_libraries(runtime
   dp_grpc_proto
   cudasleep
