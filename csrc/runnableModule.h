@@ -168,6 +168,10 @@ class RunnableModule {
 
   long GetGlobalBatchSize() const { return globalBatchSize; }
 
+  double GetAvgLoss() {
+    return loss_tracker_.item().toDouble() / static_cast<double>(nr_iters_);
+  }
+
  private:
   friend struct Layer;
   friend class JobContext;
@@ -219,6 +223,9 @@ class RunnableModule {
   torch::Tensor fpTargets;
   torch::Tensor fpOutput;
   LossFunctions lossfn_;
+
+  torch::Tensor loss_tracker_;
+  size_t nr_iters_{0};
 
   JobState state{JobState::INIT};
 

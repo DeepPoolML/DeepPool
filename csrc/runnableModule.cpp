@@ -193,6 +193,8 @@ RunnableModule::RunnableModule(
 
   SetupOptimizer();
 
+  loss_tracker_ = torch::zeros({1}).to(rtctx->c10dev);
+
   /* Debug check */
   for (auto& l : layers) {
     for (auto& p : l->prevLayers)
@@ -215,6 +217,8 @@ void RunnableModule::SetMode(bool train) {
     else
       l->module.eval();
   }
+  loss_tracker_ = torch::zeros({1}).to(rtctx->c10dev);
+  nr_iters_ = 0;
 }
 
 /**
@@ -509,6 +513,8 @@ void RunnableModule::loss() {
     assert(lossfn_ == LossFunctions::NLLLoss);
     fpOutput = torch::nll_loss(fpOutput.log_softmax(1), fpTargets);
   }
+
+  loss_tracker_ += fpOutput;
 }
 
 /**
@@ -576,6 +582,8 @@ int RunnableModule::AdvanceTraining(bool doGraphCapture, bool layerProfile) {
 
     layerQ.clear();
     layerQ.push_back(layers[0].get());
+
+    nr_iters_++;
 
     if (layers[0]->active && !layers[0]->tensors_in[0].defined())
       assert("MISSING INPUT TO FIRST LAYER!" && false);

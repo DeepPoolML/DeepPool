@@ -228,6 +228,8 @@ void JobContext::TrainOneEpoch() {
     DP_LOG(DEBUG, "Training iteration %lu/%lu\n", ++i,
            dataset_pipeline_->GetItersPerEpoch());
   }
+  double loss = model->GetAvgLoss();
+  DP_LOG(DEBUG, "Epoch done. Loss %.2f", loss);
   iters_before_graph_capture = 0;
   rtctx->torch_stream.synchronize();
   end = std::chrono::steady_clock::now();
