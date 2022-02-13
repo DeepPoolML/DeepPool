@@ -36,7 +36,7 @@ from jobDescription import TrainingJob
 from transformers.models.gpt2 import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config, GPT2Model
 #from datasets import load_dataset
 
-def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=False, netBw=2.66E5, spatialSplit=False, simResultFilename=None, simOnly=False):
+def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=False, netBw=2.66E5, spatialSplit=False, simResultFilename=None, simOnly=False, use_be=False):
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
     text = "Replace me by any text you'd like."
     encoded_input = tokenizer(text, return_tensors='pt')
@@ -72,7 +72,10 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     #     dpIterUsec, dpFpUsec, dpBpUsec = profiler.benchModel(model, (3, 299, 299), int(globalBatch / gpuCount))
     #     print("(DP baseline) whole model bench: %.1f ms (fp: %.1f, bp: %.1f)" % (dpIterUsec / 1000, dpFpUsec / 1000, dpBpUsec / 1000))
 
-    job, iterMs, gpuMs, maxGpusUsed = cs.searchBestSplitsV3(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
+    if dataParallelBaseline:
+        job, iterMs, gpuMs, maxGpusUsed = cs.JustDoDP(gpuCount, globalBatch)
+    else:
+        job, iterMs, gpuMs, maxGpusUsed = cs.searchBestSplitsV3(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
     print("  %2d    %2d   %4.1f  %4.1f\n" % (globalBatch, maxGpusUsed, iterMs, gpuMs))
     cs.to_dot(simResultFilename, globalBatch)
     # cs.to_gpuTimeline("Inception v3, Burst Parallel", maxGpusUsed, dataParallelBaseline)
@@ -101,7 +104,8 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     if not spatialSplit and not simOnly:
         cc = ClusterClient()
         jobName = "gpt2_%d_%d_%2.1f%s" % (gpuCount, globalBatch, amplificationLimit, "_DP" if dataParallelBaseline else "")
-        cc.submitTrainingJob(jobName, jobInJson)
+        jobName += "_BE" if use_be else ""
+        cc.submitTrainingJob(jobName, jobInJson, runbe=use_be)
 
 def runStrongScalingBench():
     global cs
@@ -146,13 +150,14 @@ if __name__ == "__main__":
     if len(sys.argv) >= 3:
         gpuCount = int(sys.argv[1])
         globalBatchSize = int(sys.argv[2])
+        use_be = len(sys.argv) > 4 and int(sys.argv[4]) == 1
         if len(sys.argv) < 4 or sys.argv[3] == "DP":
             simResultFilename = "%s_%s_b%d_sim.data" % ("gpt2", "DP", globalBatchSize)
-            main(int(sys.argv[1]), int(sys.argv[2]), dataParallelBaseline=True, simResultFilename=simResultFilename)
+            main(int(sys.argv[1]), int(sys.argv[2]), dataParallelBaseline=True, simResultFilename=simResultFilename, use_be=use_be)
         else:
             ampLimit = float(sys.argv[3])
             simResultFilename = "%s_%s_b%d_lim%2.1f_sim.data" % ("gpt2", "MP", globalBatchSize, ampLimit)
-            main(int(sys.argv[1]), int(sys.argv[2]), amplificationLimit=ampLimit, simResultFilename=simResultFilename)
+            main(int(sys.argv[1]), int(sys.argv[2]), amplificationLimit=ampLimit, simResultFilename=simResultFilename, use_be=use_be)
     elif len(sys.argv) == 2:
         print("Run all configs")
         # runAllConfigs("gpt2", sys.argv[1])

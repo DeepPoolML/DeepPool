@@ -115,7 +115,7 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     cs = CostSim(None, netBw=netBw, verbose=True, gpuProfileLoc="inceptionLayerGpuProfileA100.txt") #, gpuProfileLocSub="inceptionLayerGpuProfileA100.txt")
     load_model_set(cs)
     cs.printAllLayers(slient=False)
-    cs.computeInputDimensions((3,299,299))
+    cs.computeInputDimensions((3,32,32))
     # job, iterMs, gpuMs = cs.searchBestSplits(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
     cs.to_dot(simResultFilename, globalBatch, justdag=True)
 

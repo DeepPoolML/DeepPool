@@ -1766,7 +1766,9 @@ class CostSim:
             layer.initCfg = layer.getInitialConfig(globalBatch)
             doDp = not randomMode
             configCandidates = self.listConfigOptions(layer, globalBatch, totalGpus, spatialSplit=False, dataParallelBaseline=doDp)
-            if randomMode and random.random() < per_layer_rand_prob:
+            if doDp:
+                rn = 0
+            elif randomMode and random.random() < per_layer_rand_prob:
                 rn = random.randint(0, len(configCandidates) - 1)
                 while rn == lastCfg and len(configCandidates) > 1:
                     rn = random.randint(0, len(configCandidates) - 1)
