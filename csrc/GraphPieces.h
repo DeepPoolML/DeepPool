@@ -33,6 +33,11 @@ class GraphPieces {
   GraphPieces(GraphPieces&&) = delete;
   GraphPieces& operator=(GraphPieces&&) = delete;
 
+
+  std::vector<cudaGraphExec_t> ExtractParts() {
+    return std::move(parts_);
+  }
+
  private:
   GraphPieces(std::vector<cudaGraphExec_t> parts) : parts_(parts) {}
   std::vector<cudaGraphExec_t> parts_;

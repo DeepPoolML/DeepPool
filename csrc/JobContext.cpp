@@ -48,7 +48,7 @@ JobContext::JobContext(std::unique_ptr<RunnableModule> modelIn,
     dset = "cifar";
     /* cifar default includes 10 epochs with test routine */
     runTestRoutine_ = true;
-    epochsToTrain = 10;
+    epochsToTrain = 4;
   } else if (name.find("gpt2") != std::string::npos) {
     dset = "gpt2";
     runTestRoutine_ = false;
@@ -229,7 +229,7 @@ void JobContext::TrainOneEpoch() {
            dataset_pipeline_->GetItersPerEpoch());
   }
   double loss = model->GetAvgLoss();
-  DP_LOG(DEBUG, "Epoch done. Loss %.2f", loss);
+  DP_LOG(NOTICE, "Epoch done. Loss %.2f", loss);
   iters_before_graph_capture = 0;
   rtctx->torch_stream.synchronize();
   end = std::chrono::steady_clock::now();

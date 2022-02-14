@@ -62,7 +62,7 @@ ABSL_FLAG(size_t, iters_per_capture, 4, "");
 ABSL_FLAG(size_t, min_layer_sync, 8, "");
 ABSL_FLAG(size_t, sync_bucket_size, 10 * 1000 * 1000, "");
 ABSL_FLAG(std::string, bg_json_file, "", "");
-ABSL_FLAG(double, be_graph_split_ms, -1.0, "");
+ABSL_FLAG(double, be_graph_split_ms, 0.5, "");
 
 /**
  * Destructing RuntimeContext.
@@ -225,8 +225,8 @@ int main(int argc, char** argv) {
   std::string logFilePath =
       format("%s/cpprt%d.out", rtctx->logdir.c_str(), ctx.rank);
   Logger::get().setLogFile(logFilePath.c_str(), false);
-  Logger::get().setLogLevel(DEBUG);
-  // Logger::get().setLogLevel(NOTICE);
+  // Logger::get().setLogLevel(DEBUG);
+  Logger::get().setLogLevel(NOTICE);
 
   DP_LOG(NOTICE, "Current file path: %s", argv[0]);
 
