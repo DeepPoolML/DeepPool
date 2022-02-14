@@ -29,6 +29,8 @@ import grpc
 import runtime_pb2
 import runtime_pb2_grpc
 
+import torch
+
 # import examples.vgg as vgg  # TODO: this is used for debugging. Remove this later.
 
 extra_args = [] # unparsed arguments stored here are forwarded to runtimes
@@ -532,25 +534,27 @@ def parse_args():
 def main():
     global args, extra_args
     args, extra_args = parse_args()
-    clusterConfig = json.load(open(args.pathToConfig))
+#    clusterConfig = json.load(open(args.pathToConfig))
     global rankToIpMap
     rankToIpMap = {}
     commGrpRanksWorld = []
     locations = []
-    for serverConfig in clusterConfig["serverList"]:
-        print("Found %s" % str(serverConfig))
-        for deviceConfig in serverConfig["deviceList"]:
-            rankToIpMap[str(len(locations))] = serverConfig["addr"] + ":" + str(deviceConfig["port"])
-            commGrpRanksWorld.append(len(locations))
-            locations.append(Location(serverConfig["addr"], deviceConfig["port"], deviceConfig["device"], serverConfig["userId"], serverConfig["sshKeyPath"], args.cpp))
+#    for serverConfig in clusterConfig["serverList"]:
+#        print("Found %s" % str(serverConfig))
+    port = 11250
+    for i in range(torch.cuda.device_count()):
+        rankToIpMap[str(len(locations))] = f"127.0.0.1:{port}"
+        commGrpRanksWorld.append(len(locations))
+        locations.append(Location("127.0.0.1", port, i, None, None, args.cpp))
+        port += 1
     addrToBindCombo = re.split('[-:]', args.addrToBind)
     addrToBind = addrToBindCombo[0]
     portToBind = int(addrToBindCombo[1])
 
-    coordinator = ClusterCoordinator(addrToBind, portToBind, locations, clusterConfig["workDir"], args.be_batch_size)
+    coordinator = ClusterCoordinator(addrToBind, portToBind, locations, os.getcwd(), args.be_batch_size)
     if args.install:
         coordinator.installPackages()
-    
+
     # Just make sure there's no previously left runtimes.
     # CPP runtimes seem to terminate appropriately. So, there's no need to shutdown leftovers.
     if not args.cpp:

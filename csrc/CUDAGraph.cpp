@@ -1,4 +1,4 @@
-#include <ATen/cuda/CUDAGeneratorImpl.h>
+#include <ATen/CUDAGeneratorImpl.h>
 #include <ATen/cuda/Exceptions.h>
 #include <ATen/Functions.h>
 #include <c10/cuda/CUDACachingAllocator.h>
