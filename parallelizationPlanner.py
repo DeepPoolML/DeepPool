@@ -1696,7 +1696,10 @@ class CostSim:
         for layer in self.layers:
             for l in layer.nextLayers:
                 dot.edge(str(layer.id), str(l.id))
-        dot.render()
+        try:
+            dot.render()
+        except:
+            print("Unable to render DOT file")
 
     def to_gpuTimeline(self, name, totalGpus, dataParallelBaseline=False):
         if totalGpus == 1:

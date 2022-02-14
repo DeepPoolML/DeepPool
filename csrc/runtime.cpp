@@ -223,7 +223,7 @@ int main(int argc, char** argv) {
   parse_args(ctx, argc, argv);
 
   std::string logFilePath =
-      format("%scpprt%d.out", rtctx->logdir.c_str(), ctx.rank);
+      format("%s/cpprt%d.out", rtctx->logdir.c_str(), ctx.rank);
   Logger::get().setLogFile(logFilePath.c_str(), false);
   Logger::get().setLogLevel(DEBUG);
   // Logger::get().setLogLevel(NOTICE);

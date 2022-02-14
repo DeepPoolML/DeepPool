@@ -1,8 +1,8 @@
 from setuptools import setup, Extension
-from torch.utils import cpp_extension
+from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
 setup(name='deeppool_bench',
-      ext_modules=[cpp_extension.CppExtension(
+      ext_modules=[CUDAExtension(
           name='deeppool_bench', sources=['bench.cpp'], extra_compile_args=['-g']
       )],
-      cmdclass={'build_ext': cpp_extension.BuildExtension})
+      cmdclass={'build_ext': BuildExtension})
