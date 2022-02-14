@@ -94,6 +94,7 @@ target_link_libraries(runtime
   dp_grpc_proto
   cudasleep
   absl::flags absl::flags_parse
+  nccl
   ${_REFLECTION}
   ${_GRPC_GRPCPP}
   ${_PROTOBUF_LIBPROTOBUF}

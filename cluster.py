@@ -14,7 +14,7 @@
 
 import time
 import signal
-import sys
+import sys, os
 import subprocess
 import json
 import xmlrpc.server
@@ -352,17 +352,15 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
         for location in self.locations:
             for pipPackage in pipPackages:
                 location.rsh("pip install %s" % pipPackage)
-        
     def launchRuntimeAll(self, c10dBackend: str, profile: bool, cppRuntime: bool, manualLaunch: bool):
         """ Launch runtime at all remote locations. Also registers the sighandler
             that cleanly shuts down all remote runtime servers.
         """
-        
+
         # Using the absolute path for compatibility with C++ runtime.
         logdir = args.logdir
         if not logdir:
-            homedir = expanduser("~")
-            logdir = homedir + "/DeepPool/logs/"
+            logdir = os.getcwd() + "/logs/"
         upSyncedAddrs = set()
         for i, location in enumerate(self.locations):
             if (location.address not in upSyncedAddrs):
