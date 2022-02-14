@@ -24,13 +24,13 @@ python3 cluster.py  --addrToBind 0.0.0.0:12347 --c10dBackend nccl --be_batch_siz
 ```
 
 Once you see "Now, cluster is ready to accept training jobs." you may launch a job.
-For example, to run VGG across 8 GPUs in DataParallel mode run:
+For example, to run VGG across 8 GPUs in DataParallel mode with global batch size 32, run:
 ```
-python3 examples/vgg.py 8 32 DP
+python3 examples/vgg.py 8 32 DP 0
 ```
-To run VGG in BurstParallel mode:
+To run VGG in BurstParallel mode with an amplification limit of 5.0:
 ```
-python3 examples/vgg.py 8 32 5.0
+python3 examples/vgg.py 8 32 5.0 0
 ```
 
 To view the results of the run, inspect the contents of cpprt0.out:
@@ -51,7 +51,7 @@ pkill runtime
 Now re-run VGG with a background training job:
 ```
 python3 examples/vgg_be.py
-python3 cluster.py  --addrToBind 0.0.0.0:12347 --c10dBackend nccl --be_batch_size=8  --cpp --logdir=$PWD --be_jit_file=vgg.jit &
+python3 cluster.py  --addrToBind 0.0.0.0:12347 --c10dBackend nccl --be_batch_size=8  --cpp --logdir=$PWD --be_jit_file=vgg.jit --sample_per_kernel=8 &
 ```
 Once the cluster is running:
 ```
