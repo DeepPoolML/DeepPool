@@ -63,7 +63,7 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     # # model = model.to('cuda')
     # model(**batch)
 
-    cs.printAllLayers(slient=False)
+    cs.printAllLayers(silent=False)
     cs.computeInputDimensions((1024,), dtype=torch.int32)
     cs.setLossFunction("CrossEntropyLoss")
     # job, iterMs, gpuMs = cs.searchBestSplits(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)

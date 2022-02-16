@@ -431,7 +431,7 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     model = resnet34()
     # model = resnet152()
     # model = wide_resnet101_2()
-    cs.printAllLayers(slient=True)
+    cs.printAllLayers(silent=True)
     cs.computeInputDimensions((3,224,224))
     job, iterMs, gpuMs = cs.searchBestSplits(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
     job, iterMs, gpuMs, maxGpusUsed = cs.searchBestSplitsV3(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)

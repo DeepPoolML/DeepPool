@@ -361,7 +361,7 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
 
     # model = vgg11()
     # model = resnet34()
-    cs.printAllLayers(slient=True)
+    cs.printAllLayers(silent=True)
     cs.computeInputDimensions((3,224,224))
     # job = cs.searchBestSplits(4, 16, dataParallelBaseline=True)
     # job = cs.searchBestSplits(4, 16)

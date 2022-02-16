@@ -304,7 +304,7 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     cs = CostSim(None, netBw=netBw, verbose=True, gpuProfileLoc="vitLayerGpuProfileA100.txt")
     # model = ViT(img_dim=256, in_channels=3, patch_dim=16, num_classes=1000, dim=512, blocks=12, dim_linear_block=3072)
     model = ViT(img_dim=256, in_channels=3, patch_dim=32, num_classes=1000, dim=1024, blocks=24, heads=16, dim_linear_block=4092)
-    cs.printAllLayers(slient=True)
+    cs.printAllLayers(silent=True)
     cs.computeInputDimensions((3,256,256))
     # job, iterMs, gpuMs = cs.searchBestSplits(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
 
