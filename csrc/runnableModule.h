@@ -25,7 +25,6 @@
 #include "CUDAGraph.h"
 #include "GradSync.h"
 #include "GraphPieces.h"
-#include "Manager.h"
 #include "communication.h"
 #include "json.hpp"
 #include "logger.h"
@@ -42,7 +41,6 @@ using torch::autograd::variable_list;
  * Forward declarations. Do not include headers unless necessary.
  */
 class CommunicationHandler;
-class RunnableModule;
 
 typedef int Tag;
 
@@ -82,8 +80,8 @@ struct Layer {
     timerkey = ss.str();
   }
 
-  torch::Tensor DoForward(RunnableModule *model, bool captureLayer);
-  void DoBackward(RunnableModule *model, bool captureLayer);
+  torch::Tensor DoForward(bool captureLayer);
+  void DoBackward(bool captureLayer, torch::Tensor& fpOutput);
 
   /* stores inputs on forward pass, gradients on backward pass */
   std::map<size_t, torch::Tensor> tensors_in;
@@ -92,7 +90,6 @@ struct Layer {
   torch::Tensor output;
 
   std::vector<Xfer> xfers;
-  size_t nr_nccl_recv{0}, nr_nccl_send{0};
   std::vector<Xfer> xfers_local;
 
   std::set<size_t> tx_lids;
@@ -117,15 +114,7 @@ struct Layer {
   long layerLocalBatch;
   std::vector<int64_t> emptyOutSizes;
   std::string moduleName;  // Used to output profiled runtimes.
-
-  Layer(const Layer&) = delete;
-  Layer& operator=(const Layer&) = delete;
-  Layer(Layer&&) = delete;
-  Layer& operator=(Layer&&) = delete;
-
 };
-
-class ScopedGraphRecorder;
 
 enum JobStatus { IN_PROGRESS = 0, COMPLETED, YIELD };
 
@@ -154,17 +143,12 @@ class RunnableModule {
   RunnableModule(json specInJson,
                  std::shared_ptr<CommunicationHandler> commHandler,
                  LossFunctions lf);
-  ~RunnableModule() {
-    if (cur_task && has_graph) {
-      GpuManager::getInstance()->RemoveTask(cur_task);
-    }
-  }
 
   int AdvanceTraining(bool doGraphCapture, bool layerProfile);
 
   void printLayerInGraphTimes();
 
-  void ExecuteXfers(Layer *layer, bool backward = false);
+  void ExecuteXfers(Layer* layer, bool backward = false);
 
   void SetTrain() {
     assert(state == JobState::INIT);
@@ -180,7 +164,7 @@ class RunnableModule {
 
   void SetInputsTargets(torch::Tensor input, torch::Tensor target = {});
 
-  const auto &GetTimers() { return timers; }
+  const auto& GetTimers() { return timers; }
 
   long GetGlobalBatchSize() const { return globalBatchSize; }
 
@@ -188,17 +172,9 @@ class RunnableModule {
     return loss_tracker_.item().toDouble() / static_cast<double>(nr_iters_);
   }
 
-  RunnableModule(const RunnableModule&) = delete;
-  RunnableModule& operator=(const RunnableModule&) = delete;
-  RunnableModule(RunnableModule&&) = delete;
-  RunnableModule& operator=(RunnableModule&&) = delete;
-
  private:
   friend struct Layer;
   friend class JobContext;
-  friend class ScopedGraphRecorder;
-
-  std::shared_ptr<GpuTask> cur_task;
 
   CudaTimerChain timers;
   CudaTimerChain layerts_fwd, layerts_bwd;
@@ -243,7 +219,7 @@ class RunnableModule {
   ////////////////////////////////////////////
   // Context for tracking partial progress.
   ////////////////////////////////////////////
-  std::deque<Layer *> layerQ;
+  std::deque<Layer*> layerQ;
   torch::Tensor fpTargets;
   torch::Tensor fpOutput;
   LossFunctions lossfn_;
@@ -258,40 +234,19 @@ class RunnableModule {
   bool graph_recording{false};
   torch::Tensor input_buf, target_buf;
 
+  std::shared_ptr<GraphPieces> fullgraph;
+  DeepPool::CUDAGraph maingraph, syncgraph, stepgraph;
   at::cuda::MempoolId_t graph_mempool;
 
   void ResetGraphs() {
-    rtctx->torch_stream.synchronize();
-    if (has_graph) GpuManager::getInstance()->RemoveTask(cur_task);
-    cur_task->Reset();
+    fullgraph.reset();
     has_graph = false;
-    // sync before possible future calls into NCCL
-    rtctx->torch_stream.synchronize();
+    maingraph = DeepPool::CUDAGraph();
+    syncgraph = DeepPool::CUDAGraph();
+    stepgraph = DeepPool::CUDAGraph();
+    rtctx->torch_stream
+        .synchronize();  // sync before possible future calls into NCCL
   }
-};
-
-class ScopedGraphRecorder {
- public:
-  ScopedGraphRecorder(RunnableModule *model, unsigned int flags,
-                      std::string debug_name = "")
-      : model_(model), flags_(flags), debug_name_(debug_name) {
-    if (!model_->graph_recording) return;
-    graph.reset(new DeepPool::CUDAGraph());
-    c10::cuda::device_synchronize();
-    graph->capture_begin(model_->graph_mempool);
-  }
-  ~ScopedGraphRecorder() {
-    if (!graph) return;
-    graph->capture_end();
-    c10::cuda::device_synchronize();
-    model_->cur_task->AddTask({graph, flags_, debug_name_});
-  }
-
- private:
-  RunnableModule *model_;
-  unsigned int flags_;
-  std::string debug_name_;
-  std::shared_ptr<DeepPool::CUDAGraph> graph;
 };
 
 #endif

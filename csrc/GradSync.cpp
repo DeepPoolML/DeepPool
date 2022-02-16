@@ -6,32 +6,27 @@
 #include "logger.h"
 #include "runtime.h"
 
-void GradientSyncManager::FlushKey(
-    size_t key, c10::optional<c10::cuda::CUDAStream> stream) {
+void GradientSyncManager::FlushKey(size_t key) {
   auto &vec = grads_by_key_[key];
 
   assert(vec.size());
 
   // TODO possible bug here (or in NCCL): with graphs and grouped all reduces,
   // model performance was a little worse
-  // TODO - using separate stream causing NCCL to hang with graphs, try again at
-  // some pt.
-  commHandler_->comm_start(stream, key);
-  for (auto &grad : vec) commHandler_->all_reduce(grad, c10d::ReduceOp::SUM);
+  // TODO - using separate stream causing NCCL to hang with graphs, try again at some pt.
+  commHandler_->comm_start({}, key);
+  for (auto &grad : vec)
+    commHandler_->all_reduce(grad, c10d::ReduceOp::SUM);
   commHandler_->comm_end();
 
   has_unjoined_work_ = true;
-  if (!freeze_) {
-    vec.clear();
-    total_pending_bytes_ -= pending_bytes_by_key_[key];
-    assert(total_pending_bytes_ >= 0);
-    pending_bytes_by_key_[key] = 0;
-  }
+  vec.clear();
+  pending_bytes_by_key_[key] = 0;
 }
 
-void GradientSyncManager::Flush(c10::optional<c10::cuda::CUDAStream> stream) {
+void GradientSyncManager::Flush() {
   for (auto &kp : pending_bytes_by_key_)
-    if (kp.second) FlushKey(kp.first, stream);
+    if (kp.second) FlushKey(kp.first);
 }
 
 void GradientSyncManager::AddGradient(torch::Tensor grad,
@@ -41,16 +36,15 @@ void GradientSyncManager::AddGradient(torch::Tensor grad,
   auto &vec = grads_by_key_[comm_group_key];
   vec.push_back(grad);
   pending_bytes_by_key_[comm_group_key] += grad.nbytes();
-  total_pending_bytes_ += grad.nbytes();
 
   if (flush_threshold_bytes_ &&
       pending_bytes_by_key_[comm_group_key] >= flush_threshold_bytes_)
-    FlushKey(comm_group_key, {});
+      FlushKey(comm_group_key);
 }
 
-void GradientSyncManager::Join(c10::optional<c10::cuda::CUDAStream> stream) {
+void GradientSyncManager::Join() {
   if (has_unjoined_work_) {
-    commHandler_->sync(stream);
+    commHandler_->sync();
     has_unjoined_work_ = false;
   }
 }

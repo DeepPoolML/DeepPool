@@ -14,7 +14,6 @@
 
 #include "CUDAGraph.h"
 #include "GraphPieces.h"
-#include "Manager.h"
 #include "runtime.h"
 
 static long bsize;
@@ -124,29 +123,22 @@ static void BeRunner(BeTaskConfig cfg) {
   graph.capture_end();
   c10::cuda::device_synchronize();
 
+  CUDAPipeline p(1, 1000);
+
   if (use_graph_partitioner) {
     auto gr =
         GraphPieces::GraphToExecs(graph.getGRAPH(), cfg.be_graph_split_ms);
-    auto gtask = std::make_shared<GpuTask>(false, cstream, gr->ExtractParts());
-
     InitDone();
     auto fn = [&]() {
-      while (status.load() != 0) {
-        gtask->FinishCompletion();
-        int s = 1;
-        if (status.load() != 2) status.compare_exchange_strong(s, 2);
-        usleep(100);
-      }
+      BeLap();
+      p.Lap();
     };
-    GpuManager::getInstance()->AddTask(gtask);
     while (true) {
-      fn();
-      gtask->ExecuteTasks();
+      gr->LaunchInterleavedCallback(cstream, fn, {});
       becounter.store(becounter.load() + bsize);
     }
   }
 
-  CUDAPipeline p(1, 1000);
   InitDone();
   while (true) {
     BeLap();

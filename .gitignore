@@ -136,7 +136,6 @@ clusterConfig.json
 gpuProfile.json
 *.gv
 
-*.qdstrm
 *.qdrep
 *.sqlite
 *.json

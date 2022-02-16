@@ -571,7 +571,5 @@ def main():
     while not HAS_EXCEPTION:
         coordinator.handle_request()
 
-    time.sleep(5)
-
 if __name__ == "__main__":
     main()

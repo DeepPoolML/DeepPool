@@ -61,8 +61,7 @@ class GraphTimer {
 RunnableModule::RunnableModule(
     json spec, std::shared_ptr<CommunicationHandler> commHandler,
     LossFunctions lf)
-    : cur_task(std::make_shared<GpuTask>(true, rtctx->torch_stream)),
-      commHandler(commHandler),
+    : commHandler(commHandler),
       sync_manager_(commHandler, rtctx->sync_bucket_size),
       lossfn_(lf) {
   auto& layersInJson = spec["layers"];
@@ -157,22 +156,16 @@ RunnableModule::RunnableModule(
         n.src_lid = src_lid;
         n.tag = commHandler->getTag(item["name"].get<std::string>());
 
-        bool local = n.src.first == n.dst.first;
-
-        if (local)
+        if (n.src.first == n.dst.first)
           layer->xfers_local.push_back(n);
         else
           layer->xfers.push_back(n);
 
-        if (n.dst.first == static_cast<size_t>(rtctx->rank)) {
+        if (n.dst.first == static_cast<size_t>(rtctx->rank))
           layer->rx_lids.insert(src_lid);
-          if (!local) layer->nr_nccl_recv++;
-        }
 
-        if (n.src.first == static_cast<size_t>(rtctx->rank)) {
+        if (n.src.first == static_cast<size_t>(rtctx->rank))
           layer->tx_lids.insert(src_lid);
-          if (!local) layer->nr_nccl_send++;
-        }
       }
     }
 
@@ -226,7 +219,6 @@ void RunnableModule::SetMode(bool train) {
   }
   loss_tracker_ = torch::zeros({1}).to(rtctx->c10dev);
   nr_iters_ = 0;
-  sync_manager_.Reset();
 }
 
 /**
@@ -286,7 +278,7 @@ void RunnableModule::SetInputsTargets(torch::Tensor input,
   fpTargets = target_buf;
 }
 
-torch::Tensor Layer::DoForward(RunnableModule* model, bool captureLayer) {
+torch::Tensor Layer::DoForward(bool captureLayer) {
   if (!active) {
     DP_LOG(DEBUG, "Layer %d is not active.", id);
     return {};
@@ -311,8 +303,6 @@ torch::Tensor Layer::DoForward(RunnableModule* model, bool captureLayer) {
   GraphTimer fwdtimer;
   if (captureLayer) fwdtimer.StartCapture();
 
-  ScopedGraphRecorder graph(model, TASK_FLAGS_COMPUTE, "forward_" + timerkey);
-
   output = module.forward(iVec).toTensor();
   /* verify output shape is as expected per job description */
   for (size_t i = 1; i < emptyOutSizes.size(); i++)
@@ -328,7 +318,7 @@ torch::Tensor Layer::DoForward(RunnableModule* model, bool captureLayer) {
   return output;
 }
 
-void Layer::DoBackward(RunnableModule* model, bool captureLayer) {
+void Layer::DoBackward(bool captureLayer, torch::Tensor& fpOutput) {
   if (!active) {
     DP_LOG(DEBUG, "Layer %d is not active.", id);
     return;
@@ -344,15 +334,11 @@ void Layer::DoBackward(RunnableModule* model, bool captureLayer) {
   GraphTimer bwdtimer;
   if (captureLayer) bwdtimer.StartCapture();
 
-  ScopedGraphRecorder graph(model, TASK_FLAGS_COMPUTE,
-                            "backward_" + timerkey);
-
   /* last layer */
-  if (nextLayers.size() == 0 && model->fpOutput.defined()) {
-    DP_LOG(DEBUG, "Backward on fpLoss:%s",
-           tsrSizeToStr(model->fpOutput).c_str());
-    model->fpOutput.backward();
-    model->fpOutput.reset();
+  if (nextLayers.size() == 0 && fpOutput.defined()) {
+    DP_LOG(DEBUG, "Backward on fpLoss:%s", tsrSizeToStr(fpOutput).c_str());
+    fpOutput.backward();
+    fpOutput.reset();
   }
 
   for (size_t nli = 0; nli < nextLayers.size(); nli++) {
@@ -419,66 +405,57 @@ void RunnableModule::ExecuteXfers(Layer* layer, bool backward) {
     inbound_tensors[lid] = in;
   }
 
-  bool has_recv = backward ? layer->nr_nccl_send : layer->nr_nccl_recv;
-  if (layer->xfers.size()) {
-    auto fn = [=](c10::cuda::CUDAStream stream) mutable {
-      commHandler->comm_start(stream);
-      for (const auto& ixfer : layer->xfers) {
-        const size_t lid = ixfer.src_lid;
-        const std::pair<size_t, size_t>& src = backward ? ixfer.dst : ixfer.src;
-        const std::pair<size_t, size_t>& dst = backward ? ixfer.src : ixfer.dst;
-        if (src.first == static_cast<size_t>(rtctx->rank)) {
-          auto tsr = getSampleSlice(outbound_tensors.at(lid), src.second,
-                                    ixfer.nr_samples);
-          commHandler->send(tsr, ixfer.tag, dst.first);
-        } else {
-          assert(dst.first == static_cast<size_t>(rtctx->rank));
-          auto tsr = getSampleSlice(inbound_tensors.at(lid), dst.second,
-                                    ixfer.nr_samples);
-          commHandler->recv(tsr, ixfer.tag, src.first);
-        }
-      }
-      commHandler->comm_end();
-    };
+  if (layer->xfers.size()) commHandler->comm_start();
 
-    if (graph_recording) {
-      cur_task->AddTask(
-          {fn, TASK_FLAGS_P2PCOMM | (has_recv ? TASK_FLAGS_P2PCOMM_RECV : 0),
-           (backward ? "backward_nccl_" : "forward_nccl_") + layer->timerkey});
-    };
+  bool did_recv = false;
+  for (const auto& ixfer : layer->xfers) {
+    const size_t lid = ixfer.src_lid;
+    const std::pair<size_t, size_t>& src = backward ? ixfer.dst : ixfer.src;
+    const std::pair<size_t, size_t>& dst = backward ? ixfer.src : ixfer.dst;
 
-    commHandler->comm_start();
-    fn(c10::cuda::getCurrentCUDAStream());  // stream will be ignored when
-                                            // already in comm call
-    commHandler->comm_end();
-  }
+    DP_LOG(
+        DEBUG,
+        "Transferring %lu samples from rank %lu layer %lu pos %lu to rank %lu "
+        "layer %d pos %lu",
+        ixfer.nr_samples, src.first, lid, src.second, dst.first, layer->id,
+        dst.second);
 
-  if (layer->xfers_local.size()) {
-    ScopedGraphRecorder graph(this, TASK_FLAGS_MEMCPY,
-                              "memcpy_" + layer->timerkey);
-
-    for (const auto& ixfer : layer->xfers_local) {
-      const size_t lid = ixfer.src_lid;
-      const std::pair<size_t, size_t>& src = backward ? ixfer.dst : ixfer.src;
-      const std::pair<size_t, size_t>& dst = backward ? ixfer.src : ixfer.dst;
-
-      DP_LOG(DEBUG,
-             "Copying %lu samples from layer %lu pos %lu to "
-             "layer %d pos %lu",
-             ixfer.nr_samples, lid, src.second, layer->id, dst.second);
-
-      auto srcTsr = getSampleSlice(outbound_tensors.at(lid), src.second,
-                                   ixfer.nr_samples);
-      auto dstTsr =
+    if (src.first == static_cast<size_t>(rtctx->rank)) {
+      auto tsr = getSampleSlice(outbound_tensors.at(lid), src.second,
+                                ixfer.nr_samples);
+      commHandler->send(tsr, ixfer.tag, dst.first);
+    } else {
+      assert(dst.first == static_cast<size_t>(rtctx->rank));
+      auto tsr =
           getSampleSlice(inbound_tensors.at(lid), dst.second, ixfer.nr_samples);
-
-      CUDACHECK(cudaMemcpyAsync(dstTsr.data_ptr(), srcTsr.data_ptr(),
-                                srcTsr.nbytes(), cudaMemcpyDeviceToDevice,
-                                rtctx->torch_stream));
+      commHandler->recv(tsr, ixfer.tag, src.first);
+      did_recv = true;
     }
   }
 
-  if (has_recv) commHandler->sync();
+  if (layer->xfers.size()) commHandler->comm_end();
+
+  for (const auto& ixfer : layer->xfers_local) {
+    const size_t lid = ixfer.src_lid;
+    const std::pair<size_t, size_t>& src = backward ? ixfer.dst : ixfer.src;
+    const std::pair<size_t, size_t>& dst = backward ? ixfer.src : ixfer.dst;
+
+    DP_LOG(DEBUG,
+           "Copying %lu samples from layer %lu pos %lu to "
+           "layer %d pos %lu",
+           ixfer.nr_samples, lid, src.second, layer->id, dst.second);
+
+    auto srcTsr =
+        getSampleSlice(outbound_tensors.at(lid), src.second, ixfer.nr_samples);
+    auto dstTsr =
+        getSampleSlice(inbound_tensors.at(lid), dst.second, ixfer.nr_samples);
+
+    CUDACHECK(cudaMemcpyAsync(dstTsr.data_ptr(), srcTsr.data_ptr(),
+                              srcTsr.nbytes(), cudaMemcpyDeviceToDevice,
+                              rtctx->torch_stream));
+  }
+
+  if (did_recv) commHandler->sync();
 }
 
 /**
@@ -495,7 +472,7 @@ JobStatus RunnableModule::forwardAStep(bool captureLayer) {
   assert(layer->status == LayerStatus::PENDING_FP);
 
   ExecuteXfers(layer);
-  torch::Tensor output = layer->DoForward(this, captureLayer);
+  torch::Tensor output = layer->DoForward(captureLayer);
   layer->status = LayerStatus::PENDING_BP;
   layer->nr_current_depedencies = layer->nextLayers.size();
 
@@ -555,7 +532,7 @@ JobStatus RunnableModule::backwardAStep(bool captureLayer) {
 
   DP_LOG(DEBUG, "lid:%d.", layer->id);
 
-  layer->DoBackward(this, captureLayer);
+  layer->DoBackward(captureLayer, fpOutput);
   ExecuteXfers(layer, true);
   layer->status = LayerStatus::PENDING_FP;
   layer->nr_current_depedencies = layer->prevLayers.size();
@@ -619,6 +596,8 @@ int RunnableModule::AdvanceTraining(bool doGraphCapture, bool layerProfile) {
       graph_recording = true;
       c10::cuda::device_synchronize();
       graph_mempool = DeepPool::graph_pool_handle();
+      maingraph.capture_begin(graph_mempool);
+      commHandler->precapture();
     } else if (has_graph) {
       /* skip to forward phase */
       state = JobState::FORWARD;
@@ -637,7 +616,7 @@ int RunnableModule::AdvanceTraining(bool doGraphCapture, bool layerProfile) {
 
     if (has_graph) {
       DP_LOG(DEBUG, "Replay iter.");
-      cur_task->ExecuteTasks();
+      fullgraph->Launch(rtctx->torch_stream);
       state = JobState::FINISH;
       return 0;
     }
@@ -660,10 +639,7 @@ int RunnableModule::AdvanceTraining(bool doGraphCapture, bool layerProfile) {
     }
   } else if (state == JobState::LOSS) {
     DP_LOG(DEBUG, "JobState::LOSS.");
-    {
-      ScopedGraphRecorder graph(this, TASK_FLAGS_COMPUTE, "loss");
-      loss();
-    }
+    loss();
     TimerRecordStage("loss");
     TimerRecordLayer("start", true);
     assert(layerQ.empty());
@@ -683,37 +659,56 @@ int RunnableModule::AdvanceTraining(bool doGraphCapture, bool layerProfile) {
   } else if (state == JobState::SYNC) {
     DP_LOG(DEBUG, "JobState::SYNC.");
 
-    if (graph_recording) {
-      sync_manager_.Freeze();
-      auto fn = [&](c10::cuda::CUDAStream stream) mutable {
-        sync_manager_.Flush(stream);
-      };
-      cur_task->AddTask({fn, TASK_FLAGS_ALLREDUCE, "sync"});
+    if (doGraphCapture) {
+      sync_manager_.Join();
+      commHandler->postcapture();
+      maingraph.capture_end();
+      syncgraph.capture_begin(graph_mempool);
     }
 
     sync_manager_.Flush();
     sync_manager_.Join();
 
+    if (doGraphCapture) {
+      syncgraph.capture_end();
+      stepgraph.capture_begin(graph_mempool);
+    }
+
     TimerRecordStage("sync");
     state = JobState::STEP;
   } else if (state == JobState::STEP) {
     DP_LOG(DEBUG, "JobState::STEP");
-    {
-      ScopedGraphRecorder graph(
-          this, TASK_FLAGS_COMPUTE | TASK_FLAGS_DO_NOT_BENCH, "step");
-      optimizer->step();
-    }
+    optimizer->step();
     TimerRecordStage("step");
     state = JobState::FINISH;
   } else if (state == JobState::FINISH) {
     DP_LOG(DEBUG, "JobState::FINISH");
 
     if (doGraphCapture) {
-      cur_task->CombineGraphs();
+      float maingraphsplit = -1.0;  // 10.0;
+      float stepgraphsplit = -1.0;  // 2.0;
+
+      if (!isTrain_) {
+        commHandler->postcapture();
+        maingraph.capture_end();
+        auto maingraph_e =
+            GraphPieces::GraphToExecs(maingraph.getGRAPH(), maingraphsplit);
+        fullgraph = GraphPieces::MergePieces({maingraph_e});
+      } else {
+        stepgraph.capture_end();
+
+        auto maingraph_e =
+            GraphPieces::GraphToExecs(maingraph.getGRAPH(), maingraphsplit);
+        auto syncgraph_e =
+            GraphPieces::GraphToExecs(syncgraph.getGRAPH(), -1.0);
+        auto stepgraph_e =
+            GraphPieces::GraphToExecs(stepgraph.getGRAPH(), stepgraphsplit);
+        fullgraph =
+            GraphPieces::MergePieces({maingraph_e, syncgraph_e, stepgraph_e});
+      }
       has_graph = true;
       graph_recording = false;
       DP_LOG(NOTICE, "Ending capture.");
-      GpuManager::getInstance()->AddTask(cur_task);
     }
 
     state = JobState::INIT;
