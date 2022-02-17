@@ -1,11 +1,13 @@
 cmake_minimum_required(VERSION 3.11 FATAL_ERROR)
 project(DeepPool)
 
-#list(APPEND CMAKE_PREFIX_PATH "$ENV{CONDA_PREFIX}/")
-#list(APPEND CMAKE_MODULE_PATH "$ENV{CONDA_PREFIX}/lib/cmake/")
+list(APPEND CMAKE_PREFIX_PATH "$ENV{CONDA_PREFIX}/")
+list(APPEND CMAKE_MODULE_PATH "$ENV{CONDA_PREFIX}/lib/cmake/")
+list(APPEND CMAKE_PREFIX_PATH "$ENV{CONDA_PREFIX}/lib/python3.9/site-packages/torch/")
+list(APPEND CMAKE_PREFIX_PATH "$ENV{CONDA_PREFIX}/lib/python3.8/site-packages/torch/")
+list(APPEND CMAKE_PREFIX_PATH "/opt/conda/lib/python3.8/site-packages/torch/")
 
 add_subdirectory(grpc)
-
 
 find_package(Torch REQUIRED)
 
