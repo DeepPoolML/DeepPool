@@ -187,8 +187,8 @@ class GpuTask {
     while (head_ptr != tail_ptr) {
       auto& t = tasks_[tail_ptr % tasks_.size()];
       if (!t.ev_.query()) break;
-      tail_ptr++;
       outstanding_micros_ -= t.timings_.recorded_us;
+      tail_ptr.store(tail_ptr + 1, std::memory_order_release);
     }
   }
 

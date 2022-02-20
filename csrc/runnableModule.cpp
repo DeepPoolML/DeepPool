@@ -593,14 +593,11 @@ JobStatus RunnableModule::backwardAStep(bool captureLayer) {
  * \return    returns non-zero if iteration is finished.
  */
 int RunnableModule::AdvanceTraining(bool doGraphCapture, bool layerProfile) {
-  static CUDAPipeline p(2);  // Todo fix....
-
   doGraphCapture &= !has_graph;
 
   if (state == JobState::INIT) {
     DP_LOG(DEBUG, "JobState::INIT.");
 
-    p.Lap();
     TimerRecordStage("start");
 
     layerQ.clear();
