@@ -60,43 +60,16 @@ class SearchContext:
 
 
 class CostSim:
-    def __init__(self, profiler: GpuProfiler, netBw = 1.25E4, verbose=False, gpuProfileLoc=None, gpuProfileLocSub=None):
+    def __init__(self, profiler: GpuProfiler = None, netBw = 2.66E5, verbose=False, gpuProfileLoc=None, gpuProfileLocSub=None):
         self.profiler = profiler
         self.layers: List[Layer] = []
         self.NET_BANDWIDTH = netBw
         self.NET_LATENCY = 40
         # self.NET_LATENCY = 400 #40
         self.verbose = verbose
-        self.layerProfileCache = {}
-        if gpuProfileLocSub != None:
-            self.loadGpuProfile(gpuProfileLocSub)
-        if gpuProfileLoc != None:
-            self.loadGpuProfile(gpuProfileLoc)
-        else:
-            print("!!! gpuProfileLoc is not supplied for CostSim")
 
     def setLossFunction(self, lossfn):
         self.layers[-1].losslayer = lossfn
-
-    def loadGpuProfile(self, gpuProfileLoc):
-        with open(gpuProfileLoc, "r") as f:
-            for line in f:
-                items = line.strip().split()
-                if (len(items) != 5 and len(items) != 4) or items[0] == "#config":
-                    continue
-                layerInfo = items[0]
-                avgTime = float(items[1]) * 1000
-                fwTime = float(items[2])
-                bwTime = float(items[3])
-                self.layerProfileCache[layerInfo] = {"avg": avgTime, "fwTime": fwTime, "bwTime": bwTime}
-
-    def getLayerIdentifier(self, layer, config: tuple):
-        layerInfo = layer.name +\
-            json.dumps(layer.params, sort_keys=True, separators=(',', ':')) +\
-            "[" + str(config[0]) + "]" +\
-            json.dumps(layer.inputDim, sort_keys=False, separators=(',', ':'))
-        return layerInfo
-        
 
     def queryLayerProfileCache(self, layer, config: tuple):
         return sum(self.queryFwBwTime(layer, config))
@@ -123,7 +96,7 @@ class CostSim:
         
         # job.dumpSingleRunnableModule(15)
 
-    def printAllLayers(self, slient=False):
+    def printAllLayers(self, silent=False):
         #TODO: topological sort of layers. Right now, assume it's sorted.
         for i in range(len(self.layers)):
             self.layers[i].id = i
@@ -137,110 +110,14 @@ class CostSim:
             nextLayerIds = []
             for l in layer.nextLayers:
                 nextLayerIds.append(l.id)
-            if slient == False:
+            if silent == False:
                 print("%3d %12s %20s %20s  %s" % (i, layer.name, str(prevLayerIds), str(nextLayerIds), str(layer.params)) )
     
     def computeInputDimensions(self, inputDim, dtype=torch.float32):
         self.layers[0].setInputShapes([torch.zeros(inputDim, dtype=dtype)])
         for l in self.layers:
             l.getOutputShape()
-        return
-        for i in range(len(self.layers)):
-            layer = self.layers[i]
 
-            if "ext_iput" in layer.params:
-                layer.inputDim = tuple(layer.params["ext_iput"])
-            else:
-
-                if i == 0:
-                    layer.inputDim = inputDim
-                else:
-                    prevLayer = layer.prevLayers[0]
-                    if len(layer.prevLayers) == 1:
-                        layer.inputDim = prevLayer.outputDim
-                    else:
-                        if layer.name == "concat":
-                            totalChannels = 0
-                            for pl in layer.prevLayers:
-                                totalChannels += pl.outputDim[0]
-                                if prevLayer.outputDim[1] != pl.outputDim[1] or prevLayer.outputDim[2] != pl.outputDim[2]: # width and height must match.
-                                    print("prevLayer.outputDim: %15s, non-matching other input: %15s" % (prevLayer.outputDim, pl.outputDim))
-                            layer.inputDim = (totalChannels, prevLayer.outputDim[1], prevLayer.outputDim[2])
-                        elif layer.name == "ReLU2d":
-                            for pl in layer.prevLayers:
-                                if prevLayer.outputDim != pl.outputDim: # this is only correct for additions in Resnet.
-                                    print("prevLayer.outputDim: %15s, non-matching other input: %15s" % (prevLayer.outputDim, pl.outputDim))
-                            layer.inputDim = prevLayer.outputDim
-                        else:
-                            oDims = set(pl.outputDim for pl in layer.prevLayers)
-                            assert(len(oDims) == 1)
-                            layer.inputDim = oDims.pop()
-
-                if layer.name == "linear":
-                    layer.outputDim = layer.params["out_features"]
-                    layer.inputDim = layer.params["in_features"]
-
-            if False and layer.module:
-                if layer.prevLayers:
-                    args = [torch.empty(sz.outputDim if type(sz.outputDim) == tuple else [sz.outputDim]).unsqueeze(0) for sz in layer.prevLayers]
-                else:
-                    args = [torch.empty(list(layer.inputDim)).unsqueeze(0)]
-                try:
-                    outSize = list(layer.module(*args).size())[1:]
-                except:
-                    outSize = list(layer.module(args).size())[1:]
-                layer.outputDim = outSize[0] if len(outSize) == 1 else tuple(outSize)
-                if type(layer.inputDim) in [tuple, list] and len(layer.inputDim) == 1:
-                    layer.inputDim = layer.inputDim[0]
-
-            elif layer.name in ["conv2d", "maxPool2d", "avgPool2d"]:
-                paddingW = layer.params["padding"][0] if type(layer.params["padding"]) is tuple else layer.params["padding"]
-                paddingH = layer.params["padding"][1] if type(layer.params["padding"]) is tuple else layer.params["padding"]
-                strideW = layer.params["stride"][0] if type(layer.params["stride"]) is tuple else layer.params["stride"]
-                strideH = layer.params["stride"][1] if type(layer.params["stride"]) is tuple else layer.params["stride"]
-                kernelSizeW = layer.params["kernel_size"][0] if type(layer.params["kernel_size"]) is tuple else layer.params["kernel_size"]
-                kernelSizeH = layer.params["kernel_size"][1] if type(layer.params["kernel_size"]) is tuple else layer.params["kernel_size"]
-                
-                outWidth = int((layer.inputDim[1] + paddingW * 2 - kernelSizeW) / strideW + 1)
-                outHeight = int((layer.inputDim[2] + paddingH * 2 - kernelSizeH) / strideH + 1)
-                
-                if layer.name == "conv2d":
-                    outChannel = layer.params["out_channels"]
-                elif layer.name in ["maxPool2d", "avgPool2d"]:
-                    outChannel = layer.inputDim[0]
-                layer.outputDim = (outChannel, outWidth, outHeight)
-            elif layer.name == "adAvgPool2d":
-                layer.outputDim = (layer.inputDim[0], layer.params["output_width"], layer.params["output_height"])
-            elif layer.name == "linear":
-                layer.outputDim = (layer.params["out_features"])
-            elif layer.name in ["ReLU2d", "ReLU1d", "ReLU"]:
-                layer.outputDim = layer.inputDim
-            elif layer.name == "flatten":
-                layer.outputDim = int(numpy.prod(layer.inputDim))
-            elif layer.name == "concat" or layer.name == "add":
-                layer.outputDim = layer.inputDim
-            else:
-                if isinstance(layer.inputDim, list):
-                    fakeIns = []
-                    for in_p in layer.inputDim:
-                        inputSize = [1] + (list(in_p) if type(in_p) == tuple else [in_p])
-                        if 'Embedding' in str(layer.module):
-                            fakeIns.append(torch.zeros(inputSize,dtype=torch.int32))
-                        else:
-                            fakeIns.append(torch.empty(inputSize,dtype=torch.float32))
-                    outSize = list(layer.module(*fakeIns).size())[1:]
-                else:
-                    inputSize = [1] + (list(layer.inputDim) if type(layer.inputDim) == tuple else [layer.inputDim])
-                    if 'Embedding' in str(layer.module):
-                        fakeIn = torch.zeros(inputSize,dtype=torch.int32)
-                    else:
-                        fakeIn = torch.empty(inputSize,dtype=torch.float32)
-                    outSize = list(layer.module(fakeIn).size())[1:]
-                layer.outputDim = outSize[0] if len(outSize) == 1 else tuple(outSize)
-                # print("Computed outputDim: ", layer.outputDim)
-
-            # print("%3d %11s %20s %20s %s" % (i, layer.name, str(layer.inputDim), str(layer.outputDim), str(layer.params)) )
-    
     def calcInputXfer(self, srcLayer: Layer, destLayer: Layer, srcConfig: tuple, destConfig: tuple, noGpuOverlap = False):
         namesIn2d = ["conv2d", "maxPool2d", "avgPool2d", "adAvgPool2d", "ReLU2d", "concat"]
         namesIn1d = ["linear", "ReLU1d"]
@@ -514,7 +391,7 @@ class CostSim:
             custom_previous_layers = [self.layers[-1]]
         layer = Layer(module, "flatten", {"kernel_size": 1}, prevLayers = custom_previous_layers)
         self.layers.append(layer)
-        return
+        return module
     
     class ConcatInputs(nn.Module):
         def __init__(self, dim: int = 1):
@@ -535,7 +412,7 @@ class CostSim:
         self.layers.append(layer)
         return
 
-    def Dropout(self, dropout, inplace: bool = False, custom_previous_layers: list = None):
+    def Dropout(self, dropout = 0.5, inplace: bool = False, custom_previous_layers: list = None):
         module = nn.Dropout(dropout, inplace=inplace)
 
         if custom_previous_layers == None and len(self.layers) > 0:
