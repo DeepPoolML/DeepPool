@@ -122,7 +122,7 @@ class Layer:
             self.moduleSavedLocation = saveLocation
         if exists(self.moduleSavedLocation): # Skip if module file is already there.
             if not self.jit_module:
-                self.jit_module = torch.jit.load(self.moduleSavedLocation).to("cuda")
+                return torch.jit.load(self.moduleSavedLocation).to("cuda")
             return self.jit_module
 
         fakeInput = self.getRandomInputs(1, "cpu")
