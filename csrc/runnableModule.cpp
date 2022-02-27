@@ -145,6 +145,8 @@ RunnableModule::RunnableModule(
 
     layer->emptyOutSizes.push_back(0);
     for (int size : ldsc["outputDim"]) layer->emptyOutSizes.push_back(size);
+    layer->emptyInSizes.push_back(0);
+    for (int size : ldsc["inputDim"]) layer->emptyInSizes.push_back(size);
 
     if (ldsc.contains("xfers")) {
       for (auto& item : ldsc["xfers"]) {

@@ -1,3 +1,4 @@
+
 #pragma once
 
 #include <ATen/cuda/CUDAEvent.h>
@@ -15,7 +16,7 @@ class Dataset {
   static Dataset *fromName(std::string name, size_t rank, long globalBatchSize,
                            std::vector<long> initialBatchSizes,
                            std::vector<long> sampleIndices,
-                           size_t fake_train_iters_per_epoch);
+                           size_t fake_train_iters_per_epoch, long npixel = 0);
 
   torch::data::Example<> getNextThisRank() {
     auto ex = getNext();

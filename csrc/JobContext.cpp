@@ -67,13 +67,17 @@ JobContext::JobContext(std::unique_ptr<RunnableModule> modelIn,
   if (job_params.contains("epochs_to_train"))
     epochsToTrain = job_params["epochs_to_train"].get<size_t>();
 
-  train_dataset_.reset(
-      Dataset::fromName(dset, rtctx->rank, model->globalBatchSize,
-                        model->initialBatchSizes, model->sampleIndices, 2000));
-  eval_dataset_.reset(
-      Dataset::fromName(dset + "_eval", rtctx->rank, model->globalBatchSize,
-                        model->initialBatchSizes, model->sampleIndices, 10));
+  long npix = model->layers.at(0)->emptyInSizes.at(2);
+
+  train_dataset_.reset(Dataset::fromName(
+      dset, rtctx->rank, model->globalBatchSize, model->initialBatchSizes,
+      model->sampleIndices, 2000, npix));
   dataset_pipeline_.reset(new DatasetPipelineWrapper(train_dataset_));
+
+  if (runTestRoutine_)
+    eval_dataset_.reset(Dataset::fromName(
+        dset + "_eval", rtctx->rank, model->globalBatchSize,
+        model->initialBatchSizes, model->sampleIndices, 10, npix));
 
   if (!rtctx->use_fg_graph)
     iters_before_graph_capture = itersToTrain * epochsToTrain;

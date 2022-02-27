@@ -116,6 +116,7 @@ struct Layer {
   size_t nr_current_depedencies{0};
   long layerLocalBatch;
   std::vector<int64_t> emptyOutSizes;
+  std::vector<int64_t> emptyInSizes;
   std::string moduleName;  // Used to output profiled runtimes.
 
   Layer(const Layer&) = delete;
