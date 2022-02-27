@@ -25,7 +25,6 @@
 #include "runtime.h"
 #include "utils.h"
 
-using Cycles = RAMCloud::Cycles;
 using json = nlohmann::json;
 
 /**

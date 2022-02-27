@@ -13,12 +13,7 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifndef RAMCLOUD_CYCLES_H
-#define RAMCLOUD_CYCLES_H
-
-// #include "Common.h"
-
-namespace RAMCloud {
+#pragma once
 
 /**
  * This class provides static methods that read the fine-grain CPU
@@ -55,6 +50,10 @@ class Cycles {
         return (((uint64_t)hi << 32) | lo);
     }
 
+    static uint64_t microtime() {
+      return (rdtsc() - start_tsc) / cycles_per_us;
+    }
+
     static double perSecond();
     static double toSeconds(uint64_t cycles, double cyclesPerSec = 0);
     static uint64_t fromSeconds(double seconds, double cyclesPerSec = 0);
@@ -79,6 +78,10 @@ class Cycles {
     /// cycles to seconds, instead of cyclesPerSec above.
     static double mockCyclesPerSec;
 
+
+    static uint64_t start_tsc;
+    static int cycles_per_us;
+
     /**
      * Returns the conversion factor between cycles in seconds, using
      * a mock value for testing when appropriate.
@@ -90,7 +93,3 @@ class Cycles {
         return cyclesPerSec;
     }
 };
-
-} // end RAMCloud
-
-#endif  // RAMCLOUD_CYCLES_H

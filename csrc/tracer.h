@@ -25,15 +25,15 @@ class CpuTimer {
  public:
   CpuTimer(const char* name) : name(name) {}
 
-  inline void start() { lastStartTick = RAMCloud::Cycles::rdtsc(); }
+  inline void start() { lastStartTick = Cycles::rdtsc(); }
 
   inline void stop() {
-    totalCycles += RAMCloud::Cycles::rdtsc() - lastStartTick;
+    totalCycles += Cycles::rdtsc() - lastStartTick;
     count++;
   }
 
   uint64_t avgMicros() {
-    return RAMCloud::Cycles::toMicroseconds(totalCycles / count);
+    return Cycles::toMicroseconds(totalCycles / count);
   }
 
   const char* name;

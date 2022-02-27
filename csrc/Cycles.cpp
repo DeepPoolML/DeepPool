@@ -16,17 +16,18 @@
 #include <errno.h>
 #include <sys/time.h>
 #include <cinttypes>
+#include <iostream>
 
 #include "Cycles.h"
 #include "Initialize.h"
 #include "logger.h"
 
-namespace RAMCloud {
-
 double Cycles::cyclesPerSec = 0;
+uint64_t Cycles::start_tsc = 0;
+int Cycles::cycles_per_us = 0;
 uint64_t Cycles::mockTscValue = 0;
 double Cycles::mockCyclesPerSec = 0;
-static Initialize _(Cycles::init);
+static RAMCloud::Initialize _(Cycles::init);
 
 /**
  * Perform once-only overall initialization for the Cycles class, such
@@ -76,10 +77,14 @@ Cycles::init() {
         double delta = cyclesPerSec/1000.0;
         if ((oldCycles > (cyclesPerSec - delta)) &&
                 (oldCycles < (cyclesPerSec + delta))) {
-            return;
+            break;
         }
         oldCycles = cyclesPerSec;
     }
+
+    start_tsc = rdtsc();
+    cycles_per_us = cyclesPerSec / 1000000.;
+    std::cerr << "Init cycles: " << cycles_per_us << std::endl;
 }
 
 /**
@@ -232,4 +237,3 @@ Cycles::sleep(uint64_t us)
     uint64_t stop = Cycles::rdtsc() + Cycles::fromNanoseconds(1000*us);
     while (Cycles::rdtsc() < stop);
 }
-} // end RAMCloud

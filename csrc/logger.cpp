@@ -25,7 +25,6 @@
 #include "Cycles.h"
 #include "ThreadId.h"
 
-using Cycles = RAMCloud::Cycles;
 using ThreadId = RAMCloud::ThreadId;
 
 /**
