@@ -1370,6 +1370,9 @@ class CostSim:
     def searchLinear(self, preStartLayer, preStartConfig, startLayer, ctx: SearchContext):
         layer = startLayer
         while True:
+            if layer.prevLayers != None and len(layer.prevLayers) > 1: # Joining layer.
+                return layer
+
             layer.t = {}
 
             initCfg = layer.getInitialConfig(ctx.globalBatch)
@@ -1455,8 +1458,8 @@ class CostSim:
                 return layer
             elif len(layer.nextLayers) == 1:
                 layer = layer.nextLayers[0]
-                if len(layer.prevLayers) > 1: # Joining layer.
-                    return layer
+                # if len(layer.prevLayers) > 1: # Joining layer.
+                #     return layer
             else:
                 assert False
                 print("Error!")
