@@ -282,6 +282,7 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
             "nr_gpus": gpusUsed,
             "cifar_training": "cifar" in jobName,
             "lossfn": "CrossEntropyLoss" if "gpt2" in jobName else "NLL",
+            "autocast": True,
         }
 
         jobParamsInJson = json.dumps(jobParams)
