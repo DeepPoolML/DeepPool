@@ -6,6 +6,10 @@
 #include <torch/script.h>
 #include <torch/torch.h>
 
+// clang-format off
+#include <ATen/autocast_mode.h>
+// clang-format on
+
 #include <chrono>
 #include <iostream>
 
@@ -35,10 +39,11 @@ static double benchFn(std::function<void()> fn) {
 }
 
 static double benchLossTime(torch::Tensor output, torch::Tensor target,
-                            std::string kind) {
+                            std::string kind, bool autocast) {
   pybind11::gil_scoped_release no_gil;
 
   c10::cuda::CUDACachingAllocator::emptyCache();
+  at::autocast::set_enabled(autocast);
 
   output = output.cuda().detach().requires_grad_(true);
   /* use non-default stream for capturing */
@@ -66,12 +71,17 @@ static double benchLossTime(torch::Tensor output, torch::Tensor target,
   output.mutable_grad() = torch::Tensor();
   double tm = benchFn(fn);
   c10::cuda::setCurrentCUDAStream(origstream);
+  at::autocast::set_enabled(false);
+  if (autocast) at::autocast::clear_cache();
   return tm;
 }
 
-static std::pair<double, double> benchModule(
-    torch::jit::script::Module module, std::vector<torch::Tensor> inputs) {
+static std::pair<double, double> benchModule(torch::jit::script::Module module,
+                                             std::vector<torch::Tensor> inputs,
+                                             bool autocast) {
   pybind11::gil_scoped_release no_gil;
+
+  at::autocast::set_enabled(autocast);
 
   c10::cuda::CUDACachingAllocator::emptyCache();
 
@@ -119,6 +129,9 @@ static std::pair<double, double> benchModule(
   }
 
   c10::cuda::setCurrentCUDAStream(origstream);
+  at::autocast::set_enabled(false);
+  if (autocast) at::autocast::clear_cache();
+
   return std::make_pair(fwtime, bwtime);
 }
 

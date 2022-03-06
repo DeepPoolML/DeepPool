@@ -20,7 +20,7 @@ class GpuProfiler:
         except IOError:
             print("[GpuProfiler] No profile file exists at %s." % path)
 
-    def queryFwBwTime(self, layer, config):
+    def queryFwBwTime(self, layer, config, autocast=False):
 
         jitmodule = layer.scriptModule()
         inputs = layer.getRandomInputs(config[0])
@@ -32,20 +32,20 @@ class GpuProfiler:
             cfg.append((a.dtype, a.shape))
             ips.append(a.cuda())
 
-        key = f"{cfg}{layer.losslayer} || {jitmodule.inlined_graph}"
+        key = f"{cfg}{layer.losslayer} || {autocast} || {jitmodule.inlined_graph}"
 
         self.__loadProfile()
 
         if key in self.cache:
             return self.cache[key]
 
-        fwTime, bwTime = deeppool_bench.benchmodule(jitmodule._c, inputs)
+        fwTime, bwTime = deeppool_bench.benchmodule(jitmodule._c, inputs, autocast)
 
         if layer.losslayer:
             output = jitmodule.forward(*inputs).detach()
             targets = torch.zeros(output.size()[0], dtype=torch.int64).cuda()
             bwTime += deeppool_bench.benchloss(output,
-                                               targets, layer.losslayer)
+                                               targets, layer.losslayer, autocast)
 
         self.cache[key] = (fwTime, bwTime)
         self.__saveProfile()

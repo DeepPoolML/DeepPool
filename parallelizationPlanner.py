@@ -67,6 +67,10 @@ class CostSim:
         self.NET_LATENCY = 40
         # self.NET_LATENCY = 400 #40
         self.verbose = verbose
+        self.autocast = True
+
+    def setAutocast(self, autocast):
+        self.autocast = autocast
 
     def setLossFunction(self, lossfn):
         self.layers[-1].losslayer = lossfn
@@ -76,7 +80,7 @@ class CostSim:
 
     def queryFwBwTime(self, layer, config: tuple):
         p = GpuProfiler("cuda")
-        return p.queryFwBwTime(layer, config)
+        return p.queryFwBwTime(layer, config, self.autocast)
 
     def generateModuleDescription(self, layerConfigs: list, globalBatch: int):
         # gpuTimeSum = 0
