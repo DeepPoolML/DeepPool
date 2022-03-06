@@ -68,6 +68,8 @@ class CommunicationHandler {
    */
   int getTag(const std::string& xferName);
 
+  void Barrier();
+
  protected:
   int worldSize;
   json tensorTags;

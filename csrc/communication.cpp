@@ -47,6 +47,16 @@ int CommunicationHandler::getTag(const std::string& xferName) {
   return tensorTags[xferName].get<int>();
 }
 
+ void CommunicationHandler::Barrier() {
+    auto topts = torch::TensorOptions(rtctx->c10dev).requires_grad(false);
+    auto tsr = torch::empty({1}, topts);
+    comm_start();
+    all_reduce(tsr, c10d::ReduceOp::SUM);
+    comm_end();
+    sync();
+    rtctx->torch_stream.synchronize();
+  }
+
 ///////////////////////////////////////////////////////////////////////
 // CommunicationHandlerGRPC
 ///////////////////////////////////////////////////////////////////////
