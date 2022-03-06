@@ -95,6 +95,9 @@ struct RuntimeContext {
   int addTrainingJob(std::unique_ptr<JobContext> job);
   int poll();
 
+
+  std::shared_ptr<CommunicationHandler> global_comms;
+
   /**
    *  additional variables.
    */

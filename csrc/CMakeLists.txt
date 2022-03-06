@@ -24,6 +24,8 @@ enable_language(CUDA)
 set(BUILD_SHARED_LIBS ON)
 #set(CUDA_SEPARABLE_COMPILATION ON)
 
+#add_subdirectory(proflib)
+
 cuda_add_library("cudasleep"
   CUDASleep.cu
   SHARED
@@ -95,6 +97,7 @@ add_executable(runtime
 target_link_libraries(runtime
   dp_grpc_proto
   cudasleep
+#  proflib
   absl::flags absl::flags_parse
   nccl
   ${_REFLECTION}

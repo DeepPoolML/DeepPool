@@ -30,6 +30,7 @@
 #include "communication.h"
 #include "json.hpp"
 #include "logger.h"
+#include "Manager.h"
 #include "rpcService.h"
 #include "runtime.grpc.pb.h"
 #include "utils.h"
@@ -125,12 +126,13 @@ void grpcCommTest() {
 void ncclCommTest() {
   json tensorTags;
   json jobRankToGlobalRank;
-  auto commHandler = std::make_unique<CommunicationHandlerNCCL>(
+  auto commHandler = std::make_shared<CommunicationHandlerNCCL>(
       "default", rtctx->worldSize, tensorTags, rtctx->rank,
       jobRankToGlobalRank);
   DP_LOG(DEBUG, "a default commHandler created for testing.");
   commHandler->testRingP2P();
   commHandler->testAllReduce();
+  rtctx->global_comms = commHandler;
 }
 
 /**
@@ -161,9 +163,9 @@ int RuntimeContext::poll() {
 
   if (IsBeEnabled()) {
     if (mainJob->RunWithBe())
-      BeResume();
+      GpuManager::getInstance()->EnableBe();
     else
-      BePause();
+      GpuManager::getInstance()->DisableBe();
   }
 
   if (mainJob->ShouldRunTest()) mainJob->Test();
@@ -217,6 +219,7 @@ void parse_args(RuntimeContext& ctx, int argc, char** argv) {
 RuntimeContext* rtctx; /* global rtctx variable */
 
 int main(int argc, char** argv) {
+  // ProfilerInit(0);
   RuntimeContext ctx;
   rtctx = &ctx;
   ctx.shutdownRequested = false;
@@ -292,7 +295,6 @@ int main(int argc, char** argv) {
     }
   }).detach();
 
-  // taskMngr.addBgJob();
   std::cout << "poller is starting." << std::endl << std::flush;
   DP_LOG(DEBUG, "Poller is starting.");
   while (!ctx.shutdownRequested.load(std::memory_order_relaxed)) {

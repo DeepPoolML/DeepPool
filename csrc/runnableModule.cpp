@@ -115,7 +115,7 @@ RunnableModule::RunnableModule(
         rtctx->min_layer_sync <= static_cast<size_t>(rtctx->worldSize);
 
     auto layer = std::make_shared<Layer>(module, specialModule, id,
-                                         layerIsActive, doLocalGradSync);
+                                         layerIsActive, doLocalGradSync, name);
     layers.push_back(layer);
 
     layer->commGroupKey = RankVecToKey(ldsc["gpuAssignment"]);
@@ -313,7 +313,7 @@ torch::Tensor Layer::DoForward(RunnableModule* model, bool captureLayer) {
   GraphTimer fwdtimer;
   if (captureLayer) fwdtimer.StartCapture();
 
-  ScopedGraphRecorder graph(model, TASK_FLAGS_COMPUTE, "forward_" + timerkey);
+  ScopedGraphRecorder graph(model, TASK_FLAGS_COMPUTE, "forward_" + layername);
 
   output = module.forward(iVec).toTensor();
   /* verify output shape is as expected per job description */
@@ -346,8 +346,7 @@ void Layer::DoBackward(RunnableModule* model, bool captureLayer) {
   GraphTimer bwdtimer;
   if (captureLayer) bwdtimer.StartCapture();
 
-  ScopedGraphRecorder graph(model, TASK_FLAGS_COMPUTE,
-                            "backward_" + timerkey);
+  ScopedGraphRecorder graph(model, TASK_FLAGS_COMPUTE, "backward_" + layername);
 
   /* last layer */
   if (nextLayers.size() == 0 && model->fpOutput.defined()) {
@@ -446,7 +445,7 @@ void RunnableModule::ExecuteXfers(Layer* layer, bool backward) {
     if (graph_recording) {
       cur_task->AddTask(
           {fn, TASK_FLAGS_P2PCOMM | (has_recv ? TASK_FLAGS_P2PCOMM_RECV : 0),
-           (backward ? "backward_nccl_" : "forward_nccl_") + layer->timerkey});
+           (backward ? "backward_nccl_" : "forward_nccl_") + layer->layername});
     };
 
     commHandler->comm_start();
@@ -457,7 +456,7 @@ void RunnableModule::ExecuteXfers(Layer* layer, bool backward) {
 
   if (layer->xfers_local.size()) {
     ScopedGraphRecorder graph(this, TASK_FLAGS_MEMCPY,
-                              "memcpy_" + layer->timerkey);
+                              "memcpy_" + layer->layername);
 
     for (const auto& ixfer : layer->xfers_local) {
       const size_t lid = ixfer.src_lid;
@@ -513,7 +512,7 @@ JobStatus RunnableModule::forwardAStep(bool captureLayer) {
     layer->output.reset();
   }
 
-  TimerRecordLayer(layer->timerkey, false);
+  TimerRecordLayer(layer->layername, false);
 
   // Forward pass is completed.
   if (layerQ.empty()) {
@@ -574,8 +573,8 @@ JobStatus RunnableModule::backwardAStep(bool captureLayer) {
     if (--pl->nr_current_depedencies == 0) layerQ.push_back(pl.get());
   }
 
-  assert(!layer->timerkey.empty());
-  TimerRecordLayer(layer->timerkey, true);
+  assert(!layer->layername.empty());
+  TimerRecordLayer(layer->layername, true);
 
   // Backward pass is completed.
   if (layerQ.empty()) {
@@ -711,6 +710,7 @@ int RunnableModule::AdvanceTraining(bool doGraphCapture, bool layerProfile) {
       cur_task->CombineGraphs();
       has_graph = true;
       graph_recording = false;
+      // exit(0);
       DP_LOG(NOTICE, "Ending capture.");
       GpuManager::getInstance()->AddTask(cur_task);
     }
@@ -754,11 +754,11 @@ void RunnableModule::printLayerInGraphTimes() {
     printf("layer fwd bwd\n");
     double total_fwd = 0, total_bwd = 0;
     for (auto& layer : layers) {
-      auto fwdtm = layerts_fwd.GetP50(layer->timerkey, 200) * 1000.0;
-      auto bwdtm = layerts_bwd.GetP50(layer->timerkey, 200) * 1000.0;
+      auto fwdtm = layerts_fwd.GetP50(layer->layername, 200) * 1000.0;
+      auto bwdtm = layerts_bwd.GetP50(layer->layername, 200) * 1000.0;
       total_fwd += fwdtm;
       total_bwd += bwdtm;
-      printf("%s %.2f %.2f\n", layer->timerkey.c_str(), fwdtm, bwdtm);
+      printf("%s %.2f %.2f\n", layer->layername.c_str(), fwdtm, bwdtm);
     }
     printf("Total %.2f %2.f\n", total_fwd, total_bwd);
   }

@@ -135,7 +135,7 @@ void JobContext::StepOne(bool *iter_done) {
   if (!iter_in_progress) {
     if (rtctx->cuda_profile && totiters == profile_iter_start)
       CUDA_API_CALL(cudaProfilerStart());
-    if ((graphCapture || profile) && IsBeEnabled()) BePause();
+    if (graphCapture || profile) GpuManager::getInstance()->Pause();
     if (totiters == warmupIters) {
       rtctx->torch_stream.synchronize();
       start = std::chrono::steady_clock::now();
@@ -151,7 +151,7 @@ void JobContext::StepOne(bool *iter_done) {
 
   if (!iter_in_progress) {
     if (autocast_) at::autocast::clear_cache();
-    if ((graphCapture || profile) && IsBeEnabled() && run_with_be_) BeResume();
+    if (graphCapture || profile) GpuManager::getInstance()->Resume();
     if (rtctx->cuda_profile &&
         totiters == profile_iter_start + niter_to_profile - 1) {
       CUDA_API_CALL(cudaProfilerStop());

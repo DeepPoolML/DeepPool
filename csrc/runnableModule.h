@@ -71,15 +71,15 @@ enum class SpecialModuleTypes { NOTSPECIAL = 0, CONCAT };
  */
 struct Layer {
   Layer(torch::jit::Module module, SpecialModuleTypes specialModule, int id,
-        bool active, bool doLocalGradSync)
+        bool active, bool doLocalGradSync, std::string name)
       : module(module),
         specialModule(specialModule),
         id(id),
         active(active),
         doLocalGradSync(doLocalGradSync) {
     std::stringstream ss;
-    ss << "LAYER_" << id;
-    timerkey = ss.str();
+    ss << "LAYER_" << id << "_" << name;
+    layername = ss.str();
   }
 
   torch::Tensor DoForward(RunnableModule *model, bool captureLayer);
@@ -98,7 +98,7 @@ struct Layer {
   std::set<size_t> tx_lids;
   std::set<size_t> rx_lids;
 
-  std::string timerkey;
+  std::string layername;
 
   torch::jit::Module module;
   int64_t fwUsec{0};
@@ -119,11 +119,10 @@ struct Layer {
   std::vector<int64_t> emptyInSizes;
   std::string moduleName;  // Used to output profiled runtimes.
 
-  Layer(const Layer&) = delete;
-  Layer& operator=(const Layer&) = delete;
-  Layer(Layer&&) = delete;
-  Layer& operator=(Layer&&) = delete;
-
+  Layer(const Layer &) = delete;
+  Layer &operator=(const Layer &) = delete;
+  Layer(Layer &&) = delete;
+  Layer &operator=(Layer &&) = delete;
 };
 
 class ScopedGraphRecorder;
@@ -189,10 +188,10 @@ class RunnableModule {
     return loss_tracker_.item().toDouble() / static_cast<double>(nr_iters_);
   }
 
-  RunnableModule(const RunnableModule&) = delete;
-  RunnableModule& operator=(const RunnableModule&) = delete;
-  RunnableModule(RunnableModule&&) = delete;
-  RunnableModule& operator=(RunnableModule&&) = delete;
+  RunnableModule(const RunnableModule &) = delete;
+  RunnableModule &operator=(const RunnableModule &) = delete;
+  RunnableModule(RunnableModule &&) = delete;
+  RunnableModule &operator=(RunnableModule &&) = delete;
 
  private:
   friend struct Layer;
@@ -285,7 +284,9 @@ class ScopedGraphRecorder {
     if (!graph) return;
     graph->capture_end();
     c10::cuda::device_synchronize();
-    model_->cur_task->AddTask({graph, flags_, debug_name_});
+    size_t nr_nodes = 0;
+    CUDA_API_CALL(cudaGraphGetNodes(graph->getGRAPH(), nullptr, &nr_nodes));
+    if (nr_nodes > 0) model_->cur_task->AddTask({graph, flags_, debug_name_});
   }
 
  private:
