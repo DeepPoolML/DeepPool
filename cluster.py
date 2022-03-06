@@ -29,8 +29,6 @@ import grpc
 import runtime_pb2
 import runtime_pb2_grpc
 
-import torch
-
 # import examples.vgg as vgg  # TODO: this is used for debugging. Remove this later.
 
 extra_args = [] # unparsed arguments stored here are forwarded to runtimes
@@ -50,6 +48,25 @@ def waitthreads(threadList):
         if HAS_EXCEPTION:
             sys.exit(-1)
         thread.join()
+
+def discover_gpu_numa():
+    from subprocess import check_output
+    gpus = check_output("nvidia-smi -x -q | grep \"gpu id\"", shell=True).decode("utf-8").splitlines()
+
+    try:
+        has_numactl = os.system("numactl ls > /dev/null 2>&1") == 0
+    except:
+        has_numactl = False
+
+    if not has_numactl:
+        return [-1] * len(gpus)
+
+    nodes = []
+    for g in gpus:
+        gid = g.split("\"")[1][4:].lower()
+        node = check_output(f"cat /sys/bus/pci/devices/{gid}/numa_node", shell=True).decode("utf-8").strip()
+        nodes.append(int(node))
+    return nodes
 
 class CppRuntimeProxy:
     def __init__(self, addressWithPort: str):
@@ -107,6 +124,7 @@ class Location:
         self.isCpp = isCpp
         self.is_local = address == "127.0.0.1"
         self.process = None
+        self.numa_node = -1
 
     def getProxy(self, maxRetry = 180):
         if self.proxy != None:
@@ -377,8 +395,12 @@ class ClusterCoordinator(xmlrpc.server.SimpleXMLRPCServer):
             if manualLaunch:
                 print("Skipping ssh launching runtime. Must have launched them manually.")
             elif cppRuntime:
+                if location.numa_node >= 0:
+                    numacmd = "numactl -N{nn} -m{nn}".format(nn=location.numa_node)
+                else:
+                    numacmd = ""
                 self.processes.append(location.rshAsync(
-                    f"CUDA_VISIBLE_DEVICES={location.device} {nsysPrefix} {self.workDir}/csrc/build/runtime" + \
+                    f"CUDA_VISIBLE_DEVICES={location.device} {numacmd} {nsysPrefix} {self.workDir}/csrc/build/runtime" + \
                     " --myAddr %s:%d --device 0 --c10dBackend %s --rank %d --worldSize %d --logdir %s --be_batch_size %d %s" % \
                         (location.address, location.port, c10dBackend, i, len(self.locations), logdir, self.be_batch_size, " ".join(extra_args)) #+ \
                     , stdout=stdoutFp, stderr=stderrFp))
@@ -540,10 +562,13 @@ def main():
 #    for serverConfig in clusterConfig["serverList"]:
 #        print("Found %s" % str(serverConfig))
     port = 11250
-    for i in range(torch.cuda.device_count()):
+    gpus = discover_gpu_numa()
+    for i, node in enumerate(gpus):
         rankToIpMap[str(len(locations))] = f"127.0.0.1:{port}"
         commGrpRanksWorld.append(len(locations))
-        locations.append(Location("127.0.0.1", port, i, None, None, args.cpp))
+        loc = Location("127.0.0.1", port, i, None, None, args.cpp)
+        loc.numa_node = node
+        locations.append(loc)
         port += 1
     addrToBindCombo = re.split('[-:]', args.addrToBind)
     addrToBind = addrToBindCombo[0]
