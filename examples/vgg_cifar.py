@@ -2,9 +2,18 @@
 Modified from https://github.com/pytorch/vision.git
 '''
 import math
+import os
+import sys
 
+import torch
 import torch.nn as nn
 import torch.nn.init as init
+
+currentdir = os.path.dirname(os.path.realpath(__file__))
+parentdir = os.path.dirname(currentdir)
+sys.path.append(parentdir)
+
+from parallelizationPlanner import CostSim
 
 __all__ = [
     'VGG', 'vgg11', 'vgg11_bn', 'vgg13', 'vgg13_bn', 'vgg16', 'vgg16_bn',
@@ -19,15 +28,7 @@ class VGG(nn.Module):
     def __init__(self, features):
         super(VGG, self).__init__()
         self.features = features
-        self.classifier = nn.Sequential(
-            nn.Dropout(),
-            nn.Linear(512, 512),
-            nn.ReLU(False),
-            nn.Dropout(),
-            nn.Linear(512, 512),
-            nn.ReLU(False),
-            nn.Linear(512, 10),
-        )
+        self.classifier = nn.Sequential(cs.Flatten(), cs.Linear(512, 10))
          # Initialize weights
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -38,7 +39,7 @@ class VGG(nn.Module):
 
     def forward(self, x):
         x = self.features(x)
-        x = x.view(x.size(0), -1)
+        # x = x.view(x.size(0), -1)
         x = self.classifier(x)
         return x
 
@@ -48,13 +49,13 @@ def make_layers(cfg, batch_norm=False):
     in_channels = 3
     for v in cfg:
         if v == 'M':
-            layers += [nn.MaxPool2d(kernel_size=2, stride=2)]
+            layers += [cs.MaxPool2d(kernel_size=2, stride=2)]
         else:
-            conv2d = nn.Conv2d(in_channels, v, kernel_size=3, padding=1)
+            conv2d = cs.Conv2d(in_channels, v, kernel_size=3, padding=1)
             if batch_norm:
-                layers += [conv2d, nn.BatchNorm2d(v), nn.ReLU(inplace=False)]
+                layers += [conv2d, cs.BatchNorm2d(v), cs.ReLU(inplace=False)]
             else:
-                layers += [conv2d, nn.ReLU(inplace=False)]
+                layers += [conv2d, cs.ReLU(inplace=False)]
             in_channels = v
     return nn.Sequential(*layers)
 
@@ -106,3 +107,23 @@ def vgg19():
 def vgg19_bn():
     """VGG 19-layer model (configuration 'E') with batch normalization"""
     return VGG(make_layers(cfg['E'], batch_norm=True))
+
+
+def run_training():
+    global cs
+    cs = CostSim()
+    model = vgg16()
+    cs.printAllLayers()
+    cs.computeInputDimensions((3,32,32))
+    globalBatch = int(sys.argv[2])
+    gpuCount = int(sys.argv[1])
+    job, iterMs, gpuMs, maxGpusUsed = cs.searchBestSplitsV3(gpuCount, globalBatch, amplificationLimit=float(sys.argv[3]))
+
+    from clusterClient import ClusterClient
+    cc = ClusterClient()
+    cc.submitTrainingJob("vgg16_cifar", job.dumpInJSON())
+
+
+if __name__ == '__main__':
+    run_training()
+
