@@ -88,7 +88,10 @@ static void BeRunner(BeTaskConfig cfg) {
   assert(static_cast<size_t>(splitways) == tenss.size());
   auto fn = [&] {
     auto orig_stream = c10::cuda::getCurrentCUDAStream();
-    optim.zero_grad();
+
+    for (auto& group : optim.param_groups())
+      for (auto& param : group.params()) param.mutable_grad() = torch::Tensor();
+
     DeepPool::CUDAEvent ev;
     ev.record(orig_stream);
     for (size_t i = 0; i < tenss.size(); i++) {
