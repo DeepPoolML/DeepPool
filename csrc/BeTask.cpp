@@ -6,6 +6,7 @@
 #include <ATen/autocast_mode.h>
 // clang-format on
 #include <ATen/cuda/CUDAEvent.h>
+#include <absl/flags/flag.h>
 #include <torch/script.h>
 
 #include <atomic>
@@ -16,6 +17,9 @@
 #include "GraphPieces.h"
 #include "Manager.h"
 #include "runtime.h"
+
+ABSL_FLAG(long, be_image_px, 0,
+          "number of pixels in image used for be training");
 
 static long bsize;
 
@@ -66,11 +70,13 @@ static void BeRunner(BeTaskConfig cfg) {
   m.to(rtctx->c10dev);
 
   std::vector<torch::Tensor> params;
-  for (const auto &p : m.parameters()) params.push_back(p);
+  for (const auto& p : m.parameters()) params.push_back(p);
 
   torch::optim::SGD optim(params, torch::optim::SGDOptions(0.1).momentum(0.9));
 
-  long px = cfg.be_jit_file.find("inception") == std::string::npos ? 224 : 299;
+  long px = absl::GetFlag(FLAGS_be_image_px);
+  if (!px)
+    px = cfg.be_jit_file.find("inception") == std::string::npos ? 224 : 299;
   auto tensor = torch::rand({bsize, 3, px, px}).to(rtctx->c10dev);
 
   std::vector<int64_t> splitSizes(splitways, bsize / splitways);
@@ -95,7 +101,7 @@ static void BeRunner(BeTaskConfig cfg) {
     DeepPool::CUDAEvent ev;
     ev.record(orig_stream);
     for (size_t i = 0; i < tenss.size(); i++) {
-      auto &st = streams.at(i);
+      auto& st = streams.at(i);
       if (splitways > 1) {
         c10::cuda::setCurrentCUDAStream(st);
         ev.block(st);
