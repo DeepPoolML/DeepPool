@@ -13,6 +13,9 @@ from parallelizationPlanner import CostSim
 from clusterClient import ClusterClient
 from jobDescription import TrainingJob
 
+import torch.backends.cudnn as cudnn
+cudnn.benchmark = True
+
 __all__ = [
     'VGG', 'vgg11', 'vgg11_bn', 'vgg13', 'vgg13_bn', 'vgg16', 'vgg16_bn',
     'vgg19_bn', 'vgg19',
@@ -38,6 +41,9 @@ class VGG(nn.Module):
         self.features = features
         split1side = int(split_count**0.5)
         inChannels = int(512 / split1side)
+        assert inChannels == 512
+        self.avgpool = cs.AdaptiveAvgPool2d((7, 7))
+
         # print("linear intake features: %d"%int(512 * 7 * 7 / split1side))
         cs.Flatten()
         self.classifier = nn.Sequential(
@@ -54,7 +60,8 @@ class VGG(nn.Module):
 
     def forward(self, x):
         x = self.features(x)
-        x = x.view(x.size(0), -1)
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
         x = self.classifier(x)
         return x
 
@@ -84,10 +91,10 @@ def make_layers(cfg, split_count=1, batch_norm=False):
             # if i == len(cfg) - 2: # last convolutional layer.
                 # print("lastConv2d out channel: %d"%v)
             conv2d = cs.Conv2d(in_channels, int(v / split_count), kernel_size=3, padding=1)
-            # if batch_norm:
-            #     layers += [conv2d, nn.BatchNorm2d(v), nn.ReLU(inplace=True)]
-            # else:
-            layers += [conv2d, cs.ReLU(inplace=False)] #self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
+            if batch_norm:
+                layers += [conv2d, cs.BatchNorm2d(v), cs.ReLU(inplace=False)]
+            else:
+                layers += [conv2d, cs.ReLU(inplace=False)] #self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
             in_channels = v
         i += 1
     return nn.Sequential(*layers)
@@ -103,9 +110,9 @@ def make_layers(cfg, split_count=1, batch_norm=False):
 
 # layersToSplit = [True, True, 'M', 128, True, 'M', 256, 256, 256, 'M', 512, 512, True, 'M', 512, 512, True, 'M'],
 # layersToSplit = [True, True, False, False, True, False, False, False, False, False, False, False, True, False, False, False, True, False]
-layersToSplit = [True, True, False, True, True, False, True, True, True, False, True, True, True, False, True, True, True, False]
+# layersToSplit = [True, True, False, True, True, False, True, True, True, False, True, True, True, False, True, True, True, False]
 
-
+"""
 class VGG16(nn.Module):
     def __init__(self, split_count=1, num_classes=1000, init_weights=True):
         super(VGG16, self).__init__()
@@ -164,7 +171,7 @@ class VGG16(nn.Module):
             elif isinstance(m, nn.Linear):
                 nn.init.normal_(m.weight, 0, 0.01)
                 nn.init.constant_(m.bias, 0)
-
+"""
 
 cfg = {
     'A': [64, 'M', 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M'],
@@ -349,20 +356,23 @@ def testRunOnCPU():
 def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=False, netBw=2.66E5, spatialSplit=False, simResultFilename=None, use_be=False):
     global cs
     cs = CostSim(None, netBw=netBw, verbose=False, gpuProfileLoc="profile/A100_vgg.prof")
-    model = vgg16(pretrained=False)
-    
+    model = vgg16(pretrained=False).cuda()
+
+    cs.printAllLayers(silent=True)
+    cs.computeInputDimensions((3,224,224))
+
     saveWholeModel = False
     if saveWholeModel:
-        fakeInput = torch.zeros(cs.layers[0].inputDim)
-        traced = torch.jit.script(model, fakeInput)
+        model.train()
+        fakeInput = torch.randn(cs.layers[0].inputDim).unsqueeze(0).cuda()
+        traced = torch.jit.trace(model, fakeInput)
         saveLocation = "modules/vgg16.pt"
         torch.jit.save(traced, saveLocation)
         print("Saved whole model to %s" % saveLocation)
+        exit(0)
 
     # model = vgg11()
     # model = resnet34()
-    cs.printAllLayers(silent=True)
-    cs.computeInputDimensions((3,224,224))
     # job = cs.searchBestSplits(4, 16, dataParallelBaseline=True)
     # job = cs.searchBestSplits(4, 16)
     # job = cs.searchBestSplits(gpuCount, globalBatch, dataParallelBaseline=True)

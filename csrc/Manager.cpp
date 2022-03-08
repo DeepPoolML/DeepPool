@@ -418,10 +418,12 @@ void GpuManager::DoWork() {
 
   if (!be_enabled_) return;
 
+  auto tasklet_depth = hptasks.size() ? be_tasklet_depth : 4;
+
   for (auto& task : lptasks) {
     task->PollCompletions();
     if (!task->IsManagerOwned()) continue;
-    if (task->GetEnqueuedNr() >= be_tasklet_depth) continue;
+    if (task->GetEnqueuedNr() >= tasklet_depth) continue;
 
     bool can_run_be = true;
     auto curflags = cur_tasklet ? cur_tasklet->type_flags_ : 0;
@@ -441,7 +443,7 @@ void GpuManager::DoWork() {
     if (curflags & TASK_FLAGS_P2PCOMM_RECV) {
       auto recv_time = cur_tasklet->timings_.benchmark_us;
       /* make sure NCCL recv is going to run for a long time */
-      if (recv_time > 100) can_run_be = true;
+      if (recv_time > 500) can_run_be = true;
     }
 
     /* always run if we have flag MULTIPLEX */

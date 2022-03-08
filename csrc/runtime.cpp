@@ -27,10 +27,10 @@
 
 #include "BeTask.h"
 #include "JobContext.h"
+#include "Manager.h"
 #include "communication.h"
 #include "json.hpp"
 #include "logger.h"
-#include "Manager.h"
 #include "rpcService.h"
 #include "runtime.grpc.pb.h"
 #include "utils.h"
@@ -52,7 +52,8 @@ ABSL_FLAG(size_t, sample_per_kernel, 32, "");
 ABSL_FLAG(bool, profile_stage_time, false, "");
 ABSL_FLAG(bool, profile_layer_times_graph, false, "");
 ABSL_FLAG(bool, profile_layer_times_timers, false, "");
-ABSL_FLAG(bool, cuda_profile, false, "use cuda profiler API to mark an iteration for profiling");
+ABSL_FLAG(bool, cuda_profile, false,
+          "use cuda profiler API to mark an iteration for profiling");
 
 ABSL_FLAG(bool, debug, false, "");
 ABSL_FLAG(std::string, be_jit_file,
@@ -254,7 +255,7 @@ int main(int argc, char** argv) {
     DP_LOG(DEBUG, "GRPC comm test done.");
   }
 
-  if (ctx.c10dBackend == "nccl") {
+  if (ctx.c10dBackend == "nccl" && rtctx->worldSize > 1) {
     DP_LOG(DEBUG, "NCCL commBackend is used. Waiting for InitCommNCCL.");
     while (!ctx.ncclCommReady.load(std::memory_order_relaxed)) {
     }

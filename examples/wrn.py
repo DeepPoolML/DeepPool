@@ -427,12 +427,12 @@ def wide_resnet101_2(pretrained: bool = False, progress: bool = True, **kwargs: 
 # profiler.saveProfile()
 
 
-def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=False, netBw=2.66E5, spatialSplit=False, simResultFilename=None, simOnly=False, use_be=False):
+def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=False, netBw=2.66E5, spatialSplit=False, simResultFilename=None, simOnly=False, use_be=False, npix=224):
     global cs
     cs = CostSim(None, netBw=netBw, verbose=True, gpuProfileLoc="profile/A100_wrn.prof")
     model = wide_resnet101_2()
     cs.printAllLayers(silent=True)
-    cs.computeInputDimensions((3,224,224))
+    cs.computeInputDimensions((3,npix,npix))
     # job, iterMs, gpuMs = cs.searchBestSplits(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
     job, iterMs, gpuMs, maxGpusUsed = cs.searchBestSplitsV3(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
     jobInJson = job.dumpInJSON()
@@ -448,7 +448,7 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     
     if not spatialSplit and not simOnly:
         cc = ClusterClient()
-        jobName = "wrn101_%d_%d_%2.1f%s" % (gpuCount, globalBatch, amplificationLimit, "_DP" if dataParallelBaseline else "")
+        jobName = f"wrn101_%d_%d_%2.1f%s_{npix}" % (gpuCount, globalBatch, amplificationLimit, "_DP" if dataParallelBaseline else "")
         jobName += "_BE" if use_be else ""
         cc.submitTrainingJob(jobName, jobInJson, use_be)
 
@@ -539,10 +539,14 @@ if __name__ == "__main__":
         main(int(sys.argv[1]), int(sys.argv[2]), dataParallelBaseline=True)
     elif len(sys.argv) >= 4:
         use_be = len(sys.argv) > 4 and int(sys.argv[4]) == 1
-        if sys.argv[3] == "DP":
-            main(int(sys.argv[1]), int(sys.argv[2]), dataParallelBaseline=True, use_be=use_be)
+        if len(sys.argv) > 5:
+            npix = int(sys.argv[5])
         else:
-            main(int(sys.argv[1]), int(sys.argv[2]), amplificationLimit=float(sys.argv[3]), use_be=use_be)
+            npix = 224
+        if sys.argv[3] == "DP":
+            main(int(sys.argv[1]), int(sys.argv[2]), dataParallelBaseline=True, use_be=use_be, npix=npix)
+        else:
+            main(int(sys.argv[1]), int(sys.argv[2]), amplificationLimit=float(sys.argv[3]), use_be=use_be,npix=npix)
     elif len(sys.argv) == 2:
         print("Run all configs")
         runAllConfigs("wrn101", sys.argv[1])
