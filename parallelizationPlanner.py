@@ -1707,6 +1707,9 @@ class CostSim:
 
     def searchBestSplitsV3(self, totalGpus: int, globalBatch: int = 16, amplificationLimit: float = 2.0, dataParallelBaseline = False, sampleSplit=True, spatialSplit=False, filterSplit=False):
         """ Parallelization strategy findiing for DeepPool. """
+        if dataParallelBaseline:
+            return self.JustDoDP(totalGpus, globalBatch, 0.0)
+
         ctx = SearchContext(totalGpus, globalBatch, amplificationLimit, dataParallelBaseline, sampleSplit=sampleSplit, spatialSplit=spatialSplit, filterSplit=filterSplit)
         ctx.doNotBench = totalGpus == 1
         finalLayer = self.searchLinear(None, None, self.layers[0], ctx)

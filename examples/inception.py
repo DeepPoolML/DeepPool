@@ -605,12 +605,12 @@ class BasicConv2d(nn.Module):
 
 
 
-def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=False, netBw=2.66E5, spatialSplit=False, simResultFilename=None, simOnly=False, use_be=False):
+def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=False, netBw=2.66E5, spatialSplit=False, simResultFilename=None, simOnly=False, use_be=False, npix=299):
     global cs
     cs = CostSim(None, netBw=netBw, verbose=True, gpuProfileLoc="profile/A100_inception.prof") #"inceptionLayerGpuProfileA100V2.txt", gpuProfileLocSub="inceptionLayerGpuProfileA100.txt")
     model = Inception3(aux_logits=False)
     cs.printAllLayers(silent=True)
-    cs.computeInputDimensions((3,299,299))
+    cs.computeInputDimensions((3,npix,npix))
     # job, iterMs, gpuMs = cs.searchBestSplits(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
 
     # if dataParallelBaseline:
@@ -733,14 +733,18 @@ if __name__ == "__main__":
         main(gpuCount, globalBatchSize, dataParallelBaseline=True)
     elif len(sys.argv) >= 4:
         use_be = len(sys.argv) > 4 and int(sys.argv[4]) == 1
+        if len(sys.argv) > 5:
+            npix = int(sys.argv[5])
+        else:
+            npix = 299
         gpuCount = int(sys.argv[1])
         globalBatchSize = int(sys.argv[2])
         # simResultFilename = "%s_%s_b%d_lim%2.1f_sim.data" % ("inception", "MP", globalBatchSize, amplificationLimit)
         if sys.argv[3] == "DP":
-            main(gpuCount, globalBatchSize, dataParallelBaseline=True, use_be=use_be)
+            main(gpuCount, globalBatchSize, dataParallelBaseline=True, use_be=use_be, npix=npix)
         else:
             amplificationLimit = float(sys.argv[3])
-            main(gpuCount, globalBatchSize, amplificationLimit, use_be=use_be)
+            main(gpuCount, globalBatchSize, amplificationLimit, use_be=use_be, npix=npix)
             # main(gpuCount, globalBatchSize, amplificationLimit, simResultFilename = simResultFilename, use_be=use_be)
     elif len(sys.argv) == 2:
         print("Run all configs")
