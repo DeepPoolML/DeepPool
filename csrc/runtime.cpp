@@ -60,11 +60,8 @@ ABSL_FLAG(std::string, be_jit_file,
           "/home/seojin/DeepPoolRuntime/beModules/resnet.jit", "");
 ABSL_FLAG(bool, use_fg_graph, true, "");
 ABSL_FLAG(bool, use_be_graph, true, "");
-ABSL_FLAG(size_t, iters_per_capture, 4, "");
-ABSL_FLAG(size_t, min_layer_sync, 8, "");
-ABSL_FLAG(size_t, sync_bucket_size, 10 * 1000 * 1000, "");
-ABSL_FLAG(std::string, bg_json_file, "", "");
-ABSL_FLAG(double, be_graph_split_ms, 0.5, "");
+ABSL_FLAG(size_t, min_layer_sync, 0, "");
+ABSL_FLAG(size_t, sync_bucket_size,0, "");
 
 /**
  * Destructing RuntimeContext.
@@ -191,8 +188,6 @@ void parse_args(RuntimeContext& ctx, int argc, char** argv) {
 #define PARSEFLAG(x) ctx.x = absl::GetFlag(FLAGS_##x);
   PARSEFLAG(min_layer_sync);
   PARSEFLAG(sync_bucket_size);
-  PARSEFLAG(iters_per_capture);
-  PARSEFLAG(bg_json_file);
   PARSEFLAG(device);
   PARSEFLAG(c10dBackend);
   PARSEFLAG(use_fg_graph);
@@ -211,7 +206,6 @@ void parse_args(RuntimeContext& ctx, int argc, char** argv) {
   PARSEFLAG(sample_per_kernel);
   PARSEFLAG(use_be_graph);
   PARSEFLAG(be_jit_file);
-  PARSEFLAG(be_graph_split_ms);
 #undef PARSEFLAG
 
   ctx.c10dev = c10::Device(c10::DeviceType::CUDA, ctx.device);

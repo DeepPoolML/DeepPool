@@ -128,7 +128,7 @@ class CostSim:
 
         # Don't allow dynamic scaling from real layers to relu.
         reluMultiple = 1
-        if destLayer.name in ["ReLU2d", "ReLU1d", "flatten"]:
+        if destLayer.name in ["ReLU2d", "ReLU1d", "flatten", "BatchNorm2d"]:
             reluMultiple = 1000
 
         if srcLayer.name in namesIn2d and \
@@ -433,7 +433,16 @@ class CostSim:
         layer = Layer(module, "layerNorm", {"dim": dim}, prevLayers = custom_previous_layers)
         self.layers.append(layer)
         return module
-    
+
+    def BatchNorm2d(self, out_channels, eps=0.001, custom_previous_layers: list = None):
+        module = nn.BatchNorm2d(out_channels, eps=0.001)
+
+        if custom_previous_layers == None and len(self.layers) > 0:
+            custom_previous_layers = [self.layers[-1]]
+        layer = Layer(module, "BatchNorm2d", {"out_channels": out_channels, "eps": 0.001}, prevLayers = custom_previous_layers)
+        self.layers.append(layer)
+        return module
+
     def GeneralLayer(self, module, name, params, custom_previous_layers: list = None, mustTrace=False):
         if custom_previous_layers == None and len(self.layers) > 0:
             custom_previous_layers = [self.layers[-1]]
@@ -1585,7 +1594,7 @@ class CostSim:
         except:
             print("Unable to render DOT file")
 
-    def to_gpuTimeline(self, name, totalGpus, dataParallelBaseline=False):
+    def to_gpuTimeline(self, name, totalGpus, dataParallelBaseline=False, xlim=None):
         if totalGpus == 1:
             print("Cannot generate gpuTimeline for totalGpus=1.")
             return
@@ -1619,24 +1628,27 @@ class CostSim:
         for rank, times in enumerate(gpuTimes):
             # if rank >= 8:
             #     break
-            print("rank%d" % (rank))
-            print(times)
+            #print("rank%d" % (rank))
+            #print(times)
             lastT = 0
             for start, end in sorted(times):
                 if start == end:
-                    print("skip")
+                    #print("skip")
                     continue
                 idx = totalGpus - rank - 1
                 # idx = 8 - rank - 1
-                if lastT > start:
-                    print("%5.3f %5.3f %5.3f" % (lastT, start, end))
+                #if lastT > start:
+                #    print("%5.3f %5.3f %5.3f" % (lastT, start, end))
                 # axs[idx].axvspan(lastT, start, facecolor='gray', alpha=0.3)
                 axs[idx].axvspan(start, end, facecolor='red', alpha=1)
                 lastT = end
             # axs[idx].axvspan(lastT, maxT, facecolor='gray', alpha=0.3)
             axs[rank].set_ylabel("%d"%rank, rotation=0, y=0.2, labelpad=10)
             axs[rank].yaxis.set_ticks([])
-            axs[rank].set_xlim(0, 50)
+            if xlim is not None:
+                axs[rank].set_xlim(0, xlim)
+            else:
+                axs[rank].set_xlim(0, axs[rank].get_xlim()[1])
 
         axs[0].set_title(name)
         plt.subplots_adjust(wspace=0, hspace=0)

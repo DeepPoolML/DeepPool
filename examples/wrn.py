@@ -14,6 +14,10 @@ from parallelizationPlanner import CostSim
 from clusterClient import ClusterClient
 from jobDescription import TrainingJob
 
+
+import torch.backends.cudnn as cudnn
+cudnn.benchmark = True
+
 __all__ = ['ResNet', 'resnet18', 'resnet34', 'resnet50', 'resnet101',
            'resnet152', 'resnext50_32x4d', 'resnext101_32x8d',
            'wide_resnet50_2', 'wide_resnet101_2']
@@ -184,7 +188,7 @@ class ResNet(nn.Module):
         self.base_width = width_per_group
         self.conv1 = cs.Conv2d(3, self.inplanes, kernel_size=7, stride=2, padding=3,
                                bias=False)
-        self.bn1 = norm_layer(self.inplanes)
+        self.bn1 = cs.BatchNorm2d(self.inplanes)
         self.relu = cs.ReLU(inplace=False)
         self.maxpool = cs.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.layer1 = self._make_layer(block, 64, layers[0])
@@ -433,9 +437,21 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     model = wide_resnet101_2()
     cs.printAllLayers(silent=True)
     cs.computeInputDimensions((3,npix,npix))
+
+    saveWholeModel = False
+    if saveWholeModel:
+        model.train()
+        model.cuda()
+        fakeInput = torch.randn(cs.layers[0].inputDim).unsqueeze(0).cuda()
+        traced = torch.jit.trace(model, fakeInput)
+        saveLocation = "modules/wrn.pt"
+        torch.jit.save(traced, saveLocation)
+        exit(0)
+
     # job, iterMs, gpuMs = cs.searchBestSplits(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
     job, iterMs, gpuMs, maxGpusUsed = cs.searchBestSplitsV3(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
     jobInJson = job.dumpInJSON()
+    cs.to_gpuTimeline("WideResNet, Burst Parallel", maxGpusUsed, dataParallelBaseline)
     # for rank in range(4):
     #     print("GPU rank: %d"%rank)
     #     print(job.dumpSingleRunnableModule(rank))

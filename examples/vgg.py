@@ -356,7 +356,7 @@ def testRunOnCPU():
 def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=False, netBw=2.66E5, spatialSplit=False, simResultFilename=None, use_be=False):
     global cs
     cs = CostSim(None, netBw=netBw, verbose=False, gpuProfileLoc="profile/A100_vgg.prof")
-    model = vgg16(pretrained=False).cuda()
+    model = vgg16(pretrained=False)
 
     cs.printAllLayers(silent=True)
     cs.computeInputDimensions((3,224,224))
@@ -364,6 +364,7 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     saveWholeModel = False
     if saveWholeModel:
         model.train()
+        model.cuda()
         fakeInput = torch.randn(cs.layers[0].inputDim).unsqueeze(0).cuda()
         traced = torch.jit.trace(model, fakeInput)
         saveLocation = "modules/vgg16.pt"
@@ -380,6 +381,7 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     job, iterMs, gpuMs, maxGpusUsed = cs.searchBestSplitsV3(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
     print("Searching for parallelization strategy is completed.\n")
     cs.to_dot("Digraph", globalBatch)
+    cs.to_gpuTimeline("VGG, Data Parallel" if dataParallelBaseline else "VGG, Burst Parallel", maxGpusUsed, dataParallelBaseline, xlim=11)
 
     jobInJson = job.dumpInJSON()
     # print("\n*** General description ***\n")

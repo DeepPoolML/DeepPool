@@ -15,6 +15,9 @@ from parallelizationPlanner import CostSim
 from clusterClient import ClusterClient
 from jobDescription import TrainingJob
 
+import torch.backends.cudnn as cudnn
+cudnn.benchmark = True
+
 __all__ = ['Inception3', 'inception_v3', 'InceptionOutputs', '_InceptionOutputs']
 
 
@@ -200,7 +203,7 @@ class Inception3(nn.Module):
         # N x 2048
         x = self.fc(x)
         # N x 1000 (num_classes)
-        return x, aux
+        return x
 
     @torch.jit.unused
     def eager_outputs(self, x: Tensor, aux: Optional[Tensor]) -> InceptionOutputs:
@@ -211,7 +214,7 @@ class Inception3(nn.Module):
 
     def forward(self, x: Tensor) -> InceptionOutputs:
         x = self._transform_input(x)
-        x, aux = self._forward(x)
+        return self._forward(x)
         aux_defined = self.training and self.aux_logits
         if torch.jit.is_scripting():
             if not aux_defined:
@@ -444,8 +447,9 @@ class InceptionE(nn.Module):
         self.branch3x3_1 = conv_block(in_channels, 384, kernel_size=1, custom_previous_layers=[prevLayer])
         prevLayer3x3_2 = cs.layers[-1]
         self.branch3x3_2a = conv_block(384, 384, kernel_size=(1, 3), padding=(0, 1), custom_previous_layers=[prevLayer3x3_2])
+        b1 = cs.layers[-1]
         self.branch3x3_2b = conv_block(384, 384, kernel_size=(3, 1), padding=(1, 0), custom_previous_layers=[prevLayer3x3_2])
-        cs.Concat(custom_previous_layers=[cs.layers[-2], cs.layers[-1]])
+        cs.Concat(custom_previous_layers=[b1, cs.layers[-1]])
         # self.branch3x3_2a = conv_block(384, 384*2, kernel_size=(1, 3), padding=(0, 1))
         outputLayers.append(cs.layers[-1])
 
@@ -453,8 +457,9 @@ class InceptionE(nn.Module):
         self.branch3x3dbl_2 = conv_block(448, 384, kernel_size=3, padding=1)
         prevLayer3x3dbl_3 = cs.layers[-1]
         self.branch3x3dbl_3a = conv_block(384, 384, kernel_size=(1, 3), padding=(0, 1), custom_previous_layers=[prevLayer3x3dbl_3])
+        b1 = cs.layers[-1]
         self.branch3x3dbl_3b = conv_block(384, 384, kernel_size=(3, 1), padding=(1, 0), custom_previous_layers=[prevLayer3x3dbl_3])
-        cs.Concat(custom_previous_layers=[cs.layers[-2], cs.layers[-1]])
+        cs.Concat(custom_previous_layers=[b1, cs.layers[-1]])
         # self.branch3x3dbl_3a = conv_block(384, 384*2, kernel_size=(1, 3), padding=(0, 1))
 
         outputLayers.append(cs.layers[-1])
@@ -543,13 +548,13 @@ class BasicConv2d(nn.Module):
     ) -> None:
         super(BasicConv2d, self).__init__()
         self.conv = cs.Conv2d(in_channels, out_channels, bias=False, **kwargs)
-        self.bn = nn.BatchNorm2d(out_channels, eps=0.001)
+        self.bn = cs.BatchNorm2d(out_channels, eps=0.001)
+        self.relu = cs.ReLU(inplace=False)
 
     def forward(self, x: Tensor) -> Tensor:
         x = self.conv(x)
         x = self.bn(x)
-        return F.relu(x, inplace=True)
-
+        return self.relu(x)
 
 
 # profiler = GpuProfiler("cuda")
@@ -608,6 +613,7 @@ class BasicConv2d(nn.Module):
 def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=False, netBw=2.66E5, spatialSplit=False, simResultFilename=None, simOnly=False, use_be=False, npix=299):
     global cs
     cs = CostSim(None, netBw=netBw, verbose=True, gpuProfileLoc="profile/A100_inception.prof") #"inceptionLayerGpuProfileA100V2.txt", gpuProfileLocSub="inceptionLayerGpuProfileA100.txt")
+    cs.NET_LATENCY = 240
     model = Inception3(aux_logits=False)
     cs.printAllLayers(silent=True)
     cs.computeInputDimensions((3,npix,npix))
@@ -617,10 +623,20 @@ def main(gpuCount, globalBatch, amplificationLimit=2.0, dataParallelBaseline=Fal
     #     dpIterUsec, dpFpUsec, dpBpUsec = profiler.benchModel(model, (3, 299, 299), int(globalBatch / gpuCount))
     #     print("(DP baseline) whole model bench: %.1f ms (fp: %.1f, bp: %.1f)" % (dpIterUsec / 1000, dpFpUsec / 1000, dpBpUsec / 1000))
 
+    saveWholeModel = False
+    if saveWholeModel:
+        model.train()
+        model.cuda()
+        fakeInput = torch.randn(cs.layers[0].inputDim).unsqueeze(0).cuda()
+        traced = torch.jit.trace(model, fakeInput)
+        saveLocation = "modules/inception.pt"
+        torch.jit.save(traced, saveLocation)
+        exit(0)
+
     job, iterMs, gpuMs, maxGpusUsed = cs.searchBestSplitsV3(gpuCount, globalBatch, amplificationLimit=amplificationLimit, dataParallelBaseline=dataParallelBaseline, spatialSplit=spatialSplit)
     print("  %2d    %2d   %4.1f  %4.1f\n" % (globalBatch, maxGpusUsed, iterMs, gpuMs))
     cs.to_dot(simResultFilename, globalBatch)
-    # cs.to_gpuTimeline("Inception v3, Burst Parallel", maxGpusUsed, dataParallelBaseline)
+    cs.to_gpuTimeline("Inception v3, Burst Parallel", maxGpusUsed, dataParallelBaseline)
     jobInJson = job.dumpInJSON()
 
     # for rank in range(gpuCount):

@@ -83,11 +83,8 @@ struct RuntimeContext {
   std::string logdir;
   c10::Device c10dev;
   bool use_fg_graph;
-  size_t iters_per_capture;
-  double be_graph_split_ms;
   size_t min_layer_sync;
   size_t sync_bucket_size;
-  std::string bg_json_file;
   std::atomic<uint64_t> fgcounter{0};
 
   std::mutex jobListMutex;

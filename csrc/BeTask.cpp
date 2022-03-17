@@ -20,6 +20,9 @@
 
 ABSL_FLAG(long, be_image_px, 0,
           "number of pixels in image used for be training");
+ABSL_FLAG(bool, run_be_as_hipri, false,
+          "run be task with high priority stream");
+ABSL_FLAG(double, be_graph_split_ms, 0.5, "");
 
 static long bsize;
 
@@ -59,7 +62,8 @@ static void InitDone() {
 }
 
 static void BeRunner(BeTaskConfig cfg) {
-  bool use_graph_partitioner = cfg.be_graph_split_ms > 0.0;
+  bool use_graph_partitioner = absl::GetFlag(FLAGS_be_graph_split_ms) > 0.0;
+  cfg.sample_per_kernel = bsize;  // DISABLE SPLITTING, unsupported
   assert(bsize % cfg.sample_per_kernel == 0);
   long splitways = bsize / cfg.sample_per_kernel;
   assert(!use_graph_partitioner || splitways == 1);
@@ -74,6 +78,7 @@ static void BeRunner(BeTaskConfig cfg) {
 
   torch::optim::SGD optim(params, torch::optim::SGDOptions(0.1).momentum(0.9));
 
+  bool be_is_hi_pri = absl::GetFlag(FLAGS_run_be_as_hipri);
   long px = absl::GetFlag(FLAGS_be_image_px);
   if (!px)
     px = cfg.be_jit_file.find("inception") == std::string::npos ? 224 : 299;
@@ -84,7 +89,7 @@ static void BeRunner(BeTaskConfig cfg) {
   auto tenss = tensor.split_with_sizes(splitSizes);
   std::vector<c10::cuda::CUDAStream> streams;
   for (size_t i = 0; i < tenss.size(); i++)
-    streams.push_back(c10::cuda::getStreamFromPool(false));
+    streams.push_back(c10::cuda::getStreamFromPool(be_is_hi_pri));
   auto target =
       torch::empty(bsize).uniform_(0, 1000).to(at::kLong).to(rtctx->c10dev);
   auto targs = target.split_with_sizes(splitSizes);
@@ -134,9 +139,10 @@ static void BeRunner(BeTaskConfig cfg) {
   c10::cuda::device_synchronize();
 
   if (use_graph_partitioner) {
-    auto gr =
-        GraphPieces::GraphToExecs(graph.getGRAPH(), cfg.be_graph_split_ms);
-    auto gtask = std::make_shared<GpuTask>(false, cstream, gr->ExtractParts());
+    auto gr = GraphPieces::GraphToExecs(graph.getGRAPH(),
+                                        absl::GetFlag(FLAGS_be_graph_split_ms));
+    auto gtask =
+        std::make_shared<GpuTask>(be_is_hi_pri, cstream, gr->ExtractParts());
 
     InitDone();
     auto fn = [&]() {

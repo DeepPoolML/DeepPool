@@ -134,7 +134,7 @@ class Location:
         # Python runtime
         retryGap = 1
         retryCount = 0
-        while retryCount < maxRetry:
+        while retryCount < maxRetry and not HAS_EXCEPTION:
             try:
                 if self.isCpp: # CPP runtime
                     self.proxy = CppRuntimeProxy("%s:%d"%(self.address, self.port))
